@@ -1,0 +1,4 @@
+Tune.xcodeproj/
+build/
+Payload/
+*.ipa
