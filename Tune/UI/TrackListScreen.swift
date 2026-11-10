@@ -26,9 +26,8 @@ final class TrackListModel: ObservableObject {
         do {
             switch kind {
             case .downloads:
-                title = "Скачанное"
+                break
             case .likes:
-                title = "Мне нравится"
                 try await loadLikes()
             case .playlist(let playlist):
                 title = playlist.title
@@ -55,7 +54,7 @@ final class TrackListModel: ObservableObject {
 
     /// Лайки: сначала сохранённый список, потом с сервера только то, чего в нём нет.
     private func loadLikes() async throws {
-        if tracks.isEmpty {
+        if tracks.isEmpty, !Demo.on {
             let cached = await Task.detached(priority: .userInitiated) { Storage.load("likes-tracks.json", as: [Track].self) }.value
             if let cached, tracks.isEmpty {
                 tracks = cached
@@ -74,10 +73,13 @@ final class TrackListModel: ObservableObject {
         }
         let ordered = ids.compactMap { known[$0] }
         if ordered != tracks { tracks = ordered }
-        Task.detached(priority: .utility) { Storage.save(ordered, "likes-tracks.json") }
+        if !Demo.on {
+            Task.detached(priority: .utility) { Storage.save(ordered, "likes-tracks.json") }
+        }
     }
 }
 
+/// Страница плейлиста, альбома, лайков или скачанного: шапка с обложкой и список треков.
 struct TrackListScreen: View {
     let kind: ListKind
 
@@ -86,6 +88,7 @@ struct TrackListScreen: View {
     @EnvironmentObject private var downloads: Downloads
     @State private var filter = ""
     @State private var confirmRemove = false
+    @State private var tone = Theme.tone
 
     private var all: [Track] {
         kind == .downloads ? downloads.tracks : model.tracks
@@ -100,7 +103,7 @@ struct TrackListScreen: View {
     private var context: PlayContext {
         switch kind {
         case .likes: return .various("Мне нравится")
-        case .downloads: return .various("Скачанное")
+        case .downloads: return .various("Скачанные треки")
         case .playlist(let playlist): return PlayContext(kind: "playlist", item: playlist.id, name: playlist.title)
         case .album(let id): return PlayContext(kind: "album", item: id, name: model.title)
         case .artist(let id, let name): return PlayContext(kind: "artist", item: id, name: name)
@@ -110,33 +113,65 @@ struct TrackListScreen: View {
     private var title: String {
         switch kind {
         case .likes: return "Мне нравится"
-        case .downloads: return "Скачанное"
-        default: return model.title
+        case .downloads: return "Скачанные треки"
+        case .playlist(let playlist): return model.title.isEmpty ? playlist.title : model.title
+        case .artist(_, let name): return name
+        case .album: return model.title
         }
+    }
+
+    private var kindName: String {
+        switch kind {
+        case .album: return "Альбом"
+        case .artist: return "Все треки"
+        default: return "Плейлист"
+        }
+    }
+
+    private var cover: String? {
+        if case .playlist(let playlist) = kind { return model.cover ?? playlist.cover }
+        return model.cover
     }
 
     var body: some View {
         let tracks = shown
         List {
             header(count: all.count)
+                .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
-                .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
+                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 14, trailing: 16))
             if tracks.isEmpty {
                 empty
-                    .listRowSeparator(.hidden)
             }
             ForEach(Array(tracks.enumerated()), id: \.offset) { index, track in
                 TrackRow(track: track) {
                     player.play(tracks, at: index, context: context)
                 }
-                .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 8))
             }
         }
         .listStyle(.plain)
-        .navigationTitle(title)
+        .scrollContentBackground(.hidden)
+        .background(alignment: .top) {
+            ZStack(alignment: .top) {
+                Theme.background
+                LinearGradient(colors: [tone, Theme.background], startPoint: .top, endPoint: .bottom)
+                    .frame(height: 460)
+            }
+            .ignoresSafeArea()
+        }
+        .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $filter, prompt: "Поиск в списке")
         .task { await model.load(kind) }
+        .task(id: cover) {
+            switch kind {
+            case .likes: tone = Color(red: 0.42, green: 0.16, blue: 0.5)
+            case .downloads: tone = Color(red: 0.1, green: 0.25, blue: 0.52)
+            default:
+                let color = await ImageLoader.shared.tone(cover)
+                withAnimation(.easeInOut(duration: 0.3)) { tone = color ?? Theme.tone }
+            }
+        }
         .refreshable { await model.load(kind, force: true) }
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
@@ -162,7 +197,7 @@ struct TrackListScreen: View {
                         }
                     }
                 } label: {
-                    Image(systemName: "ellipsis.circle")
+                    Image(systemName: "ellipsis")
                 }
             }
         }
@@ -173,64 +208,215 @@ struct TrackListScreen: View {
 
     @ViewBuilder private var empty: some View {
         if model.loading {
-            HStack {
-                Spacer()
-                ProgressView()
-                Spacer()
-            }
-            .padding(.vertical, 40)
+            Spinner()
         } else if let error = model.error {
             Placeholder(icon: "wifi.slash", title: "Не удалось загрузить", text: error) {
                 Task { await model.load(kind, force: true) }
             }
-        } else if kind == .downloads {
-            Placeholder(icon: "arrow.down.circle", title: "Пока ничего не скачано", text: "Смахните трек влево или выберите «Скачать» в его меню — он будет играть без интернета.")
         } else if !filter.isEmpty {
             Placeholder(icon: "magnifyingglass", title: "Ничего не найдено")
+        } else if kind == .downloads {
+            Placeholder(icon: "arrow.down.circle", title: "Пока ничего не скачано", text: "Смахните трек влево или выберите «Скачать» в его меню — он будет играть без интернета.")
         } else {
             Placeholder(icon: "music.note.list", title: "Здесь пока пусто")
         }
     }
 
+    @ViewBuilder private var artwork: some View {
+        switch kind {
+        case .likes:
+            SymbolCover(symbol: "heart.fill", colors: SymbolCover.likes, size: 200, corner: 18)
+        case .downloads:
+            SymbolCover(symbol: "arrow.down", colors: SymbolCover.downloads, size: 200, corner: 18)
+        default:
+            CoverView(uri: cover, size: 220, corner: 14)
+        }
+    }
+
     private func header(count: Int) -> some View {
-        VStack(spacing: 12) {
-            if model.cover != nil {
-                CoverView(uri: model.cover, size: 180, corner: 12)
-            }
+        VStack(spacing: 6) {
+            artwork
+                .shadow(color: .black.opacity(0.45), radius: 22, y: 12)
+                .padding(.bottom, 12)
+            Text(kindName.uppercased())
+                .font(.system(size: 11, weight: .semibold))
+                .kerning(1)
+                .foregroundStyle(.white.opacity(0.6))
+            Text(title)
+                .font(.system(size: 26, weight: .bold))
+                .foregroundStyle(.white)
+                .multilineTextAlignment(.center)
+                .lineLimit(3)
             if !model.subtitle.isEmpty {
                 Text(model.subtitle)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.75))
                     .multilineTextAlignment(.center)
             }
             if count > 0 {
                 Text(kind == .downloads ? "\(plural(count, "трек", "трека", "треков")) · \(Storage.sizeText(downloads.totalBytes))" : plural(count, "трек", "трека", "треков"))
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 13))
+                    .foregroundStyle(.white.opacity(0.55))
             }
-            HStack(spacing: 12) {
+            HStack(spacing: 14) {
+                RoundButton(symbol: kind == .downloads ? "trash" : "arrow.down.to.line") {
+                    if kind == .downloads {
+                        confirmRemove = true
+                    } else {
+                        downloads.download(all)
+                    }
+                }
                 Button {
                     player.play(all, context: context)
                 } label: {
-                    Label("Слушать", systemImage: "play.fill")
-                        .font(.headline)
-                        .foregroundStyle(.black)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 6)
+                    HStack(spacing: 8) {
+                        Image(systemName: "play.fill")
+                        Text("Слушать")
+                    }
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.black)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 50)
+                    .background(Color.accentColor, in: Capsule())
                 }
-                .buttonStyle(.borderedProminent)
-                Button {
+                .buttonStyle(.plain)
+                RoundButton(symbol: "shuffle") {
                     player.play(all, context: context, shuffled: true)
-                } label: {
-                    Label("Вперемешку", systemImage: "shuffle")
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 6)
                 }
-                .buttonStyle(.bordered)
             }
+            .padding(.top, 14)
             .disabled(count == 0)
+            .opacity(count == 0 ? 0.5 : 1)
         }
         .frame(maxWidth: .infinity)
+    }
+}
+
+/// Страница исполнителя.
+struct ArtistScreen: View {
+    let id: String
+    let name: String
+
+    @EnvironmentObject private var player: Player
+    @Environment(\.navigate) private var navigate
+    @State private var page: ArtistPage?
+    @State private var error: String?
+    @State private var tone = Theme.tone
+
+    var body: some View {
+        List {
+            if let page {
+                VStack(spacing: 10) {
+                    CoverView(uri: page.cover, size: 190, round: true)
+                        .shadow(color: .black.opacity(0.45), radius: 22, y: 12)
+                        .padding(.bottom, 8)
+                    Text("ИСПОЛНИТЕЛЬ")
+                        .font(.system(size: 11, weight: .semibold))
+                        .kerning(1)
+                        .foregroundStyle(.white.opacity(0.6))
+                    Text(page.name)
+                        .font(.system(size: 30, weight: .bold))
+                        .foregroundStyle(.white)
+                        .multilineTextAlignment(.center)
+                    HStack(spacing: 14) {
+                        Button {
+                            player.play(page.popular, context: PlayContext(kind: "artist", item: id, name: page.name))
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "play.fill")
+                                Text("Слушать")
+                            }
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(.black)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 50)
+                            .background(Color.accentColor, in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        RoundButton(symbol: "dot.radiowaves.left.and.right") {
+                            player.playWave(seeds: ["artist:\(id)"], name: page.name)
+                        }
+                    }
+                    .padding(.top, 12)
+                }
+                .frame(maxWidth: .infinity)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 14, trailing: 16))
+
+                if !page.popular.isEmpty {
+                    heading("Популярные треки", more: .artistTracks(id, page.name))
+                    let top = Array(page.popular.prefix(5))
+                    ForEach(Array(top.enumerated()), id: \.offset) { index, track in
+                        TrackRow(track: track) {
+                            player.play(page.popular, at: index, context: PlayContext(kind: "artist", item: id, name: page.name))
+                        }
+                    }
+                }
+                if !page.albums.isEmpty {
+                    Shelf("Альбомы") {
+                        ForEach(page.albums) { card in
+                            HomeCard(item: .album(card))
+                        }
+                    }
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+                    .listRowInsets(EdgeInsets(top: 20, leading: 0, bottom: 12, trailing: 0))
+                }
+            } else if let error {
+                Placeholder(icon: "wifi.slash", title: "Не удалось загрузить", text: error) {
+                    Task { await load() }
+                }
+            } else {
+                Spinner()
+            }
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .background(alignment: .top) {
+            ZStack(alignment: .top) {
+                Theme.background
+                LinearGradient(colors: [tone, Theme.background], startPoint: .top, endPoint: .bottom)
+                    .frame(height: 440)
+            }
+            .ignoresSafeArea()
+        }
+        .navigationTitle("")
+        .navigationBarTitleDisplayMode(.inline)
+        .task { if page == nil { await load() } }
+        .task(id: page?.cover) {
+            let color = await ImageLoader.shared.tone(page?.cover)
+            withAnimation(.easeInOut(duration: 0.3)) { tone = color ?? Theme.tone }
+        }
+    }
+
+    private func heading(_ text: String, more: Route) -> some View {
+        HStack {
+            Text(text)
+                .font(.system(size: 22, weight: .bold))
+                .foregroundStyle(.white)
+            Spacer()
+            Button {
+                navigate(more)
+            } label: {
+                Text("Все")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(Theme.dim)
+            }
+            .buttonStyle(.plain)
+        }
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+        .listRowInsets(EdgeInsets(top: 14, leading: 16, bottom: 6, trailing: 16))
+    }
+
+    private func load() async {
+        error = nil
+        do {
+            page = try await API.shared.artist(id: id)
+        } catch {
+            if Task.isCancelled { return }
+            self.error = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
     }
 }

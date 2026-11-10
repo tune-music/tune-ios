@@ -91,6 +91,7 @@ final class Downloads: ObservableObject {
             files[track.id] = file.lastPathComponent
             save()
         } catch {
+            Log.shared.add("загрузка: \(track.id): \((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)")
             failed.insert(track.id)
         }
         active[track.id] = nil

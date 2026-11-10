@@ -61,6 +61,9 @@ final class API {
             do {
                 answer = try await http.data(for: request)
             } catch {
+                if (error as? URLError)?.code != .cancelled {
+                    Log.shared.add("сеть: \(parts.path): \(error.localizedDescription)")
+                }
                 throw APIError.network(error.localizedDescription)
             }
             let status = (answer.1 as? HTTPURLResponse)?.statusCode ?? 0
@@ -73,6 +76,7 @@ final class API {
             let value = JSON.parse(answer.0)
             if status != 200 {
                 let name = value["error"]["name"].string ?? value["result"]["message"].string ?? "ошибка"
+                Log.shared.add("api: \(parts.path): \(status) \(name)")
                 throw APIError.server("Яндекс ответил \(status): \(name)")
             }
             guard value.exists else { throw APIError.server("Яндекс ответил \(status)") }
@@ -154,7 +158,59 @@ final class API {
         if let year = value["year"].int {
             subtitle = subtitle.isEmpty ? "\(year)" : "\(subtitle) · \(year)"
         }
-        return Card(id: id, title: title, subtitle: subtitle, cover: value["coverUri"].string)
+        return Card(id: id, title: title, subtitle: subtitle, cover: value["coverUri"].string ?? value["cover"]["uri"].string)
+    }
+
+    /// Новинка с главной: альбом и исполнители лежат рядом.
+    private static func releaseCard(_ value: JSON) -> Card? {
+        let album = value["album"]
+        guard let id = album["id"].idText, let title = album["title"].string else { return nil }
+        let names = value["artists"].array.compactMap { $0["name"].string }.joined(separator: ", ")
+        return Card(id: id, title: title, subtitle: names, cover: album["coverUri"].string ?? album["cover"]["uri"].string ?? value["cover"]["uri"].string)
+    }
+
+    /// Карточка полки главной: плейлист, исполнитель, альбом или волна.
+    private static func homeItem(_ value: JSON) -> HomeItem? {
+        // В блоках волн карточка лежит сразу, без обёртки data.
+        let data = value["data"].isObject ? value["data"] : value
+        if data["playlist"].isObject {
+            let playlist = data["playlist"]
+            guard let owner = playlist["uid"].idText ?? playlist["owner"]["uid"].idText else { return nil }
+            guard var parsed = parsePlaylist(playlist, owner: owner) else { return nil }
+            if parsed.count == 0, let count = data["trackCount"].int { parsed.count = count }
+            return .playlist(parsed)
+        }
+        if data["artist"].isObject {
+            guard let card = artistCard(data["artist"]) else { return nil }
+            return .artist(card)
+        }
+        if data["album"].isObject {
+            guard let card = albumCard(data["album"]) else { return nil }
+            return .album(card)
+        }
+        let wave = data["wave"]
+        let seeds = (data["seeds"].isArray ? data["seeds"] : wave["seeds"]).array.compactMap { $0.string }
+        guard !seeds.isEmpty, let title = data["title"].string ?? wave["name"].string else { return nil }
+        let cover = data["compactImageUrl"].string ?? data["agent"]["cover"]["uri"].string ?? data["imageUrl"].string ?? data["backgroundImageUrl"].string
+        return .wave(WaveCard(title: title, seeds: seeds, cover: cover, color: data["colors"]["average"].string))
+    }
+
+    /// У блоков главной разные ответы, но элементы в них одни и те же.
+    private static func homeItems(_ value: JSON) -> [HomeItem] {
+        var items: [HomeItem] = []
+        for release in value["newReleases"].array {
+            if let card = releaseCard(release) { items.append(.album(card)) }
+        }
+        for item in value["items"].array {
+            if let parsed = homeItem(item) { items.append(parsed) }
+        }
+        for group in ["waves", "inStyleTabs"] {
+            for item in value[group][0]["items"].array {
+                if let parsed = homeItem(item) { items.append(parsed) }
+            }
+        }
+        var seen = Set<String>()
+        return items.filter { seen.insert($0.id).inserted }
     }
 
     private static func artistCard(_ value: JSON) -> Card? {
@@ -175,6 +231,7 @@ final class API {
     // MARK: - Аккаунт и коллекция
 
     func profile() async throws -> Profile {
+        if Demo.on { return Profile(uid: "demo", name: "Демо", login: "demo", plus: true) }
         let value = result(try await get("account/status"))
         let account = value["account"]
         guard let uid = account["uid"].idText else { throw APIError.server("Яндекс не сообщил номер аккаунта") }
@@ -184,6 +241,7 @@ final class API {
 
     /// Номера треков из «Мне нравится», сначала новые.
     func likedIds(uid: String) async throws -> [String] {
+        if Demo.on { return Demo.data.tracks.map(\.id) }
         let value = result(try await get("users/\(uid)/likes/tracks"))
         return value["library"]["tracks"].array.compactMap { $0["id"].idText }
     }
@@ -197,6 +255,7 @@ final class API {
     /// Сведения о треках в том же порядке, что и номера.
     func tracks(ids: [String]) async throws -> [Track] {
         guard !ids.isEmpty else { return [] }
+        if Demo.on { return Demo.data.tracks.filter { ids.contains($0.id) } }
         let value = try await post("tracks", form: "track-ids=" + ids.joined(separator: "%2C"))
         var found: [String: Track] = [:]
         for track in value["result"].array.compactMap(Self.parseTrack) where found[track.id] == nil {
@@ -206,11 +265,13 @@ final class API {
     }
 
     func playlists(uid: String) async throws -> [Playlist] {
+        if Demo.on { return Demo.data.playlists }
         let value = try await get("users/\(uid)/playlists/list")
         return value["result"].array.compactMap { Self.parsePlaylist($0, owner: uid) }
     }
 
     func playlistTracks(_ playlist: Playlist) async throws -> [Track] {
+        if Demo.on { return Demo.data.tracks }
         let value = result(try await get("users/\(playlist.owner)/playlists/\(playlist.kind)", [("rich-tracks", "true")]))
         return value["tracks"].array.compactMap { Self.parseTrack($0["track"]) }
     }
@@ -218,6 +279,11 @@ final class API {
     // MARK: - Альбомы, исполнители, поиск
 
     func album(id: String) async throws -> AlbumPage {
+        if Demo.on {
+            let all = Demo.data.albums + Demo.data.releases
+            guard let card = all.first(where: { $0.id == id }) ?? all.first else { throw APIError.server("Нет демо-данных") }
+            return AlbumPage(card: card, year: 2024, tracks: Demo.data.tracks)
+        }
         let value = result(try await get("albums/\(id)/with-tracks"))
         if value["error"].string == "not-found" { throw APIError.server("Альбом не найден") }
         var disks: [[Track]] = value["volumes"].array.map { $0.array.compactMap(Self.parseTrack) }
@@ -251,6 +317,10 @@ final class API {
     }
 
     func artist(id: String) async throws -> ArtistPage {
+        if Demo.on {
+            guard let card = Demo.data.artists.first(where: { $0.id == id }) ?? Demo.data.artists.first else { throw APIError.server("Нет демо-данных") }
+            return ArtistPage(id: card.id, name: card.title, cover: card.cover, popular: Demo.data.tracks, albums: Demo.data.albums)
+        }
         let value = result(try await get("artists/\(id)/brief-info"))
         let artist = value["artist"]
         guard let name = artist["name"].string, artist["error"].string != "not-found" else { throw APIError.server("Исполнитель не найден") }
@@ -268,11 +338,15 @@ final class API {
     }
 
     func artistTracks(id: String) async throws -> [Track] {
+        if Demo.on { return Demo.data.tracks }
         let value = result(try await get("artists/\(id)/tracks", [("page-size", "200")]))
         return value["tracks"].array.compactMap(Self.parseTrack)
     }
 
     func search(_ text: String) async throws -> SearchResult {
+        if Demo.on {
+            return SearchResult(tracks: Demo.data.tracks, albums: Demo.data.albums, artists: Demo.data.artists, playlists: Demo.data.playlists)
+        }
         let value = result(try await get("search/instant/mixed", [("text", text), ("type", "track,album,artist,playlist"), ("page", "0"), ("pageSize", "36")]))
         var found = SearchResult()
         for item in value["results"].array {
@@ -291,6 +365,66 @@ final class API {
             }
         }
         return found
+    }
+
+    /// Альбомы и исполнители, которые нравятся пользователю.
+    func likedAlbums(uid: String) async throws -> [Card] {
+        if Demo.on { return Demo.data.albums }
+        let value = result(try await get("users/\(uid)/likes/albums", [("rich", "true")]))
+        return value.array.compactMap { Self.albumCard($0["album"]) }
+    }
+
+    func likedArtists(uid: String) async throws -> [Card] {
+        if Demo.on { return Demo.data.artists }
+        let value = result(try await get("users/\(uid)/likes/artists", [("with-timestamps", "false")]))
+        // Исполнитель приходит то сам по себе, то внутри artist.
+        return value.array.compactMap { Self.artistCard($0) ?? Self.artistCard($0["artist"]) }
+    }
+
+    // MARK: - Главная
+
+    /// Полки главной, как у официального клиента: скелет страницы и блоки первой вкладки.
+    /// Блоки грузятся одновременно, порядок сохраняется.
+    func home() async throws -> HomePage {
+        if Demo.on { return HomePage(waves: Demo.data.waves, blocks: Demo.home) }
+        let skeleton = result(try await get("landing/skeleton/main"))
+        let tabs = skeleton["blocks"].array.map { $0["data"]["tabs"] }.first { $0.isArray } ?? JSON(nil)
+        // Эти блоки ведут в разделы, которых в приложении нет.
+        let skipped: Set<String> = ["LIKES_AND_HISTORY", "SPECIAL", "CONCERTS_PERSONAL", "DONATIONS", "ALBUM_PROMO"]
+        var kinds: [String] = []
+        var titles: [String] = []
+        var paths: [String] = []
+        for block in tabs[0]["blocks"].array {
+            let kind = block["type"].string ?? ""
+            guard !skipped.contains(kind), let uri = block["data"]["source"]["uri"].string else { continue }
+            kinds.append(kind)
+            titles.append(block["data"]["title"].string ?? "")
+            paths.append(uri.hasPrefix("/") ? String(uri.dropFirst()) : uri)
+        }
+        let loaded = await withTaskGroup(of: (Int, [HomeItem]).self) { group -> [Int: [HomeItem]] in
+            for (index, path) in paths.enumerated() {
+                group.addTask {
+                    guard let value = try? await self.get(path) else { return (index, []) }
+                    return (index, Self.homeItems(self.result(value)))
+                }
+            }
+            var out: [Int: [HomeItem]] = [:]
+            for await (index, items) in group { out[index] = items }
+            return out
+        }
+        var page = HomePage()
+        for index in paths.indices {
+            let items = loaded[index] ?? []
+            guard !items.isEmpty else { continue }
+            if kinds[index] == "WAVES" {
+                for item in items {
+                    if case .wave(let wave) = item { page.waves.append(wave) }
+                }
+            } else if !titles[index].isEmpty {
+                page.blocks.append(HomeBlock(id: "\(index):\(paths[index])", title: titles[index], items: items))
+            }
+        }
+        return page
     }
 
     // MARK: - Волна
@@ -363,6 +497,7 @@ final class API {
 
     /// Сначала синхронный текст, потом обычный.
     func lyrics(track id: String) async throws -> [LyricLine] {
+        if Demo.on { return Demo.lyrics }
         for format in ["LRC", "TEXT"] {
             let stamp = String(Int(Date().timeIntervalSince1970))
             let value: JSON

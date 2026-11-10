@@ -94,6 +94,45 @@ struct Card: Codable, Hashable, Identifiable {
     var cover: String?
 }
 
+/// Волна по жанру, настроению или занятию.
+struct WaveCard: Codable, Hashable, Identifiable {
+    var title: String
+    var seeds: [String]
+    var cover: String?
+    var color: String?
+
+    var id: String { seeds.joined(separator: ",") }
+}
+
+/// Карточка на полке главной.
+enum HomeItem: Hashable, Identifiable {
+    case album(Card)
+    case artist(Card)
+    case playlist(Playlist)
+    case wave(WaveCard)
+
+    var id: String {
+        switch self {
+        case .album(let card): return "album:\(card.id)"
+        case .artist(let card): return "artist:\(card.id)"
+        case .playlist(let playlist): return "playlist:\(playlist.id)"
+        case .wave(let wave): return "wave:\(wave.id)"
+        }
+    }
+}
+
+/// Полка главной: название и карточки.
+struct HomeBlock: Identifiable {
+    var id: String
+    var title: String
+    var items: [HomeItem]
+}
+
+struct HomePage {
+    var waves: [WaveCard] = []
+    var blocks: [HomeBlock] = []
+}
+
 struct Profile: Codable {
     var uid: String
     var name: String

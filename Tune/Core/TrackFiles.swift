@@ -7,6 +7,18 @@ struct TrackSource {
     var key: String?
     /// Файл надо сначала скачать: он зашифрован или сервер отдаёт его не как аудио.
     var needsFile: Bool
+    var codec = "mp3"
+
+    /// Тип содержимого для плеера: сервер Яндекса отдаёт поток как application/octet-stream,
+    /// и без подсказки AVPlayer его не играет.
+    var mime: String {
+        switch codec {
+        case "mp3": return "audio/mpeg"
+        case "flac": return "audio/flac"
+        case "aac", "he-aac": return "audio/aac"
+        default: return "audio/mp4"
+        }
+    }
 }
 
 enum TrackFiles {
@@ -19,7 +31,7 @@ enum TrackFiles {
         do {
             let info = try await API.shared.fileInfo(track: track.id, quality: quality, transport: "raw")
             if let url = URL(string: info.url) {
-                return TrackSource(urls: [url], key: info.key, needsFile: info.key != nil)
+                return TrackSource(urls: [url], key: info.key, needsFile: info.key != nil, codec: info.codec)
             }
         } catch let error as APIError where error.isNetwork {
             throw error
@@ -30,7 +42,7 @@ enum TrackFiles {
         }
         let info = try await API.shared.fileInfo(track: track.id, quality: quality, transport: "encraw")
         guard let url = URL(string: info.url) else { throw APIError.server("Яндекс не дал файл трека") }
-        return TrackSource(urls: [url], key: info.key, needsFile: true)
+        return TrackSource(urls: [url], key: info.key, needsFile: true, codec: info.codec)
     }
 
     /// Скачивает файл в папку и возвращает его путь: имя — номер трека, расширение — по содержимому.

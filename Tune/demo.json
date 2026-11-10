@@ -1,0 +1,597 @@
+{
+ "tracks": [
+  {
+   "id": "128853463",
+   "title": "Queencard",
+   "version": null,
+   "artists": "i-dle",
+   "artistList": [
+    {
+     "id": "6285918",
+     "name": "i-dle"
+    }
+   ],
+   "durationMs": 161240,
+   "cover": "avatars.yandex.net/get-music-content/13449652/392c4fce.a.32383686-1/%%",
+   "albumId": "32383686",
+   "albumTitle": "I feel",
+   "explicit": false,
+   "hasLyrics": true,
+   "unavailable": false,
+   "uncensored": false
+  },
+  {
+   "id": "87491164",
+   "title": "Queen",
+   "version": null,
+   "artists": "KVPV",
+   "artistList": [
+    {
+     "id": "5801667",
+     "name": "KVPV"
+    }
+   ],
+   "durationMs": 157710,
+   "cover": "avatars.yandex.net/get-music-content/13043189/18a7b164.a.16916643-2/%%",
+   "albumId": "16916643",
+   "albumTitle": "Queen",
+   "explicit": false,
+   "hasLyrics": true,
+   "unavailable": false,
+   "uncensored": false
+  },
+  {
+   "id": "38831880",
+   "title": "Queen",
+   "version": "Acoustic",
+   "artists": "Jessie J",
+   "artistList": [
+    {
+     "id": "360102",
+     "name": "Jessie J"
+    }
+   ],
+   "durationMs": 317780,
+   "cover": "avatars.yandex.net/get-music-content/2350646/0279b9ac.a.4988025-3/%%",
+   "albumId": "4988025",
+   "albumTitle": "Queen",
+   "explicit": true,
+   "hasLyrics": true,
+   "unavailable": false,
+   "uncensored": true
+  },
+  {
+   "id": "147872699",
+   "title": "Queen St",
+   "version": null,
+   "artists": "twenty3ee",
+   "artistList": [
+    {
+     "id": "25416006",
+     "name": "twenty3ee"
+    }
+   ],
+   "durationMs": 128660,
+   "cover": "avatars.yandex.net/get-music-content/17696724/98398b12.a.40512013-1/%%",
+   "albumId": "40512013",
+   "albumTitle": "Queen St",
+   "explicit": false,
+   "hasLyrics": true,
+   "unavailable": false,
+   "uncensored": false
+  },
+  {
+   "id": "148452175",
+   "title": "Queen",
+   "version": null,
+   "artists": "2HXRD",
+   "artistList": [
+    {
+     "id": "17465062",
+     "name": "2HXRD"
+    }
+   ],
+   "durationMs": 193590,
+   "cover": "avatars.yandex.net/get-music-content/17655650/7857b175.a.40769528-1/%%",
+   "albumId": "40769528",
+   "albumTitle": "Queen",
+   "explicit": true,
+   "hasLyrics": true,
+   "unavailable": false,
+   "uncensored": false
+  },
+  {
+   "id": "46979278",
+   "title": "Queen",
+   "version": null,
+   "artists": "Loren Gray",
+   "artistList": [
+    {
+     "id": "2901845",
+     "name": "Loren Gray"
+    }
+   ],
+   "durationMs": 160440,
+   "cover": "avatars.yandex.net/get-music-content/175191/892c01cd.a.6350001-1/%%",
+   "albumId": "6350001",
+   "albumTitle": "Queen",
+   "explicit": false,
+   "hasLyrics": true,
+   "unavailable": false,
+   "uncensored": false
+  },
+  {
+   "id": "142548168",
+   "title": "Prom Queen",
+   "version": null,
+   "artists": "Beach Bunny",
+   "artistList": [
+    {
+     "id": "6508189",
+     "name": "Beach Bunny"
+    }
+   ],
+   "durationMs": 136620,
+   "cover": "avatars.yandex.net/get-music-content/12554677/6e7583c9.a.38077932-1/%%",
+   "albumId": "38077932",
+   "albumTitle": "Prom Queen",
+   "explicit": false,
+   "hasLyrics": true,
+   "unavailable": false,
+   "uncensored": false
+  },
+  {
+   "id": "157096209",
+   "title": "MUSEUM",
+   "version": null,
+   "artists": "Pepel Nahudi",
+   "artistList": [
+    {
+     "id": "8262943",
+     "name": "Pepel Nahudi"
+    }
+   ],
+   "durationMs": 141810,
+   "cover": "avatars.yandex.net/get-music-content/20974004/23d3103b.a.44462721-2/%%",
+   "albumId": "44462721",
+   "albumTitle": "KM2: BEYOND EMPIRE",
+   "explicit": true,
+   "hasLyrics": true,
+   "unavailable": false,
+   "uncensored": true
+  },
+  {
+   "id": "147246122",
+   "title": "MUSE",
+   "version": null,
+   "artists": "KUTE, Rixat",
+   "artistList": [
+    {
+     "id": "9354632",
+     "name": "KUTE"
+    },
+    {
+     "id": "13580331",
+     "name": "Rixat"
+    }
+   ],
+   "durationMs": 106950,
+   "cover": "avatars.yandex.net/get-music-content/17730916/49f24c3e.a.40224934-1/%%",
+   "albumId": "40224934",
+   "albumTitle": "MUSE",
+   "explicit": false,
+   "hasLyrics": true,
+   "unavailable": false,
+   "uncensored": false
+  },
+  {
+   "id": "10776586",
+   "title": "Muse",
+   "version": null,
+   "artists": "OCAD",
+   "artistList": [
+    {
+     "id": "1712895",
+     "name": "OCAD"
+    }
+   ],
+   "durationMs": 260630,
+   "cover": "avatars.yandex.net/get-music-content/95061/bc0e97c6.a.5773725-1/%%",
+   "albumId": "5773725",
+   "albumTitle": "The Truth",
+   "explicit": true,
+   "hasLyrics": true,
+   "unavailable": false,
+   "uncensored": false
+  },
+  {
+   "id": "153906819",
+   "title": "MUSE",
+   "version": null,
+   "artists": "whatsaheart",
+   "artistList": [
+    {
+     "id": "18828951",
+     "name": "whatsaheart"
+    }
+   ],
+   "durationMs": 134410,
+   "cover": "avatars.yandex.net/get-music-content/20189877/03593a94.a.43172678-1/%%",
+   "albumId": "43172678",
+   "albumTitle": "carousel",
+   "explicit": false,
+   "hasLyrics": true,
+   "unavailable": false,
+   "uncensored": false
+  },
+  {
+   "id": "57703",
+   "title": "Enter Sandman",
+   "version": null,
+   "artists": "Metallica",
+   "artistList": [
+    {
+     "id": "3121",
+     "name": "Metallica"
+    }
+   ],
+   "durationMs": 331260,
+   "cover": "avatars.yandex.net/get-music-content/142001/791c50e6.a.4766-3/%%",
+   "albumId": "4766",
+   "albumTitle": "Metallica",
+   "explicit": false,
+   "hasLyrics": true,
+   "unavailable": false,
+   "uncensored": false
+  },
+  {
+   "id": "57730",
+   "title": "Nothing Else Matters",
+   "version": null,
+   "artists": "Metallica",
+   "artistList": [
+    {
+     "id": "3121",
+     "name": "Metallica"
+    }
+   ],
+   "durationMs": 388260,
+   "cover": "avatars.yandex.net/get-music-content/142001/791c50e6.a.4766-3/%%",
+   "albumId": "4766",
+   "albumTitle": "Metallica",
+   "explicit": false,
+   "hasLyrics": true,
+   "unavailable": false,
+   "uncensored": false
+  },
+  {
+   "id": "57711",
+   "title": "The Unforgiven",
+   "version": null,
+   "artists": "Metallica",
+   "artistList": [
+    {
+     "id": "3121",
+     "name": "Metallica"
+    }
+   ],
+   "durationMs": 386490,
+   "cover": "avatars.yandex.net/get-music-content/142001/791c50e6.a.4766-3/%%",
+   "albumId": "4766",
+   "albumTitle": "Metallica",
+   "explicit": false,
+   "hasLyrics": true,
+   "unavailable": false,
+   "uncensored": false
+  }
+ ],
+ "albums": [
+  {
+   "id": "31713657",
+   "title": "Queen Of The Damned (Music From The Motion Picture)",
+   "subtitle": "сборник · 2009",
+   "cover": "avatars.yandex.net/get-music-content/10129881/dcf27ab3.a.31713657-1/%%"
+  },
+  {
+   "id": "5901220",
+   "title": "«Богемская рапсодия»",
+   "subtitle": "Queen · 2018",
+   "cover": "avatars.yandex.net/get-music-content/117546/c8c68f43.a.5901220-1/%%"
+  },
+  {
+   "id": "5534869",
+   "title": "Dancing Queen",
+   "subtitle": "Colin Firth, Stellan Skarsgard, Amanda Seyfried, Christine Baranski, Julie Walters, Pierce Brosnan · 2018",
+   "cover": "avatars.yandex.net/get-music-content/149669/ebf5d1d7.a.5534869-1/%%"
+  },
+  {
+   "id": "16916643",
+   "title": "Queen",
+   "subtitle": "KVPV · 2021",
+   "cover": "avatars.yandex.net/get-music-content/13043189/18a7b164.a.16916643-2/%%"
+  },
+  {
+   "id": "20979796",
+   "title": "The Queen's Gambit",
+   "subtitle": "сборник · 2022",
+   "cover": "avatars.yandex.net/get-music-content/5631481/94981fe3.a.20979796-1/%%"
+  },
+  {
+   "id": "6139365",
+   "title": "Queen",
+   "subtitle": "Nicki Minaj · 2018",
+   "cover": "avatars.yandex.net/get-music-content/114728/bf74dc35.a.6139365-1/%%"
+  },
+  {
+   "id": "21608",
+   "title": "Queen Of The Damned - The Score Album",
+   "subtitle": "Richard Gibbs, Jonathan Davis · 2002",
+   "cover": "avatars.yandex.net/get-music-content/32236/fc6051aa.a.21608-1/%%"
+  },
+  {
+   "id": "40512013",
+   "title": "Queen St",
+   "subtitle": "twenty3ee · 2025",
+   "cover": "avatars.yandex.net/get-music-content/17696724/98398b12.a.40512013-1/%%"
+  },
+  {
+   "id": "33839872",
+   "title": "MUSE",
+   "subtitle": "Jimin · 2024",
+   "cover": "avatars.yandex.net/get-music-content/12799091/bb2a7fc9.a.33839872-1/%%"
+  },
+  {
+   "id": "16528906",
+   "title": "Muse",
+   "subtitle": "CloudSystem · 2021",
+   "cover": "avatars.yandex.net/get-music-content/5309210/793f8491.a.16528906-1/%%"
+  },
+  {
+   "id": "32255192",
+   "title": "Muse",
+   "subtitle": "Craig Gannon · 2024",
+   "cover": "avatars.yandex.net/get-music-content/9868087/81a574a0.a.32255192-1/%%"
+  },
+  {
+   "id": "40224934",
+   "title": "MUSE",
+   "subtitle": "KUTE, Rixat · 2026",
+   "cover": "avatars.yandex.net/get-music-content/17730916/49f24c3e.a.40224934-1/%%"
+  }
+ ],
+ "artists": [
+  {
+   "id": "79215",
+   "title": "Queen",
+   "subtitle": "Исполнитель",
+   "cover": "avatars.yandex.net/get-music-content/32236/007e9eed.p.79215/%%"
+  },
+  {
+   "id": "64019",
+   "title": "Queensrÿche",
+   "subtitle": "Исполнитель",
+   "cover": "avatars.yandex.net/get-music-content/32236/52218d3c.p.64019/%%"
+  },
+  {
+   "id": "9911",
+   "title": "Queens of the Stone Age",
+   "subtitle": "Исполнитель",
+   "cover": "avatars.yandex.net/get-music-content/28589/95ae1cb2.p.9911/%%"
+  },
+  {
+   "id": "3120",
+   "title": "Freddie Mercury",
+   "subtitle": "Исполнитель",
+   "cover": "avatars.yandex.net/get-music-content/2390047/895b5df0.p.3120/%%"
+  },
+  {
+   "id": "23849",
+   "title": "Queen Latifah",
+   "subtitle": "Исполнитель",
+   "cover": "avatars.yandex.net/get-music-content/20322863/7bc498d9.a.43238505-1/%%"
+  },
+  {
+   "id": "20791567",
+   "title": "FIRE QUEEN",
+   "subtitle": "Исполнитель",
+   "cover": null
+  },
+  {
+   "id": "290559",
+   "title": "Queen Omega",
+   "subtitle": "Исполнитель",
+   "cover": "avatars.yandex.net/get-music-content/5708920/488b23ec.a.20789458-1/%%"
+  },
+  {
+   "id": "3828974",
+   "title": "African Queen",
+   "subtitle": "Исполнитель",
+   "cover": "avatars.yandex.net/get-music-content/4796762/139670e3.a.16010878-1/%%"
+  }
+ ],
+ "releases": [
+  {
+   "id": "44707900",
+   "title": "Рви моё сердце",
+   "subtitle": "билборды",
+   "cover": "avatars.yandex.net/get-music-content/20974004/f203cdfa.a.44707900-1/%%"
+  },
+  {
+   "id": "44667017",
+   "title": "labyrinth",
+   "subtitle": "3umph",
+   "cover": "avatars.yandex.net/get-music-content/20974004/d72679aa.a.44667017-1/%%"
+  },
+  {
+   "id": "44690017",
+   "title": "101 причина",
+   "subtitle": "VILLIAN, OG Buda",
+   "cover": "avatars.yandex.net/get-music-content/20189877/706869cc.a.44690017-1/%%"
+  },
+  {
+   "id": "44779884",
+   "title": "Moriarty",
+   "subtitle": "kэnnny, userfllp",
+   "cover": "avatars.yandex.net/get-music-content/22503874/328ae2e5.a.44779884-1/%%"
+  },
+  {
+   "id": "44453012",
+   "title": "MY SORROW",
+   "subtitle": "deashou crueshi",
+   "cover": "avatars.yandex.net/get-music-content/20322863/6532090d.a.44453012-1/%%"
+  },
+  {
+   "id": "44680765",
+   "title": "Highway",
+   "subtitle": "FORTUNA 812",
+   "cover": "avatars.yandex.net/get-music-content/20608190/8f994b2a.a.44680765-1/%%"
+  },
+  {
+   "id": "44722059",
+   "title": "рви моё сердце x sped up x nightcore",
+   "subtitle": "gxnka",
+   "cover": "avatars.yandex.net/get-music-content/20608190/82166238.a.44722059-1/%%"
+  },
+  {
+   "id": "44377289",
+   "title": "Каждый День",
+   "subtitle": "GONE.Fludd, CAKEBOY",
+   "cover": "avatars.yandex.net/get-music-content/20837190/dbe90fab.a.44377289-2/%%"
+  }
+ ],
+ "waves": [
+  {
+   "title": "Размышлять под альт-рок",
+   "seeds": [
+    "query-2-vibe:383"
+   ],
+   "cover": "avatars.mds.yandex.net/get-music-misc/49997/img.6745f61f5421a951638082d1/%%",
+   "color": "#3678bc"
+  },
+  {
+   "title": "I'unno",
+   "seeds": [
+    "artist:23172160"
+   ],
+   "cover": "avatars.mds.yandex.net/get-music-misc/49997/img.6745f61f5421a951638082d1/%%",
+   "color": "#4f4f4c"
+  },
+  {
+   "title": "Меланхоличный поп-рок для глубоких мыслей",
+   "seeds": [
+    "query-2-vibe:659"
+   ],
+   "cover": "avatars.mds.yandex.net/get-music-misc/49997/img.6745f61f5421a951638082d1/%%",
+   "color": "#3678bc"
+  },
+  {
+   "title": "Русский",
+   "seeds": [
+    "local-language:russian"
+   ],
+   "cover": "avatars.mds.yandex.net/get-music-misc/49997/img.6745f61f5421a951638082d1/%%",
+   "color": "#b3414a"
+  },
+  {
+   "title": "В дороге",
+   "seeds": [
+    "activity:road-trip"
+   ],
+   "cover": "avatars.mds.yandex.net/get-music-misc/49997/img.6745f61f5421a951638082d1/%%",
+   "color": "#7d9c2f"
+  },
+  {
+   "title": "Альтернативный поп-рок",
+   "seeds": [
+    "micro-genre:alternative-pop-rock"
+   ],
+   "cover": "avatars.mds.yandex.net/get-music-misc/49997/img.6745f61f5421a951638082d1/%%",
+   "color": "#d65c5b"
+  },
+  {
+   "title": "Засыпаю",
+   "seeds": [
+    "activity:fall-asleep"
+   ],
+   "cover": "avatars.mds.yandex.net/get-music-misc/49997/img.6745f61f5421a951638082d1/%%",
+   "color": "#3678bc"
+  },
+  {
+   "title": "Русская поп-музыка",
+   "seeds": [
+    "genre:ruspop"
+   ],
+   "cover": "avatars.mds.yandex.net/get-music-misc/49997/img.6745f61f5421a951638082d1/%%",
+   "color": "#d65c5b"
+  },
+  {
+   "title": "Бег",
+   "seeds": [
+    "activity:run"
+   ],
+   "cover": "avatars.mds.yandex.net/get-music-misc/49997/img.6745f61f5421a951638082d1/%%",
+   "color": "#6b65a9"
+  },
+  {
+   "title": "Энергичное",
+   "seeds": [
+    "mood:energetic"
+   ],
+   "cover": "avatars.mds.yandex.net/get-music-misc/49997/img.6745f61f5421a951638082d1/%%",
+   "color": "#6b65a9"
+  }
+ ],
+ "personal": [
+  {
+   "owner": "demo",
+   "kind": "151246301",
+   "title": "Премьера",
+   "count": 60,
+   "cover": "avatars.yandex.net/get-music-user-playlist/27701/sm9mbsY99OpXHv/%%?1730453322475"
+  },
+  {
+   "owner": "demo",
+   "kind": "177490577",
+   "title": "Дежавю",
+   "count": 60,
+   "cover": "avatars.yandex.net/get-music-user-playlist/11300361/sm9iywbJziAOVn/%%?1730448970240"
+  },
+  {
+   "owner": "demo",
+   "kind": "157725222",
+   "title": "Плейлист дня",
+   "count": 60,
+   "cover": "avatars.yandex.net/get-music-user-playlist/28719/sm9knsQvHmE2DL/%%?1730451162011"
+  }
+ ],
+ "playlists": [
+  {
+   "owner": "demo",
+   "kind": "1000",
+   "title": "В дорогу",
+   "count": 48,
+   "cover": "avatars.yandex.net/get-music-content/10129881/dcf27ab3.a.31713657-1/%%"
+  },
+  {
+   "owner": "demo",
+   "kind": "1001",
+   "title": "Для работы",
+   "count": 112,
+   "cover": "avatars.yandex.net/get-music-content/117546/c8c68f43.a.5901220-1/%%"
+  },
+  {
+   "owner": "demo",
+   "kind": "1002",
+   "title": "Рок",
+   "count": 230,
+   "cover": "avatars.yandex.net/get-music-content/149669/ebf5d1d7.a.5534869-1/%%"
+  },
+  {
+   "owner": "demo",
+   "kind": "1003",
+   "title": "Спокойное",
+   "count": 35,
+   "cover": "avatars.yandex.net/get-music-content/13043189/18a7b164.a.16916643-2/%%"
+  }
+ ]
+}

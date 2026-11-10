@@ -101,6 +101,8 @@ final class Player: NSObject, ObservableObject {
     private var generation = 0
     private var preloaded: (id: String, item: AVPlayerItem)?
     private var fromPreload = false
+    /// Текущий трек играет потоком: если поток не пошёл, он скачивается целиком.
+    private var streamed = false
     private var itemObservation: NSKeyValueObservation?
     private var statusObservation: NSKeyValueObservation?
     private var pendingSeek: Double?
@@ -184,7 +186,7 @@ final class Player: NSObject, ObservableObject {
         }
     }
 
-    private func load(_ target: Int, autoplay: Bool, resume: Double? = nil) {
+    private func load(_ target: Int, autoplay: Bool, resume: Double? = nil, viaFile: Bool = false) {
         guard queue.indices.contains(target) else { return }
         index = target
         generation += 1
@@ -210,13 +212,14 @@ final class Player: NSObject, ObservableObject {
             guard let self else { return }
             do {
                 let item: AVPlayerItem
-                if let ready = self.preloaded, ready.id == track.id {
+                if !viaFile, let ready = self.preloaded, ready.id == track.id {
                     item = ready.item
                     self.fromPreload = true
                 } else {
-                    item = try await self.makeItem(track)
+                    item = try await self.makeItem(track, viaFile: viaFile)
                     self.fromPreload = false
                 }
+                self.streamed = !viaFile && !((item.asset as? AVURLAsset)?.url.isFileURL ?? true)
                 self.preloaded = nil
                 guard turn == self.generation else { return }
                 self.attach(item, track: track, resume: resume)
@@ -229,7 +232,7 @@ final class Player: NSObject, ObservableObject {
 
     /// Скачанный файл, кэш или поток. Версия без цензуры и зашифрованный файл сначала
     /// скачиваются целиком.
-    private func makeItem(_ track: Track) async throws -> AVPlayerItem {
+    private func makeItem(_ track: Track, viaFile: Bool = false) async throws -> AVPlayerItem {
         if let file = Downloads.shared.fileURL(for: track.id) {
             return AVPlayerItem(url: file)
         }
@@ -237,8 +240,9 @@ final class Player: NSObject, ObservableObject {
             return AVPlayerItem(url: file)
         }
         let source = try await TrackFiles.source(for: track, quality: Settings.streamQuality)
-        if !source.needsFile, let url = source.urls.first {
-            return AVPlayerItem(url: url)
+        if !source.needsFile, !viaFile, let url = source.urls.first {
+            let asset = AVURLAsset(url: url, options: ["AVURLAssetOutOfBandMIMETypeKey": source.mime])
+            return AVPlayerItem(asset: asset)
         }
         let file = try await TrackFiles.download(id: track.id, from: source, to: Storage.stream)
         Task.detached(priority: .utility) { TrackFiles.trimStreamCache() }
@@ -298,8 +302,15 @@ final class Player: NSObject, ObservableObject {
             load(index, autoplay: isPlaying)
             return
         }
-        failures += 1
         let text = Self.text(error)
+        Log.shared.add("плеер: \(queue.indices.contains(index) ? queue[index].id : "?") \(streamed ? "поток" : "файл"): \(text) | \(String(describing: error))")
+        // Поток не пошёл — качаем файл целиком и играем его.
+        if streamed {
+            streamed = false
+            load(index, autoplay: isPlaying, viaFile: true)
+            return
+        }
+        failures += 1
         if failures < 3, isPlaying, index + 1 < queue.count {
             errorText = "«\(queue[index].title)»: \(text)"
             load(index + 1, autoplay: true)
@@ -678,6 +689,18 @@ final class Player: NSObject, ObservableObject {
         MPMediaItemArtwork(boundsSize: image.size) { _ in image }
     }
 
+    /// Очередь для снимков экрана: ничего не играет и не грузится.
+    func showDemo(_ tracks: [Track], name: String) {
+        guard tracks.count > 2 else { return }
+        queue = tracks
+        index = 2
+        contextName = name
+        isPlaying = true
+        progress.duration = tracks[2].duration
+        progress.position = tracks[2].duration * 0.37
+        loadArtwork(tracks[2])
+    }
+
     // MARK: - Сохранение очереди между запусками
 
     private struct Saved: Codable {
@@ -686,6 +709,7 @@ final class Player: NSObject, ObservableObject {
     }
 
     private func saveQueue() {
+        if Demo.on { return }
         let saved = Saved(queue: queue, name: contextName)
         Task.detached(priority: .utility) { Storage.save(saved, "player.json") }
         savePosition()
@@ -698,6 +722,7 @@ final class Player: NSObject, ObservableObject {
     }
 
     private func restore() {
+        if Demo.on { return }
         guard let saved: Saved = Storage.load("player.json"), !saved.queue.isEmpty else { return }
         queue = saved.queue
         contextName = saved.name

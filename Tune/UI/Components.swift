@@ -1,5 +1,23 @@
 import SwiftUI
 
+enum Theme {
+    static let background = Color.black
+    static let surface = Color(white: 0.11)
+    static let raised = Color(white: 0.17)
+    static let dim = Color(white: 0.58)
+    static let tone = Color(white: 0.16)
+}
+
+extension Color {
+    /// Цвет из строки «#3678bc», как их присылает Яндекс.
+    init?(hex: String?) {
+        guard let hex else { return nil }
+        let digits = hex.hasPrefix("#") ? String(hex.dropFirst()) : hex
+        guard digits.count == 6, let value = UInt32(digits, radix: 16) else { return nil }
+        self.init(red: Double((value >> 16) & 0xFF) / 255, green: Double((value >> 8) & 0xFF) / 255, blue: Double(value & 0xFF) / 255)
+    }
+}
+
 /// Строка трека: обложка, название, исполнители, значки и меню.
 struct TrackRow: View {
     let track: Track
@@ -16,47 +34,46 @@ struct TrackRow: View {
 
     var body: some View {
         let playing = player.current?.id == track.id
-        HStack(spacing: 12) {
+        HStack(spacing: 4) {
             Button(action: action) {
                 HStack(spacing: 12) {
-                    CoverView(uri: track.cover, size: 48)
+                    CoverView(uri: track.cover, size: 50, corner: 6)
                         .overlay {
                             if playing {
                                 ZStack {
-                                    Color.black.opacity(0.55)
+                                    Color.black.opacity(0.6)
                                     Image(systemName: player.isPlaying ? "waveform" : "pause.fill")
+                                        .font(.system(size: 17, weight: .semibold))
                                         .foregroundStyle(Color.accentColor)
                                 }
                                 .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                             }
                         }
                     VStack(alignment: .leading, spacing: 3) {
+                        Text(track.fullTitle)
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundStyle(playing ? Color.accentColor : Color.white)
+                            .lineLimit(1)
                         HStack(spacing: 5) {
-                            Text(track.fullTitle)
-                                .font(.body)
-                                .foregroundStyle(playing ? Color.accentColor : Color.primary)
-                                .lineLimit(1)
                             if track.uncensored {
                                 Image(systemName: "lock.open.fill")
-                                    .font(.caption2)
+                                    .font(.system(size: 10))
                                     .foregroundStyle(Color.accentColor)
                             } else if track.explicit {
                                 Text("E")
-                                    .font(.system(size: 9, weight: .bold))
-                                    .padding(.horizontal, 3)
-                                    .padding(.vertical, 1)
-                                    .background(Color(white: 0.3), in: RoundedRectangle(cornerRadius: 2))
+                                    .font(.system(size: 9, weight: .heavy))
+                                    .foregroundStyle(.black)
+                                    .frame(width: 13, height: 13)
+                                    .background(Theme.dim, in: RoundedRectangle(cornerRadius: 3, style: .continuous))
                             }
-                        }
-                        HStack(spacing: 4) {
                             if downloads.has(track.id) {
                                 Image(systemName: "arrow.down.circle.fill")
-                                    .font(.caption2)
+                                    .font(.system(size: 11))
                                     .foregroundStyle(Color.accentColor)
                             }
                             Text(track.artists.isEmpty ? track.albumTitle : track.artists)
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
+                                .font(.system(size: 14))
+                                .foregroundStyle(Theme.dim)
                                 .lineLimit(1)
                         }
                     }
@@ -67,24 +84,24 @@ struct TrackRow: View {
             .buttonStyle(.plain)
 
             if let value = downloads.active[track.id] {
-                ProgressView(value: value)
-                    .progressViewStyle(.circular)
-                    .frame(width: 22, height: 22)
-            } else {
-                Text(timeText(track.duration))
-                    .font(.footnote.monospacedDigit())
-                    .foregroundStyle(.secondary)
+                ProgressRing(value: value)
+                    .frame(width: 20, height: 20)
+                    .padding(.horizontal, 6)
             }
             Menu {
                 menu
             } label: {
                 Image(systemName: "ellipsis")
-                    .frame(width: 32, height: 40)
+                    .font(.system(size: 17, weight: .semibold))
+                    .frame(width: 36, height: 44)
                     .contentShape(Rectangle())
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Theme.dim)
             }
         }
         .opacity(dimmed ? 0.4 : 1)
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+        .listRowInsets(EdgeInsets(top: 5, leading: 16, bottom: 5, trailing: 6))
         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
             if downloads.has(track.id) {
                 Button(role: .destructive) {
@@ -116,7 +133,7 @@ struct TrackRow: View {
         Button {
             session.toggleLike(track)
         } label: {
-            Label(liked ? "Убрать лайк" : "Нравится", systemImage: liked ? "heart.slash" : "heart")
+            Label(liked ? "Убрать из «Мне нравится»" : "Нравится", systemImage: liked ? "heart.slash" : "heart")
         }
         if downloads.has(track.id) {
             Button(role: .destructive) {
@@ -146,7 +163,7 @@ struct TrackRow: View {
             Button {
                 navigate(.album(album))
             } label: {
-                Label("К альбому", systemImage: "square.stack")
+                Label("Перейти к альбому", systemImage: "square.stack")
             }
         }
         ForEach(track.artistList.filter { !$0.id.isEmpty }.prefix(3), id: \.id) { artist in
@@ -159,25 +176,42 @@ struct TrackRow: View {
     }
 }
 
+/// Кольцо хода загрузки.
+struct ProgressRing: View {
+    let value: Double
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(Theme.raised, lineWidth: 2.5)
+            Circle()
+                .trim(from: 0, to: max(0.04, min(value, 1)))
+                .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+        }
+    }
+}
+
 /// Карточка в горизонтальной ленте: альбом, плейлист или исполнитель.
 struct CardView: View {
     let title: String
     let subtitle: String
     let cover: String?
     var round = false
-    var size: CGFloat = 140
+    var size: CGFloat = 148
 
     var body: some View {
-        VStack(alignment: round ? .center : .leading, spacing: 6) {
-            CoverView(uri: cover, size: size, corner: 10, round: round)
+        VStack(alignment: round ? .center : .leading, spacing: 4) {
+            CoverView(uri: cover, size: size, corner: 12, round: round)
+                .padding(.bottom, 4)
             Text(title)
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(.primary)
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(.white)
                 .lineLimit(1)
             if !subtitle.isEmpty {
                 Text(subtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.dim)
                     .lineLimit(1)
             }
         }
@@ -185,17 +219,86 @@ struct CardView: View {
     }
 }
 
-struct SectionTitle: View {
-    let text: String
+/// Карточка полки главной: ведёт на страницу или запускает волну.
+struct HomeCard: View {
+    let item: HomeItem
 
-    init(_ text: String) {
-        self.text = text
+    @EnvironmentObject private var player: Player
+    @Environment(\.navigate) private var navigate
+
+    var body: some View {
+        Button {
+            switch item {
+            case .album(let card): navigate(.album(card.id))
+            case .artist(let card): navigate(.artist(card.id, card.title))
+            case .playlist(let playlist): navigate(.playlist(playlist))
+            case .wave(let wave): player.playWave(seeds: wave.seeds, name: wave.title)
+            }
+        } label: {
+            switch item {
+            case .album(let card):
+                CardView(title: card.title, subtitle: card.subtitle, cover: card.cover)
+            case .artist(let card):
+                CardView(title: card.title, subtitle: "", cover: card.cover, round: true)
+            case .playlist(let playlist):
+                CardView(title: playlist.title, subtitle: playlist.count > 0 ? plural(playlist.count, "трек", "трека", "треков") : "", cover: playlist.cover)
+            case .wave(let wave):
+                WaveTile(wave: wave)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// Волна на полке: цветной круг с названием под ним.
+struct WaveTile: View {
+    let wave: WaveCard
+    var size: CGFloat = 148
+
+    var body: some View {
+        let color = Color(hex: wave.color) ?? Theme.raised
+        VStack(spacing: 8) {
+            ZStack {
+                Circle()
+                    .fill(RadialGradient(colors: [color, color.opacity(0.35)], center: .center, startRadius: 4, endRadius: size * 0.55))
+                Image(systemName: "play.fill")
+                    .font(.system(size: 26))
+                    .foregroundStyle(.white)
+            }
+            .frame(width: size, height: size)
+            Text(wave.title)
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(.white)
+                .multilineTextAlignment(.center)
+                .lineLimit(2)
+        }
+        .frame(width: size)
+    }
+}
+
+/// Полка: заголовок и горизонтальная лента карточек.
+struct Shelf<Content: View>: View {
+    let title: String
+    private let content: Content
+
+    init(_ title: String, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.content = content()
     }
 
     var body: some View {
-        Text(text)
-            .font(.title3.bold())
-            .frame(maxWidth: .infinity, alignment: .leading)
+        VStack(alignment: .leading, spacing: 14) {
+            Text(title)
+                .font(.system(size: 22, weight: .bold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 16)
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(alignment: .top, spacing: 14) {
+                    content
+                }
+                .padding(.horizontal, 16)
+            }
+        }
     }
 }
 
@@ -209,78 +312,159 @@ struct Placeholder: View {
     var body: some View {
         VStack(spacing: 10) {
             Image(systemName: icon)
-                .font(.system(size: 40))
-                .foregroundStyle(.secondary)
+                .font(.system(size: 38))
+                .foregroundStyle(Theme.dim)
             Text(title)
-                .font(.headline)
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(.white)
             if !text.isEmpty {
                 Text(text)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 15))
+                    .foregroundStyle(Theme.dim)
                     .multilineTextAlignment(.center)
             }
             if let retry {
-                Button("Повторить", action: retry)
-                    .buttonStyle(.bordered)
-                    .padding(.top, 4)
+                Button(action: retry) {
+                    Text("Повторить")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 10)
+                        .background(Theme.raised, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 6)
             }
         }
         .padding(32)
         .frame(maxWidth: .infinity)
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
     }
 }
 
-/// Полоса с текущим треком над панелью вкладок.
+struct Spinner: View {
+    var body: some View {
+        HStack {
+            Spacer()
+            ProgressView()
+                .tint(.white)
+            Spacer()
+        }
+        .padding(.vertical, 48)
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+    }
+}
+
+/// Плитка вместо обложки у «Мне нравится» и «Скачанного».
+struct SymbolCover: View {
+    let symbol: String
+    let colors: [Color]
+    let size: CGFloat
+    var corner: CGFloat = 12
+
+    static let likes = [Color(red: 1, green: 0.3, blue: 0.42), Color(red: 0.56, green: 0.2, blue: 0.95)]
+    static let downloads = [Color(red: 0.2, green: 0.62, blue: 1), Color(red: 0.12, green: 0.25, blue: 0.75)]
+
+    var body: some View {
+        LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing)
+            .frame(width: size, height: size)
+            .overlay {
+                Image(systemName: symbol)
+                    .font(.system(size: size * 0.42, weight: .semibold))
+                    .foregroundStyle(.white)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
+    }
+}
+
+/// Круглая кнопка со значком: скачать, перемешать.
+struct RoundButton: View {
+    let symbol: String
+    var active = false
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 19, weight: .semibold))
+                .foregroundStyle(active ? Color.accentColor : Color.white)
+                .frame(width: 50, height: 50)
+                .background(Color.white.opacity(0.12), in: Circle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// Плашка с текущим треком над панелью вкладок.
 struct MiniPlayer: View {
     @EnvironmentObject private var player: Player
+    @EnvironmentObject private var session: Session
     @Environment(\.openPlayer) private var openPlayer
+    @State private var tone = Theme.tone
 
     var body: some View {
         if let track = player.current {
-            VStack(spacing: 0) {
-                MiniProgress(progress: player.progress)
-                HStack(spacing: 12) {
-                    Button(action: openPlayer) {
-                        HStack(spacing: 12) {
-                            CoverView(uri: track.cover, size: 40, corner: 5)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(track.fullTitle)
-                                    .font(.subheadline.weight(.medium))
-                                    .lineLimit(1)
-                                Text(track.artists)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            }
-                            Spacer(minLength: 0)
+            let liked = session.isLiked(track.id)
+            HStack(spacing: 2) {
+                Button(action: openPlayer) {
+                    HStack(spacing: 10) {
+                        CoverView(uri: track.cover, size: 42, corner: 8)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(track.fullTitle)
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .lineLimit(1)
+                            Text(track.artists)
+                                .font(.system(size: 13))
+                                .foregroundStyle(.white.opacity(0.65))
+                                .lineLimit(1)
                         }
-                        .contentShape(Rectangle())
+                        Spacer(minLength: 0)
                     }
-                    .buttonStyle(.plain)
-
-                    Button(action: player.toggle) {
-                        ZStack {
-                            if player.isBuffering {
-                                ProgressView()
-                            } else {
-                                Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                                    .font(.title3)
-                            }
-                        }
-                        .frame(width: 40, height: 40)
-                    }
-                    .buttonStyle(.plain)
-                    Button(action: player.next) {
-                        Image(systemName: "forward.fill")
-                            .font(.title3)
-                            .frame(width: 40, height: 40)
-                    }
-                    .buttonStyle(.plain)
+                    .contentShape(Rectangle())
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 7)
+                .buttonStyle(.plain)
+
+                Button {
+                    session.toggleLike(track)
+                } label: {
+                    Image(systemName: liked ? "heart.fill" : "heart")
+                        .font(.system(size: 20))
+                        .foregroundStyle(liked ? Color.accentColor : Color.white)
+                        .frame(width: 42, height: 42)
+                }
+                .buttonStyle(.plain)
+                Button(action: player.toggle) {
+                    ZStack {
+                        if player.isBuffering {
+                            ProgressView()
+                                .tint(.white)
+                        } else {
+                            Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                                .font(.system(size: 22))
+                                .foregroundStyle(.white)
+                        }
+                    }
+                    .frame(width: 42, height: 42)
+                }
+                .buttonStyle(.plain)
             }
-            .background(.ultraThinMaterial)
+            .padding(.leading, 8)
+            .padding(.trailing, 4)
+            .padding(.vertical, 7)
+            .background(tone)
+            .overlay(alignment: .bottom) {
+                MiniProgress(progress: player.progress)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .padding(.horizontal, 8)
+            .padding(.bottom, 6)
+            .task(id: track.cover) {
+                let color = await ImageLoader.shared.tone(track.cover)
+                withAnimation(.easeInOut(duration: 0.3)) { tone = color ?? Theme.tone }
+            }
         }
     }
 }
@@ -292,10 +476,10 @@ private struct MiniProgress: View {
         GeometryReader { geometry in
             let share = progress.duration > 0 ? min(max(progress.position / progress.duration, 0), 1) : 0
             Rectangle()
-                .fill(Color.accentColor)
+                .fill(Color.white)
                 .frame(width: geometry.size.width * share)
         }
         .frame(height: 2)
-        .background(Color(white: 0.25))
+        .background(Color.white.opacity(0.18))
     }
 }

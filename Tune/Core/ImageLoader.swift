@@ -14,6 +14,7 @@ final class ImageLoader {
         return cache
     }()
     private let inflight = Inflight()
+    private let tones = NSCache<NSString, UIColor>()
     private let http: URLSession = {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 20
@@ -45,6 +46,43 @@ final class ImageLoader {
             memory.setObject(image, forKey: name as NSString, cost: Int(image.size.width * image.size.height * image.scale * image.scale * 4))
         }
         return image
+    }
+
+    /// Приглушённый цвет обложки: фон плеера и шапки альбома.
+    func cachedTone(_ uri: String?) -> Color? {
+        guard let uri, let color = tones.object(forKey: uri as NSString) else { return nil }
+        return Color(color)
+    }
+
+    func tone(_ uri: String?) async -> Color? {
+        guard let uri, !uri.isEmpty else { return nil }
+        if let color = tones.object(forKey: uri as NSString) { return Color(color) }
+        guard let image = await load(uri, side: 200), let color = Self.average(image) else { return nil }
+        tones.setObject(color, forKey: uri as NSString)
+        return Color(color)
+    }
+
+    /// Средний цвет картинки, приведённый к спокойной тёмной гамме.
+    private static func average(_ image: UIImage) -> UIColor? {
+        guard let source = image.cgImage else { return nil }
+        var pixel = [UInt8](repeating: 0, count: 4)
+        let drawn = pixel.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+                space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+            else { return false }
+            context.interpolationQuality = .medium
+            context.draw(source, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+            return true
+        }
+        guard drawn else { return nil }
+        let raw = UIColor(red: CGFloat(pixel[0]) / 255, green: CGFloat(pixel[1]) / 255, blue: CGFloat(pixel[2]) / 255, alpha: 1)
+        var hue: CGFloat = 0
+        var saturation: CGFloat = 0
+        var brightness: CGFloat = 0
+        var alpha: CGFloat = 0
+        guard raw.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha) else { return raw }
+        return UIColor(hue: hue, saturation: min(saturation * 1.15, 0.7), brightness: min(max(brightness, 0.3), 0.46), alpha: 1)
     }
 
     private func pinned(_ uri: String) -> URL {

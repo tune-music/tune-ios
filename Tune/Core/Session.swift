@@ -22,7 +22,8 @@ final class Session: ObservableObject {
     private var refreshing = false
 
     private init() {
-        token = TokenStore.token
+        token = Demo.on ? "demo" : TokenStore.token
+        if Demo.on { return }
         if let saved: Saved = Storage.load("session.json") {
             profile = saved.profile
             likedIds = saved.liked
@@ -109,6 +110,7 @@ final class Session: ObservableObject {
     }
 
     private func save() {
+        if Demo.on { return }
         let saved = Saved(profile: profile, liked: likedIds, playlists: playlists)
         Task.detached(priority: .utility) { Storage.save(saved, "session.json") }
     }
