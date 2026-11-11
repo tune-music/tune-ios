@@ -141,29 +141,39 @@ struct HomeScreen: View {
         .padding(.horizontal, 16)
     }
 
-    /// Волны по настроению и занятию: лента цветных плашек.
+    /// Волны по настроению и занятию: лента цветных капсул.
     private var stations: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            LazyHStack(spacing: 10) {
+            HStack(spacing: 8) {
                 ForEach(model.page.waves) { wave in
+                    let color = Color(hex: wave.color) ?? Theme.raised
                     Button {
                         player.playWave(seeds: wave.seeds, name: wave.title)
                     } label: {
-                        Text(wave.title)
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .lineLimit(2)
-                            .multilineTextAlignment(.leading)
-                            .frame(width: 136, height: 44, alignment: .leading)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 10)
-                            .glass(in: RoundedRectangle(cornerRadius: 18, style: .continuous), tint: (Color(hex: wave.color) ?? Theme.raised).opacity(0.55), interactive: true)
+                        HStack(spacing: 7) {
+                            Image(systemName: "dot.radiowaves.left.and.right")
+                                .font(.system(size: 12, weight: .bold))
+                            Text(wave.title)
+                                .font(.system(size: 15, weight: .semibold))
+                                .lineLimit(1)
+                        }
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 15)
+                        .frame(height: 40)
+                        .background {
+                            Capsule()
+                                .fill(LinearGradient(colors: [color, color.opacity(0.6)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                                .overlay(Capsule().fill(Color.black.opacity(0.22)))
+                        }
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(PressStyle())
                 }
             }
             .padding(.horizontal, 16)
+            // Запас по высоте: кнопка под пальцем сжимается и не должна обрезаться краем ленты.
+            .padding(.vertical, 6)
         }
+        .padding(.vertical, -6)
     }
 }
 

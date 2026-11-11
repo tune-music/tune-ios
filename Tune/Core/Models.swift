@@ -152,6 +152,13 @@ struct AlbumPage {
     var card: Card
     var year: Int?
     var tracks: [Track]
+    var artist: ArtistRef?
+    var label = ""
+    var genre = ""
+    /// single, compilation, podcast; у обычного альбома пусто.
+    var kind = ""
+    /// Сколько треков на каждом диске.
+    var disks: [Int] = []
 }
 
 struct ArtistPage {
@@ -163,6 +170,20 @@ struct ArtistPage {
     /// Сборники и альбомы с участием исполнителя.
     var also: [Card] = []
     var similar: [Card] = []
+    var singles: [Card] = []
+    var playlists: [Playlist] = []
+    /// Слушателей за месяц.
+    var listeners: Int?
+    var about = ""
+}
+
+/// «1,2 млн», «34 тыс.»: число слушателей коротко.
+func shortCount(_ value: Int) -> String {
+    if value >= 1_000_000 {
+        return String(format: "%.1f млн", Double(value) / 1_000_000).replacingOccurrences(of: ".0", with: "").replacingOccurrences(of: ".", with: ",")
+    }
+    if value >= 1_000 { return "\(value / 1_000) тыс." }
+    return "\(value)"
 }
 
 /// Первое, что нашёл Яндекс: показывается крупной карточкой.

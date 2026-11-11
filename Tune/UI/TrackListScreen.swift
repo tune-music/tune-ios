@@ -17,6 +17,10 @@ final class TrackListModel: ObservableObject {
     @Published var cover: String?
     @Published var loading = false
     @Published var error: String?
+    /// Подробности альбома: исполнитель, лейбл, диски.
+    @Published var album: AlbumPage?
+    /// Другие альбомы того же исполнителя.
+    @Published var more: [Card] = []
     private var loaded = false
 
     func load(_ kind: ListKind, force: Bool = false) async {
@@ -42,6 +46,13 @@ final class TrackListModel: ObservableObject {
                 subtitle = page.card.subtitle
                 cover = page.card.cover
                 tracks = page.tracks
+                album = page
+                if more.isEmpty, let artist = page.artist, !artist.id.isEmpty {
+                    Task { [weak self] in
+                        guard let info = try? await API.shared.artist(id: artist.id) else { return }
+                        self?.more = (info.albums + info.singles).filter { $0.id != id }
+                    }
+                }
             case .artist(let id, let name):
                 title = name
                 tracks = try await API.shared.artistTracks(id: id)
@@ -94,6 +105,7 @@ struct TrackListScreen: View {
     @EnvironmentObject private var downloads: Downloads
     @EnvironmentObject private var session: Session
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.navigate) private var navigate
     @State private var filter = ""
     @State private var searching = Demo.screen == "filter"
     @FocusState private var focused: Bool
@@ -146,7 +158,13 @@ struct TrackListScreen: View {
 
     private var kindName: String {
         switch kind {
-        case .album: return "Альбом"
+        case .album:
+            switch model.album?.kind {
+            case "single": return "Сингл"
+            case "compilation": return "Сборник"
+            case "podcast": return "Подкаст"
+            default: return "Альбом"
+            }
         case .artist: return "Все треки"
         case .history: return "Вы слушали"
         default: return "Плейлист"
@@ -194,10 +212,21 @@ struct TrackListScreen: View {
                     empty
                 }
                 ForEach(Array(tracks.enumerated()), id: \.offset) { index, track in
-                    TrackRow(track: track, onRemove: own ? { remove(track) } : nil) {
+                    if let disk = diskStart(index) {
+                        Text("Диск \(disk)")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(Theme.dim)
+                            .listRowBackground(Color.clear)
+                            .listRowSeparator(.hidden)
+                            .listRowInsets(EdgeInsets(top: 16, leading: 16, bottom: 4, trailing: 16))
+                    }
+                    TrackRow(track: track, number: number(index), onRemove: own ? { remove(track) } : nil) {
                         player.play(tracks, at: index, context: context)
                     }
                     .id(index)
+                }
+                if let album = model.album, filter.isEmpty, !tracks.isEmpty {
+                    albumFooter(album)
                 }
             }
             .listStyle(.plain)
@@ -283,6 +312,62 @@ struct TrackListScreen: View {
                 }
             }
             Button("Отмена", role: .cancel) {}
+        }
+    }
+
+    // MARK: - Альбом
+
+    private var isAlbum: Bool {
+        if case .album = kind { return true }
+        return false
+    }
+
+    /// Номер трека на своём диске. Только в альбоме и без фильтра: иначе слева обложка.
+    private func number(_ index: Int) -> Int? {
+        guard isAlbum, filter.isEmpty else { return nil }
+        var rest = index
+        for count in model.album?.disks ?? [] {
+            if rest < count { return rest + 1 }
+            rest -= count
+        }
+        return index + 1
+    }
+
+    /// Номер диска, если с этого трека он начинается. У альбома на одном диске заголовков нет.
+    private func diskStart(_ index: Int) -> Int? {
+        guard isAlbum, filter.isEmpty, let disks = model.album?.disks, disks.count > 1 else { return nil }
+        var first = 0
+        for (disk, count) in disks.enumerated() {
+            if index == first { return disk + 1 }
+            first += count
+        }
+        return nil
+    }
+
+    /// Под треками: год, лейбл, длительность и другие альбомы исполнителя.
+    @ViewBuilder private func albumFooter(_ album: AlbumPage) -> some View {
+        let minutes = Int(model.tracks.reduce(0) { $0 + $1.duration } / 60)
+        let facts = [album.year.map { "\($0)" } ?? "", album.label].filter { !$0.isEmpty }.joined(separator: " · ")
+        VStack(alignment: .leading, spacing: 4) {
+            if !facts.isEmpty {
+                Text(facts)
+            }
+            Text("\(plural(model.tracks.count, "трек", "трека", "треков")) · \(minutes >= 60 ? "\(minutes / 60) ч \(minutes % 60) мин" : "\(minutes) мин")")
+        }
+        .font(.system(size: 13))
+        .foregroundStyle(Theme.dim)
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+        .listRowInsets(EdgeInsets(top: 14, leading: 16, bottom: 6, trailing: 16))
+        if !model.more.isEmpty {
+            Shelf(album.artist.map { "Ещё от \($0.name)" } ?? "Ещё от исполнителя") {
+                ForEach(model.more) { card in
+                    HomeCard(item: .album(card))
+                }
+            }
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets(top: 18, leading: 0, bottom: 12, trailing: 0))
         }
     }
 
@@ -423,10 +508,15 @@ struct TrackListScreen: View {
                 .multilineTextAlignment(.center)
                 .lineLimit(3)
             if !model.subtitle.isEmpty {
-                Text(model.subtitle)
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.75))
-                    .multilineTextAlignment(.center)
+                Button {
+                    if let artist = model.album?.artist, !artist.id.isEmpty { navigate(.artist(artist.id, artist.name)) }
+                } label: {
+                    Text(model.subtitle)
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.75))
+                        .multilineTextAlignment(.center)
+                }
+                .buttonStyle(.plain)
             }
             if count > 0 {
                 Text(kind == .downloads ? "\(plural(count, "трек", "трека", "треков")) · \(Storage.sizeText(downloads.totalBytes))" : plural(count, "трек", "трека", "треков"))
@@ -466,6 +556,7 @@ struct ArtistScreen: View {
     @EnvironmentObject private var session: Session
     @Environment(\.navigate) private var navigate
     @State private var page: ArtistPage?
+    @State private var expanded = false
     @State private var error: String?
     @State private var tone = Theme.tone
 
@@ -484,6 +575,11 @@ struct ArtistScreen: View {
                         .font(.system(size: 30, weight: .bold))
                         .foregroundStyle(.white)
                         .multilineTextAlignment(.center)
+                    if let listeners = page.listeners, listeners > 0 {
+                        Text("\(shortCount(listeners)) слушателей за месяц")
+                            .font(.system(size: 14))
+                            .foregroundStyle(.white.opacity(0.6))
+                    }
                     HStack(spacing: 14) {
                         RoundButton(symbol: session.likedArtists.contains(id) ? "heart.fill" : "heart", active: session.likedArtists.contains(id)) {
                             session.toggleArtist(id)
@@ -514,11 +610,20 @@ struct ArtistScreen: View {
                 if !page.albums.isEmpty {
                     shelf("Альбомы", page.albums.map { .album($0) })
                 }
+                if !page.singles.isEmpty {
+                    shelf("Синглы и EP", page.singles.map { .album($0) })
+                }
                 if !page.also.isEmpty {
                     shelf("Сборники и участие", page.also.map { .album($0) })
                 }
+                if !page.playlists.isEmpty {
+                    shelf("Плейлисты", page.playlists.map { .playlist($0) })
+                }
                 if !page.similar.isEmpty {
                     shelf("Похожие исполнители", page.similar.map { .artist($0) })
+                }
+                if !page.about.isEmpty {
+                    about(page.about)
                 }
             } else if let error {
                 Placeholder(icon: "wifi.slash", title: "Не удалось загрузить", text: error) {
@@ -555,6 +660,32 @@ struct ArtistScreen: View {
             let color = await ImageLoader.shared.tone(page?.cover)
             withAnimation(.easeInOut(duration: 0.3)) { tone = color ?? Theme.tone }
         }
+    }
+
+    /// «Об исполнителе»: три строки, по нажатию — целиком.
+    private func about(_ text: String) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Об исполнителе")
+                .font(.system(size: 22, weight: .bold))
+                .foregroundStyle(.white)
+            Text(text)
+                .font(.system(size: 15))
+                .foregroundStyle(.white.opacity(0.75))
+                .lineLimit(expanded ? nil : 3)
+            if !expanded {
+                Text("Читать дальше")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Theme.accent)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            withAnimation(.easeInOut(duration: 0.2)) { expanded.toggle() }
+        }
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+        .listRowInsets(EdgeInsets(top: 20, leading: 16, bottom: 16, trailing: 16))
     }
 
     private func shelf(_ title: String, _ items: [HomeItem]) -> some View {

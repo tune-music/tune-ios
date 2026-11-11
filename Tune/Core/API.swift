@@ -287,7 +287,12 @@ final class API {
         if Demo.on {
             let all = Demo.data.albums + Demo.data.releases
             guard let card = all.first(where: { $0.id == id }) ?? all.first else { throw APIError.server("Нет демо-данных") }
-            return AlbumPage(card: card, year: 2024, tracks: Demo.data.tracks)
+            var page = AlbumPage(card: card, year: 2024, tracks: Demo.data.tracks)
+            page.artist = Demo.data.artists.first.map { ArtistRef(id: $0.id, name: $0.title) }
+            page.label = "Warner Records"
+            page.genre = "rock"
+            page.disks = [8, max(1, Demo.data.tracks.count - 8)]
+            return page
         }
         let value = result(try await get("albums/\(id)/with-tracks"))
         if value["error"].string == "not-found" { throw APIError.server("Альбом не найден") }
@@ -312,7 +317,16 @@ final class API {
             disks = rebuilt
         }
         guard let card = Self.albumCard(value) else { throw APIError.server("Яндекс не прислал альбом") }
-        return AlbumPage(card: card, year: value["year"].int, tracks: disks.flatMap { $0 })
+        var page = AlbumPage(card: card, year: value["year"].int, tracks: disks.flatMap { $0 })
+        let artist = value["artists"][0]
+        if let artistId = artist["id"].idText, let name = artist["name"].string {
+            page.artist = ArtistRef(id: artistId, name: name)
+        }
+        page.label = value["labels"][0]["name"].string ?? value["labels"][0].string ?? ""
+        page.genre = value["genre"].string ?? ""
+        page.kind = value["type"].string ?? ""
+        page.disks = disks.map(\.count).filter { $0 > 0 }
+        return page
     }
 
     func albums(ids: [String]) async throws -> [Card] {
@@ -324,13 +338,24 @@ final class API {
     func artist(id: String) async throws -> ArtistPage {
         if Demo.on {
             guard let card = Demo.data.artists.first(where: { $0.id == id }) ?? Demo.data.artists.first else { throw APIError.server("Нет демо-данных") }
-            return ArtistPage(id: card.id, name: card.title, cover: card.cover, popular: Demo.data.tracks, albums: Demo.data.albums, similar: Demo.data.artists)
+            var page = ArtistPage(id: card.id, name: card.title, cover: card.cover, popular: Demo.data.tracks, albums: Demo.data.albums, similar: Demo.data.artists)
+            page.singles = Demo.data.releases
+            page.playlists = Demo.data.playlists
+            page.listeners = 12_400_000
+            page.about = "Британская рок-группа, добившаяся широчайшей известности в середине 1970-х годов, и одна из наиболее успешных групп в истории рок-музыки."
+            return page
         }
         let value = result(try await get("artists/\(id)/brief-info"))
         let artist = value["artist"]
         guard let name = artist["name"].string, artist["error"].string != "not-found" else { throw APIError.server("Исполнитель не найден") }
         var popular = value["popularTracks"].array.compactMap(Self.parseTrack)
-        var albums = value["albums"].array.compactMap(Self.albumCard)
+        let releases = value["albums"].array
+        var albums = releases.filter { $0["type"].string != "single" }.compactMap(Self.albumCard)
+        let singles = releases.filter { $0["type"].string == "single" }.compactMap(Self.albumCard)
+        let playlists = value["playlists"].array.compactMap { item -> Playlist? in
+            guard let owner = item["uid"].idText ?? item["owner"]["uid"].idText else { return nil }
+            return Self.parsePlaylist(item, owner: owner)
+        }
         // Добавленные в профиль треки — в начало популярных, альбомы — в начало альбомов.
         let inserts = Uncensor.shared.inserts(artist: id)
         if let extra = try? await tracks(ids: inserts.tracks) {
@@ -339,9 +364,14 @@ final class API {
         if let extra = try? await self.albums(ids: inserts.albums) {
             albums.insert(contentsOf: extra.filter { card in !albums.contains { $0.id == card.id } }, at: 0)
         }
-        return ArtistPage(
+        var page = ArtistPage(
             id: id, name: name, cover: artist["cover"]["uri"].string ?? artist["ogImage"].string, popular: popular, albums: albums,
             also: value["alsoAlbums"].array.compactMap(Self.albumCard), similar: value["similarArtists"].array.compactMap(Self.artistCard))
+        page.singles = singles
+        page.playlists = playlists
+        page.listeners = value["stats"]["lastMonthListeners"].int
+        page.about = artist["description"]["text"].string ?? ""
+        return page
     }
 
     func artistTracks(id: String) async throws -> [Track] {

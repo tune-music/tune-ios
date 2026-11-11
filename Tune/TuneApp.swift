@@ -39,11 +39,15 @@ struct TuneApp: App {
                 .environmentObject(downloads)
                 .preferredColorScheme(.dark)
                 .tint(.white)
+                .environment(\.locale, Locale(identifier: "ru_RU"))
                 .task { await Updater.shared.check() }
                 .task {
                     await session.refresh()
                     if Demo.on {
                         player.showDemo(Demo.data.tracks, name: "Мне нравится")
+                        if ["player", "queue", "lyrics"].contains(Demo.screen) {
+                            PlayerWindow.shared.show(animated: false)
+                        }
                     }
                 }
         }
@@ -99,7 +103,7 @@ struct RootView: View {
     @EnvironmentObject private var session: Session
     @EnvironmentObject private var player: Player
     @StateObject private var router = Router.shared
-    @State private var showPlayer = ["player", "queue", "lyrics"].contains(Demo.screen)
+    @ObservedObject private var playerWindow = PlayerWindow.shared
     @State private var picking: Track? = Demo.screen == "picker" ? Demo.data.tracks.first : nil
     @Environment(\.scenePhase) private var phase
 
@@ -121,11 +125,9 @@ struct RootView: View {
         }
     }
 
-    private static let rise = Animation.spring(response: 0.36, dampingFraction: 1)
-    private static let fall = Animation.easeInOut(duration: 0.26)
-
+    /// Пока открыт плеер, ошибку показывает его окно: оно лежит поверх этого.
     private var errorShown: Binding<Bool> {
-        Binding(get: { player.errorText != nil }, set: { if !$0 { player.errorText = nil } })
+        Binding(get: { player.errorText != nil && !playerWindow.visible }, set: { if !$0 { player.errorText = nil } })
     }
 
     private var tabs: some View {
@@ -141,27 +143,14 @@ struct RootView: View {
                 .tag(2)
         }
         .tint(Theme.accent)
-        // Пока открыт плеер, вкладки под ним не принимают нажатия: иначе кнопка «назад»
-        // страницы срабатывала вместо кнопки плеера над ней.
-        .allowsHitTesting(!showPlayer)
         .environmentObject(router)
-        .environment(\.openPlayer, { withAnimation(Self.rise) { showPlayer = true } })
+        .environment(\.openPlayer, { PlayerWindow.shared.show() })
         .environment(\.pickPlaylist, { picking = $0 })
         .overlay(alignment: .top) {
             ToastView()
         }
         .sheet(item: $picking) { track in
             PlaylistPicker(track: track)
-        }
-        .overlay {
-            if showPlayer {
-                PlayerScreen()
-                    .environment(\.closePlayer, { withAnimation(Self.fall) { showPlayer = false } })
-                    .environmentObject(router)
-                    // Сдвиг на всю высоту экрана: фон плеера выходит за безопасную область,
-                    // и при сдвиге только на высоту содержимого его край оставался на виду.
-                    .transition(.offset(y: UIScreen.main.bounds.height + 60))
-            }
         }
     }
 }

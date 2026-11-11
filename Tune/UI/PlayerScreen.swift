@@ -9,27 +9,21 @@ final class CoverSwipe: ObservableObject {
     @Published var forward = true
 }
 
-/// Полноэкранный плеер. Лежит поверх вкладок, а не в отдельном окне: при смахивании
-/// под ним видно приложение.
-///
-/// Здесь только жесты и сдвиг под пальцем. Содержимое вынесено в PlayerBody без входных
-/// данных, поэтому при перетаскивании оно не пересчитывается на каждом кадре.
+/// Полноэкранный плеер. Показывается в собственном окне (PlayerWindow), которое и двигается
+/// под пальцем: здесь только жесты, содержимое при перетаскивании не пересчитывается.
 struct PlayerScreen: View {
-    @Environment(\.closePlayer) private var close
     @StateObject private var swipe = CoverSwipe()
-    @State private var drag: CGFloat = 0
     @State private var axis: Axis?
 
     var body: some View {
         PlayerBody()
             .environmentObject(swipe)
             .background {
-                PlayerBackdrop(rounded: drag > 0)
+                PlayerBackdrop()
             }
             .overlay(alignment: .top) {
                 ToastView()
             }
-            .offset(y: drag)
             .gesture(
                 // Вниз — закрыть плеер, в стороны — переключить трек. Направление жеста
                 // определяется в его начале и до конца не меняется.
@@ -38,7 +32,7 @@ struct PlayerScreen: View {
                         let move = value.translation
                         if axis == nil { axis = abs(move.width) > abs(move.height) ? .horizontal : .vertical }
                         if axis == .vertical {
-                            drag = max(0, move.height)
+                            PlayerWindow.shared.drag(move.height)
                         } else {
                             swipe.x = move.width
                             let ahead = move.width < 0
@@ -54,10 +48,8 @@ struct PlayerScreen: View {
                                 if swipe.forward { Player.shared.next() } else { Player.shared.previous() }
                             }
                             withAnimation(.easeOut(duration: 0.26)) { swipe.x = 0 }
-                        } else if value.translation.height > 140 || value.predictedEndTranslation.height > 420 {
-                            close()
                         } else {
-                            withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { drag = 0 }
+                            PlayerWindow.shared.release(predicted: value.predictedEndTranslation.height)
                         }
                     }
             )
@@ -66,7 +58,6 @@ struct PlayerScreen: View {
 
 /// Фон плеера: цвет обложки, уходящий в чёрный.
 private struct PlayerBackdrop: View {
-    let rounded: Bool
     @EnvironmentObject private var player: Player
     @State private var tone = Theme.tone
 
@@ -75,8 +66,6 @@ private struct PlayerBackdrop: View {
             Color(white: 0.05)
             LinearGradient(colors: [tone, Color(white: 0.05)], startPoint: .top, endPoint: .bottom)
         }
-        // Скругление появляется, когда плеер тянут вниз: видно, что это отдельный лист.
-        .clipShape(RoundedRectangle(cornerRadius: rounded ? 38 : 0, style: .continuous))
         .ignoresSafeArea()
         .task(id: player.current?.cover) {
             let color = await ImageLoader.shared.tone(player.current?.cover)
@@ -163,6 +152,11 @@ private struct PlayerBody: View {
         .onChange(of: player.current == nil) { empty in
             if empty { close() }
         }
+        .alert("Tune", isPresented: Binding(get: { player.errorText != nil }, set: { if !$0 { player.errorText = nil } })) {
+            Button("Понятно", role: .cancel) {}
+        } message: {
+            Text(player.errorText ?? "")
+        }
     }
 
     private var top: some View {
@@ -173,7 +167,7 @@ private struct PlayerBody: View {
                 Image(systemName: "chevron.down")
                     .font(.system(size: 18, weight: .semibold))
                     .frame(width: 44, height: 44)
-                    .background(Color.white.opacity(0.14), in: Circle())
+                    .glass(in: Circle(), interactive: true)
                     .contentShape(Circle())
             }
             .buttonStyle(.plain)
@@ -202,11 +196,11 @@ private struct PlayerBody: View {
                 Image(systemName: "ellipsis")
                     .font(.system(size: 18, weight: .semibold))
                     .frame(width: 44, height: 44)
-                    // Обычная подложка вместо стекла: стеклянная кнопка после открытия меню
-                    // отставала от плеера, когда его смахивали вниз.
-                    .background(Color.white.opacity(0.14), in: Circle())
                     .contentShape(Circle())
             }
+            // Стекло на самом меню, а не на значке: при удержании подсвечивается круг, а не квадрат.
+            .glass(in: Circle(), interactive: true)
+            .clipShape(Circle())
         }
         .foregroundStyle(.white)
     }
@@ -582,12 +576,16 @@ private struct LyricsPane: View {
         let timed = lines.contains { $0.time != nil }
         return ScrollViewReader { proxy in
             ScrollView(showsIndicators: false) {
-                LazyVStack(alignment: .leading, spacing: 16) {
+                LazyVStack(spacing: 18) {
                     ForEach(lines) { line in
+                        let on = !timed || line.id == current
                         Text(line.text.isEmpty ? "♪" : line.text)
                             .font(.system(size: 24, weight: .bold))
-                            .foregroundStyle(!timed || line.id == current ? Color.white : Color.white.opacity(0.35))
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .multilineTextAlignment(.center)
+                            .foregroundStyle(Color.white.opacity(on ? 1 : 0.32))
+                            .scaleEffect(on ? 1 : 0.9)
+                            .frame(maxWidth: .infinity)
+                            .animation(.spring(response: 0.45, dampingFraction: 0.8), value: on)
                             .contentShape(Rectangle())
                             .onTapGesture {
                                 if let time = line.time { Player.shared.seek(to: time) }
@@ -595,17 +593,21 @@ private struct LyricsPane: View {
                             .id(line.id)
                     }
                 }
-                .padding(.vertical, 28)
+                // Запас сверху и снизу: первая и последняя строки тоже встают по центру.
+                .padding(.vertical, 130)
             }
             // Строки растворяются у верхнего и нижнего края.
             .mask {
                 LinearGradient(
-                    stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.08), .init(color: .black, location: 0.92), .init(color: .clear, location: 1)],
+                    stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.14), .init(color: .black, location: 0.86), .init(color: .clear, location: 1)],
                     startPoint: .top, endPoint: .bottom)
+            }
+            .onAppear {
+                if let current { proxy.scrollTo(current, anchor: .center) }
             }
             .onChange(of: current) { line in
                 guard let line else { return }
-                withAnimation(.easeInOut(duration: 0.3)) {
+                withAnimation(.spring(response: 0.55, dampingFraction: 0.85)) {
                     proxy.scrollTo(line, anchor: .center)
                 }
             }

@@ -201,10 +201,12 @@ struct TrackMenu: View {
 /// Строка трека: обложка, название, исполнители, значки и меню.
 struct TrackRow: View {
     let track: Track
+    /// Номер в альбоме: показывается вместо обложки, она у всех треков одна.
+    var number: Int?
     var onRemove: (() -> Void)?
     let action: () -> Void
 
-    @ObservedObject private var now = Player.shared.now
+    @ObservedObject fileprivate var now = Player.shared.now
     private var player: Player { Player.shared }
     @EnvironmentObject private var downloads: Downloads
     @EnvironmentObject private var session: Session
@@ -220,18 +222,7 @@ struct TrackRow: View {
         HStack(spacing: 4) {
             Button(action: action) {
                 HStack(spacing: 12) {
-                    CoverView(uri: track.cover, size: 50, corner: 8)
-                        .overlay {
-                            if playing {
-                                ZStack {
-                                    Color.black.opacity(0.6)
-                                    Image(systemName: now.playing ? "waveform" : "pause.fill")
-                                        .font(.system(size: 17, weight: .semibold))
-                                        .foregroundStyle(Theme.accent)
-                                }
-                                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                            }
-                        }
+                    lead(playing)
                     VStack(alignment: .leading, spacing: 3) {
                         Text(track.fullTitle)
                             .font(.system(size: 16, weight: .medium))
@@ -276,6 +267,12 @@ struct TrackRow: View {
                     .foregroundStyle(Theme.accent)
                     .padding(.horizontal, 4)
             }
+            if number != nil {
+                Text(timeText(track.duration))
+                    .font(.system(size: 13).monospacedDigit())
+                    .foregroundStyle(Theme.dim)
+                    .padding(.leading, 4)
+            }
             Menu {
                 TrackMenu(track: track, onRemove: onRemove, navigate: navigate, pick: pickPlaylist)
             } label: {
@@ -313,6 +310,39 @@ struct TrackRow: View {
                 Label("Далее", systemImage: "text.insert")
             }
             .tint(.indigo)
+        }
+    }
+}
+
+extension TrackRow {
+    /// Слева обложка, а в альбоме — номер трека. У играющего трека вместо них значок.
+    @ViewBuilder
+    fileprivate func lead(_ playing: Bool) -> some View {
+        let mark = Image(systemName: now.playing ? "waveform" : "pause.fill")
+            .font(.system(size: 17, weight: .semibold))
+            .foregroundStyle(Theme.accent)
+        if let number {
+            ZStack {
+                if playing {
+                    mark
+                } else {
+                    Text("\(number)")
+                        .font(.system(size: 16, weight: .medium).monospacedDigit())
+                        .foregroundStyle(Theme.dim)
+                }
+            }
+            .frame(width: 30, height: 44)
+        } else {
+            CoverView(uri: track.cover, size: 50, corner: 8)
+                .overlay {
+                    if playing {
+                        ZStack {
+                            Color.black.opacity(0.6)
+                            mark
+                        }
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    }
+                }
         }
     }
 }

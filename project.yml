@@ -4,6 +4,7 @@ options:
   deploymentTarget:
     iOS: "16.0"
   createIntermediateGroups: true
+  developmentLanguage: ru
 settings:
   base:
     SWIFT_VERSION: "5.0"
