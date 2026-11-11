@@ -32,7 +32,7 @@ struct PlayerScreen: View {
                     .scaleEffect(player.isPlaying ? 1 : 0.9)
                     .animation(.spring(response: 0.45, dampingFraction: 0.75), value: player.isPlaying)
                     .offset(x: slide * 0.7)
-                    .opacity(1 - min(abs(slide) / 320, 0.5))
+                    .opacity(1 - min(Double(abs(slide)) / 320.0, 0.5))
                 Spacer(minLength: 10)
                 if let track = player.current {
                     titles(track)
