@@ -79,22 +79,41 @@ private struct PlayerCover: View {
     let side: CGFloat
     @EnvironmentObject private var player: Player
     @EnvironmentObject private var swipe: CoverSwipe
+    /// Обложка, которая сейчас на экране: новая подставляется, когда старая уже уехала.
+    @State private var shown: String?
+    /// Сдвиг при смене трека: старая обложка уезжает, новая приезжает с другой стороны.
+    @State private var slide: CGFloat = 0
+
+    private var reach: CGFloat { side + 60 }
 
     var body: some View {
-        ZStack {
-            CoverView(uri: player.current?.cover, size: side, corner: 22)
-                .offset(x: swipe.x * 0.7)
-                .opacity(1 - min(Double(abs(swipe.x)) / 320.0, 0.5))
-                .id(player.current?.id)
-                .transition(.asymmetric(
-                    insertion: .move(edge: player.movedBack ? .leading : .trailing).combined(with: .opacity),
-                    removal: .move(edge: player.movedBack ? .trailing : .leading).combined(with: .opacity)))
+        CoverView(uri: shown ?? player.current?.cover, size: side, corner: 22)
+            .offset(x: swipe.x * 0.7 + slide)
+            .opacity(1 - min(Double(abs(swipe.x)) / 320.0, 0.5) - min(Double(abs(slide) / reach), 1))
+            .shadow(color: .black.opacity(0.4), radius: 22, y: 14)
+            .scaleEffect(player.isPlaying ? 1 : 0.9)
+            .animation(.spring(response: 0.45, dampingFraction: 0.75), value: player.isPlaying)
+            .onAppear { shown = player.current?.cover }
+            .onChange(of: player.current?.id) { _ in change() }
+    }
+
+    /// Смена трека: вперёд — обложки едут влево, назад — вправо.
+    private func change() {
+        let back = player.movedBack
+        let distance = reach
+        withAnimation(.easeIn(duration: 0.13)) { slide = back ? distance : -distance }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.13) {
+            var still = Transaction()
+            still.disablesAnimations = true
+            withTransaction(still) {
+                shown = player.current?.cover
+                slide = back ? -distance : distance
+            }
+            // Следующим шагом: иначе скачок на другую сторону сольётся с въездом в одну анимацию.
+            DispatchQueue.main.async {
+                withAnimation(.easeOut(duration: 0.22)) { slide = 0 }
+            }
         }
-        // Анимируется только сама обложка: смена трека не тянет за собой анимацию всего экрана.
-        .animation(.easeOut(duration: 0.26), value: player.current?.id)
-        .shadow(color: .black.opacity(0.4), radius: 22, y: 14)
-        .scaleEffect(player.isPlaying ? 1 : 0.9)
-        .animation(.spring(response: 0.45, dampingFraction: 0.75), value: player.isPlaying)
     }
 }
 
