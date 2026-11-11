@@ -228,6 +228,7 @@ struct TrackListScreen: View {
             }
         case .artist: return "Все треки"
         case .history: return "Вы слушали"
+        case .downloads: return "На устройстве"
         case .disliked: return "Скрыто из рекомендаций"
         default: return "Плейлист"
         }
