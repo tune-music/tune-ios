@@ -1,4 +1,5 @@
 import Foundation
+import Network
 
 /// Скачанные треки. Файлы лежат в Application Support/Tune/Tracks и играют без сети.
 @MainActor
@@ -12,24 +13,65 @@ final class Downloads: ObservableObject {
         var date: Date
     }
 
+    /// То, что переживает перезапуск: недокачанное и то, что скачать не вышло.
+    private struct Pending: Codable {
+        var queue: [Track]
+        var failed: [Track]
+    }
+
     @Published private(set) var entries: [Entry] = []
     /// Ход загрузок: номер трека → доля от 0 до 1. Ждущие своей очереди — 0.
     @Published private(set) var active: [String: Double] = [:]
-    @Published private(set) var failed: Set<String> = []
+    /// Очередь по порядку: и те, что качаются сейчас, и ждущие.
+    @Published private(set) var queue: [Track] = []
+    /// Треки, которые скачать не удалось: их можно повторить.
+    @Published private(set) var failed: [Track] = []
+    @Published private(set) var paused = false
+    /// Сеть платная (сотовая или раздача с телефона).
+    @Published private(set) var cellular = false
 
     private var files: [String: String] = [:]
-    private var pending: [Track] = []
-    private var running = 0
+    private var running: Set<String> = []
     private let parallel = 2
+    private let monitor = NWPathMonitor()
 
     var tracks: [Track] { entries.map(\.track) }
     var totalBytes: Int64 { entries.reduce(0) { $0 + $1.bytes } }
+
+    /// Загрузки ждут Wi-Fi: так выбрано в настройках.
+    var holding: Bool { Settings.wifiOnly && cellular }
 
     private init() {
         let saved: [Entry] = Storage.load("downloads.json") ?? []
         // Запись без файла бесполезна: например, после восстановления из копии.
         entries = saved.filter { FileManager.default.fileExists(atPath: Storage.tracks.appendingPathComponent($0.file).path) }
         for entry in entries { files[entry.track.id] = entry.file }
+
+        if Demo.on {
+            if Demo.screen == "downloads" {
+                let sample = Demo.data.tracks
+                queue = Array(sample.prefix(4))
+                failed = Array(sample.dropFirst(4).prefix(2))
+                for (index, track) in queue.enumerated() { active[track.id] = [0.62, 0.18][safe: index] ?? 0 }
+                running = Set(queue.prefix(2).map(\.id))
+            }
+            return
+        }
+
+        if let pending = Storage.load("download-queue.json", as: Pending.self) {
+            queue = pending.queue.filter { files[$0.id] == nil }
+            failed = pending.failed.filter { files[$0.id] == nil }
+            for track in queue { active[track.id] = 0 }
+        }
+        monitor.pathUpdateHandler = { path in
+            let expensive = path.isExpensive
+            Task { @MainActor in
+                let downloads = Downloads.shared
+                if downloads.cellular != expensive { downloads.cellular = expensive }
+                downloads.pump()
+            }
+        }
+        monitor.start(queue: DispatchQueue(label: "tune.network"))
     }
 
     func has(_ id: String) -> Bool {
@@ -44,31 +86,85 @@ final class Downloads: ObservableObject {
         active[id] != nil
     }
 
+    /// Качается прямо сейчас, а не ждёт очереди.
+    func isRunning(_ id: String) -> Bool {
+        running.contains(id)
+    }
+
     func download(_ track: Track) {
         download([track])
     }
 
     func download(_ list: [Track]) {
+        var added = false
         for track in list where !has(track.id) && active[track.id] == nil && !(track.unavailable && !track.uncensored) {
             active[track.id] = 0
-            failed.remove(track.id)
-            pending.append(track)
+            failed.removeAll { $0.id == track.id }
+            queue.append(track)
+            added = true
         }
+        guard added else { return }
+        savePending()
         pump()
     }
 
+    /// Новые лайки скачиваются сами, если это включено в настройках.
+    func auto(_ list: [Track]) {
+        guard Settings.autoLikes, !Demo.on else { return }
+        download(list)
+    }
+
+    /// Настройки загрузок поменялись: пересчитать, можно ли качать.
+    func settingsChanged() {
+        objectWillChange.send()
+        pump()
+    }
+
+    func pause() {
+        paused = true
+    }
+
+    func resume() {
+        paused = false
+        pump()
+    }
+
+    /// Убирает из очереди всё, что ещё не начало качаться.
     func cancelAll() {
-        for track in pending { active[track.id] = nil }
-        pending.removeAll()
+        for track in queue where !running.contains(track.id) { active[track.id] = nil }
+        queue.removeAll { !running.contains($0.id) }
+        paused = false
+        savePending()
+    }
+
+    func cancel(_ id: String) {
+        guard !running.contains(id) else { return }
+        queue.removeAll { $0.id == id }
+        active[id] = nil
+        savePending()
+    }
+
+    func retryFailed() {
+        let list = failed
+        failed = []
+        download(list)
+    }
+
+    func forgetFailed() {
+        failed = []
+        savePending()
     }
 
     private func pump() {
-        while running < parallel, !pending.isEmpty {
-            let track = pending.removeFirst()
-            running += 1
+        guard !Demo.on, !paused, !holding else { return }
+        while running.count < parallel, let track = queue.first(where: { !running.contains($0.id) }) {
+            running.insert(track.id)
             Task {
                 await fetch(track)
-                running -= 1
+                running.remove(track.id)
+                queue.removeAll { $0.id == track.id }
+                active[track.id] = nil
+                savePending()
                 pump()
             }
         }
@@ -92,9 +188,8 @@ final class Downloads: ObservableObject {
             save()
         } catch {
             Log.shared.add("загрузка: \(track.id): \((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)")
-            failed.insert(track.id)
+            if !failed.contains(where: { $0.id == track.id }) { failed.append(track) }
         }
-        active[track.id] = nil
     }
 
     func remove(_ id: String) {
@@ -111,15 +206,29 @@ final class Downloads: ObservableObject {
 
     func removeAll() {
         cancelAll()
+        failed = []
         entries.removeAll()
         files.removeAll()
         Storage.clear(Storage.tracks)
         Storage.clear(Storage.covers)
         save()
+        savePending()
     }
 
     private func save() {
         let snapshot = entries
         Task.detached(priority: .utility) { Storage.save(snapshot, "downloads.json") }
+    }
+
+    private func savePending() {
+        if Demo.on { return }
+        let snapshot = Pending(queue: queue, failed: failed)
+        Task.detached(priority: .utility) { Storage.save(snapshot, "download-queue.json") }
+    }
+}
+
+private extension Array {
+    subscript(safe index: Int) -> Element? {
+        indices.contains(index) ? self[index] : nil
     }
 }

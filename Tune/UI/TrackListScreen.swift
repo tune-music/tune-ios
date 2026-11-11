@@ -117,6 +117,7 @@ final class TrackListModel: ObservableObject {
         }
         let ordered = ids.compactMap { known[$0] }
         if ordered != tracks { tracks = ordered }
+        Downloads.shared.auto(ordered)
         if !Demo.on {
             Task.detached(priority: .utility) { Storage.save(ordered, "likes-tracks.json") }
         }
@@ -269,7 +270,12 @@ struct TrackListScreen: View {
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
                     .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 14, trailing: 16))
-                if tracks.isEmpty {
+                if kind == .downloads, !downloads.queue.isEmpty || !downloads.failed.isEmpty {
+                    DownloadsPanel()
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                        .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 12, trailing: 16))
+                } else if tracks.isEmpty {
                     empty
                 }
                 ForEach(Array(tracks.enumerated()), id: \.offset) { index, track in
@@ -609,11 +615,11 @@ struct TrackListScreen: View {
                 Label("Скачать всё", systemImage: "arrow.down.circle")
             }
         }
-        if !downloads.active.isEmpty {
+        if !downloads.queue.isEmpty {
             Button {
                 downloads.cancelAll()
             } label: {
-                Label("Остановить загрузки", systemImage: "xmark.circle")
+                Label("Отменить загрузки", systemImage: "xmark.circle")
             }
         }
         Divider()
@@ -779,6 +785,132 @@ struct TrackListScreen: View {
             .opacity(count == 0 ? 0.5 : 1)
         }
         .frame(maxWidth: .infinity)
+    }
+}
+
+/// Очередь загрузок на странице скачанного: что качается, что ждёт и что не вышло.
+private struct DownloadsPanel: View {
+    @EnvironmentObject private var downloads: Downloads
+
+    private var status: String {
+        if downloads.paused { return "На паузе" }
+        if downloads.holding { return "Ждём Wi-Fi" }
+        return "Скачивается"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if !downloads.queue.isEmpty {
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(status)
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(.white)
+                        Text("В очереди: \(plural(downloads.queue.count, "трек", "трека", "треков"))")
+                            .font(.system(size: 13))
+                            .foregroundStyle(Theme.dim)
+                    }
+                    Spacer(minLength: 0)
+                    control(downloads.paused ? "play.fill" : "pause.fill") {
+                        if downloads.paused { downloads.resume() } else { downloads.pause() }
+                    }
+                    control("xmark") {
+                        downloads.cancelAll()
+                    }
+                }
+                .padding(.bottom, 10)
+                ForEach(downloads.queue.prefix(4)) { track in
+                    row(track)
+                }
+                if downloads.queue.count > 4 {
+                    Text("и ещё \(downloads.queue.count - 4)")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.dim)
+                        .padding(.top, 6)
+                }
+            }
+            if !downloads.failed.isEmpty {
+                if !downloads.queue.isEmpty {
+                    Rectangle()
+                        .fill(.white.opacity(0.08))
+                        .frame(height: 1)
+                        .padding(.vertical, 12)
+                }
+                HStack(spacing: 10) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 17))
+                        .foregroundStyle(Theme.accent)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Не удалось скачать: \(downloads.failed.count)")
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundStyle(.white)
+                        Text(downloads.failed.prefix(2).map(\.title).joined(separator: ", "))
+                            .font(.system(size: 13))
+                            .foregroundStyle(Theme.dim)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                    Button("Повторить") {
+                        downloads.retryFailed()
+                    }
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.black)
+                    .padding(.horizontal, 12)
+                    .frame(height: 32)
+                    .background(Theme.accent, in: Capsule())
+                    control("xmark") {
+                        downloads.forgetFailed()
+                    }
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .padding(14)
+        .background(Theme.raised.opacity(0.7), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+    }
+
+    private func control(_ symbol: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 13, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 32, height: 32)
+                .background(.white.opacity(0.12), in: Circle())
+                .contentShape(Circle())
+        }
+    }
+
+    private func row(_ track: Track) -> some View {
+        HStack(spacing: 10) {
+            CoverView(uri: track.cover, size: 38, corner: 7)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(track.fullTitle)
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                Text(track.artists)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.dim)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+            if downloads.isRunning(track.id) {
+                ProgressRing(value: downloads.active[track.id] ?? 0)
+                    .frame(width: 20, height: 20)
+                    .padding(.trailing, 6)
+            } else {
+                Button {
+                    downloads.cancel(track.id)
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(Theme.dim)
+                        .frame(width: 32, height: 32)
+                        .contentShape(Rectangle())
+                }
+            }
+        }
+        .padding(.vertical, 4)
     }
 }
 

@@ -171,7 +171,7 @@ struct TrackMenu: View {
                 Label("В конец очереди", systemImage: "text.append")
             }
         }
-        Divider()
+        if !inPlayer { Divider() }
         if let album = track.albumId {
             Button {
                 done()

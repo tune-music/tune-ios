@@ -82,6 +82,18 @@ enum Settings {
         get { defaults.string(forKey: "downloadQuality") ?? "lossless" }
         set { defaults.set(newValue, forKey: "downloadQuality") }
     }
+
+    /// Скачивать только по Wi-Fi: сотовая сеть и раздача с телефона не тратятся.
+    static var wifiOnly: Bool {
+        get { defaults.bool(forKey: "wifiOnly") }
+        set { defaults.set(newValue, forKey: "wifiOnly") }
+    }
+
+    /// Скачивать всё, что попало в «Мне нравится».
+    static var autoLikes: Bool {
+        get { defaults.bool(forKey: "autoLikes") }
+        set { defaults.set(newValue, forKey: "autoLikes") }
+    }
 }
 
 /// Токен входа. Читается из любых потоков.

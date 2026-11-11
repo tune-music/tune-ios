@@ -62,7 +62,7 @@ struct LibraryScreen: View {
                 .padding(.top, 8)
                 .padding(.bottom, 20)
 
-                entry("arrow.down.circle.fill", "Скачанные треки", downloads.entries.isEmpty ? "" : "\(downloads.entries.count)", .downloads)
+                entry("arrow.down.circle.fill", "Скачанные треки", downloadsValue, .downloads)
                 entry("square.stack.fill", "Альбомы", session.likedAlbums.isEmpty ? "" : "\(session.likedAlbums.count)", .likedAlbums)
                 entry("music.mic", "Исполнители", session.likedArtists.isEmpty ? "" : "\(session.likedArtists.count)", .likedArtists)
                 entry("clock.arrow.circlepath", "История", "", .history)
@@ -177,6 +177,11 @@ struct LibraryScreen: View {
         .buttonStyle(.plain)
         .padding(.horizontal, 16)
         .padding(.vertical, 6)
+    }
+
+    private var downloadsValue: String {
+        if !downloads.queue.isEmpty { return "ещё \(downloads.queue.count) в очереди" }
+        return downloads.entries.isEmpty ? "" : "\(downloads.entries.count)"
     }
 
     private func entry(_ icon: String, _ title: String, _ value: String, _ route: Route) -> some View {
@@ -394,6 +399,8 @@ struct SettingsScreen: View {
     @State private var uncensor = Settings.uncensor
     @State private var streamQuality = Settings.streamQuality
     @State private var downloadQuality = Settings.downloadQuality
+    @State private var wifiOnly = Settings.wifiOnly
+    @State private var autoLikes = Settings.autoLikes
     @State private var cacheBytes: Int64 = 0
     @State private var confirmLogout = false
     @State private var confirmRemove = false
@@ -431,6 +438,15 @@ struct SettingsScreen: View {
                     qualities
                 }
             }
+            Section {
+                Toggle("Только по Wi-Fi", isOn: $wifiOnly)
+                Toggle("Скачивать «Мне нравится»", isOn: $autoLikes)
+            } header: {
+                Text("Загрузки")
+            } footer: {
+                Text("С включённым «Только по Wi-Fi» загрузки в сотовой сети ждут в очереди. Лайкнутые треки скачиваются сами: новые — сразу, остальные — когда откроете «Мне нравится».")
+            }
+            .tint(Theme.accent)
             Section {
                 LabeledContent("Скачанная музыка", value: Storage.sizeText(downloads.totalBytes))
                 LabeledContent("Кэш", value: Storage.sizeText(cacheBytes))
@@ -472,6 +488,19 @@ struct SettingsScreen: View {
         }
         .onChange(of: streamQuality) { Settings.streamQuality = $0 }
         .onChange(of: downloadQuality) { Settings.downloadQuality = $0 }
+        .onChange(of: wifiOnly) { value in
+            Settings.wifiOnly = value
+            downloads.settingsChanged()
+        }
+        .onChange(of: autoLikes) { value in
+            Settings.autoLikes = value
+            guard value else { return }
+            Task {
+                // Список лайков, сохранённый с прошлого открытия «Мне нравится».
+                let cached = await Task.detached { Storage.load("likes-tracks.json", as: [Track].self) }.value ?? []
+                downloads.auto(cached.filter { session.isLiked($0.id) })
+            }
+        }
         .task {
             cacheBytes = await Task.detached { Storage.size(of: Storage.stream) + Storage.size(of: Storage.images) }.value
         }

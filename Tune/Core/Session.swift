@@ -154,7 +154,10 @@ final class Session: ObservableObject {
         let liked = !isLiked(track.id)
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         apply(track.id, liked)
-        if liked { disliked.remove(track.id) }
+        if liked {
+            disliked.remove(track.id)
+            Downloads.shared.auto([track])
+        }
         Task {
             do {
                 try await API.shared.setLiked(uid: uid, track: track.id, liked: liked)
@@ -362,6 +365,7 @@ final class Router: ObservableObject {
         case "library": tab = 2
         case "likes", "filter": tab = 2; paths[2] = [.likes]
         case "history": tab = 2; paths[2] = [.history]
+        case "downloads": tab = 2; paths[2] = [.downloads]
         case "settings": tab = 2; paths[2] = [.settings]
         case "shelf": paths[0] = Demo.home.first.map { [.block($0)] } ?? []
         case "playlist", "select": tab = 2; paths[2] = data.playlists.first.map { [.playlist($0)] } ?? []
