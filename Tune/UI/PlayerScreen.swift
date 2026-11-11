@@ -50,12 +50,13 @@ struct PlayerScreen: View {
                 Color(white: 0.05)
                 LinearGradient(colors: [tone, Color(white: 0.05)], startPoint: .top, endPoint: .bottom)
             }
+            // Скругление появляется, когда плеер тянут вниз: видно, что это отдельный лист.
+            .clipShape(RoundedRectangle(cornerRadius: drag > 0 ? 38 : 0, style: .continuous))
             .ignoresSafeArea()
         }
         .overlay(alignment: .top) {
             ToastView()
         }
-        .clipShape(RoundedRectangle(cornerRadius: drag > 0 ? 38 : 0, style: .continuous))
         .offset(y: drag)
         .gesture(
             // Смахивание вниз закрывает плеер.
