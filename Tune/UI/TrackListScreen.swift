@@ -95,7 +95,7 @@ struct TrackListScreen: View {
     @EnvironmentObject private var session: Session
     @Environment(\.dismiss) private var dismiss
     @State private var filter = ""
-    @State private var searching = false
+    @State private var searching = Demo.screen == "filter"
     @FocusState private var focused: Bool
     @State private var confirmRemove = false
     @State private var confirmDelete = false
@@ -216,6 +216,7 @@ struct TrackListScreen: View {
             }
             .ignoresSafeArea()
         }
+        .topScrim(tone)
         .safeAreaInset(edge: .top, spacing: 0) {
             if searching {
                 searchBar
@@ -532,6 +533,7 @@ struct ArtistScreen: View {
             }
             .ignoresSafeArea()
         }
+        .topScrim(tone)
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {

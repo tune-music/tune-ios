@@ -340,7 +340,7 @@ final class Router: ObservableObject {
         switch Demo.screen {
         case "search": tab = 1
         case "library": tab = 2
-        case "likes": tab = 2; paths[2] = [.likes]
+        case "likes", "filter": tab = 2; paths[2] = [.likes]
         case "history": tab = 2; paths[2] = [.history]
         case "settings": tab = 2; paths[2] = [.settings]
         case "playlist": tab = 2; paths[2] = data.playlists.first.map { [.playlist($0)] } ?? []

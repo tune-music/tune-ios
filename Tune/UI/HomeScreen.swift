@@ -290,7 +290,7 @@ struct WaveSettingsSheet: View {
                 }
                 .padding(20)
             }
-            .navigationTitle("Настройка волны")
+            .navigationTitle("Моя волна")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

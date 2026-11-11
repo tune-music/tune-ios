@@ -34,6 +34,20 @@ extension View {
         #endif
     }
 
+    /// Дымка под часами и кнопками навигации: прокрученный список растворяется в цвете
+    /// страницы и не мешает читать кнопки. Пока страница не прокручена, дымка сливается с фоном.
+    func topScrim(_ color: Color) -> some View {
+        overlay(alignment: .top) {
+            LinearGradient(
+                stops: [.init(color: color, location: 0), .init(color: color.opacity(0.9), location: 0.55), .init(color: color.opacity(0), location: 1)],
+                startPoint: .top, endPoint: .bottom
+            )
+            .frame(height: 132)
+            .ignoresSafeArea(edges: .top)
+            .allowsHitTesting(false)
+        }
+    }
+
     @ViewBuilder
     private func legacyGlass<S: Shape>(in shape: S, tint: Color?) -> some View {
         if let tint {
