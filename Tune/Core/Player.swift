@@ -533,6 +533,15 @@ final class Player: NSObject, ObservableObject {
         saveQueue()
     }
 
+    /// Убирает из очереди всё, что стоит после играющего трека.
+    func clearUpcoming() {
+        guard index + 1 < queue.count else { return }
+        queue = Array(queue[...index])
+        original = nil
+        preloadNext()
+        saveQueue()
+    }
+
     func removeFromQueue(_ offsets: IndexSet) {
         for position in offsets.sorted(by: >) where position != index && queue.indices.contains(position) {
             queue.remove(at: position)

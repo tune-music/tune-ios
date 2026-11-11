@@ -251,10 +251,19 @@ private struct PlayerBody: View {
         HStack(spacing: 4) {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
-                    Text(track.fullTitle)
-                        .font(.system(size: 22, weight: .bold))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
+                    // Нажатие на название ведёт к альбому.
+                    Button {
+                        guard let album = track.albumId else { return }
+                        close()
+                        router.push(.album(album))
+                    } label: {
+                        Text(track.fullTitle)
+                            .font(.system(size: 22, weight: .bold))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
                     if track.uncensored {
                         Image(systemName: "lock.open.fill")
                             .font(.system(size: 13))
@@ -311,12 +320,7 @@ private struct PlayerBody: View {
             .disabled(player.isWave)
             .opacity(player.isWave ? 0.35 : 1)
             Spacer()
-            Button(action: player.previous) {
-                Image(systemName: "backward.fill")
-                    .font(.system(size: 30))
-                    .frame(width: 60, height: 60)
-                    .contentShape(Rectangle())
-            }
+            SkipButton(symbol: "backward.fill", label: "Назад", step: -5, action: player.previous)
             Spacer()
             Button(action: player.toggle) {
                 ZStack {
@@ -335,12 +339,7 @@ private struct PlayerBody: View {
                 }
             }
             Spacer()
-            Button(action: player.next) {
-                Image(systemName: "forward.fill")
-                    .font(.system(size: 30))
-                    .frame(width: 60, height: 60)
-                    .contentShape(Rectangle())
-            }
+            SkipButton(symbol: "forward.fill", label: "Вперёд", step: 5, action: player.next)
             Spacer()
             Button(action: player.cycleRepeat) {
                 Image(systemName: player.repeatMode == .one ? "repeat.1" : "repeat")
@@ -439,6 +438,61 @@ private struct BufferRing: View {
                 if Task.isCancelled { return }
                 withAnimation(.easeIn(duration: 0.2)) { shown = true }
             }
+    }
+}
+
+/// Кнопка «назад» или «вперёд»: нажатие переключает трек, удержание перематывает.
+private struct SkipButton: View {
+    let symbol: String
+    let label: String
+    /// На сколько секунд сдвигать за шаг при удержании.
+    let step: Double
+    let action: () -> Void
+
+    @State private var pressed = false
+    @State private var held = false
+    @State private var seeking: Task<Void, Never>?
+
+    var body: some View {
+        Image(systemName: symbol)
+            .font(.system(size: 30))
+            .frame(width: 60, height: 60)
+            .contentShape(Rectangle())
+            .scaleEffect(pressed ? 0.86 : 1)
+            .opacity(pressed ? 0.7 : 1)
+            .animation(.spring(response: 0.25, dampingFraction: 0.7), value: pressed)
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in
+                        guard !pressed else { return }
+                        pressed = true
+                        held = false
+                        seeking = Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 450_000_000)
+                            if Task.isCancelled { return }
+                            held = true
+                            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                            while !Task.isCancelled {
+                                let player = Player.shared
+                                let limit = max(player.progress.duration - 1, 0)
+                                player.seek(to: min(max(player.progress.position + step, 0), limit))
+                                try? await Task.sleep(nanoseconds: 220_000_000)
+                            }
+                        }
+                    }
+                    .onEnded { _ in
+                        seeking?.cancel()
+                        seeking = nil
+                        pressed = false
+                        if !held {
+                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                            action()
+                        }
+                    }
+            )
+            .accessibilityLabel(label)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction { action() }
     }
 }
 
@@ -608,8 +662,44 @@ private struct RoutePicker: UIViewRepresentable {
 /// Очередь: нажатие переключает трек, «Изменить» даёт переставлять и убирать треки.
 private struct QueueSheet: View {
     @EnvironmentObject private var player: Player
+    @EnvironmentObject private var session: Session
     @Environment(\.dismiss) private var dismiss
     @State private var mode = EditMode.inactive
+    @State private var saving = false
+    @State private var name = ""
+
+    /// Действия со всей очередью: под списком, чтобы были под пальцем.
+    private var bar: some View {
+        HStack(spacing: 10) {
+            Button {
+                name = player.contextName.isEmpty ? "Очередь" : player.contextName
+                saving = true
+            } label: {
+                Label("В плейлист", systemImage: "text.badge.plus")
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 46)
+                    .glass(in: Capsule(), interactive: true)
+                    .contentShape(Capsule())
+            }
+            Button {
+                withAnimation { player.clearUpcoming() }
+            } label: {
+                Label("Очистить", systemImage: "xmark")
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 46)
+                    .glass(in: Capsule(), interactive: true)
+                    .contentShape(Capsule())
+            }
+            .disabled(player.index + 1 >= player.queue.count)
+            .opacity(player.index + 1 >= player.queue.count ? 0.4 : 1)
+        }
+        .font(.system(size: 15, weight: .semibold))
+        .foregroundStyle(.white)
+        .buttonStyle(.plain)
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+        .padding(.bottom, 6)
+    }
 
     var body: some View {
         NavigationStack {
@@ -654,6 +744,20 @@ private struct QueueSheet: View {
                 .background(Color(white: 0.07))
                 .environment(\.editMode, $mode)
                 .onAppear { proxy.scrollTo(player.index, anchor: .center) }
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) { bar }
+            .alert("Сохранить очередь как плейлист", isPresented: $saving) {
+                TextField("Название", text: $name)
+                Button("Отмена", role: .cancel) {}
+                Button("Сохранить") {
+                    let tracks = player.queue
+                    let title = name
+                    Task {
+                        if let playlist = await session.createPlaylist(title) {
+                            await session.add(tracks, to: playlist)
+                        }
+                    }
+                }
             }
             .navigationTitle(player.contextName.isEmpty ? "Очередь" : player.contextName)
             .navigationBarTitleDisplayMode(.inline)

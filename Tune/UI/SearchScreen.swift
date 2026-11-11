@@ -38,6 +38,7 @@ struct SearchScreen: View {
     @State private var result = SearchResult()
     @State private var loading = false
     @State private var failed = false
+    @State private var suggestions: [String] = []
     @State private var recent = UserDefaults.standard.stringArray(forKey: "recentSearches") ?? []
 
     private var text: String { query.trimmingCharacters(in: .whitespaces) }
@@ -51,6 +52,9 @@ struct SearchScreen: View {
                     history
                 }
             } else {
+                if !suggestions.isEmpty {
+                    hints
+                }
                 tabs
                 if failed && result.isEmpty {
                     Placeholder(icon: "wifi.slash", title: "Не удалось выполнить поиск")
@@ -80,6 +84,53 @@ struct SearchScreen: View {
         .scrollDismissesKeyboard(.immediately)
         .onSubmit(of: .search) { remember() }
         .task(id: query + "|" + tab.rawValue) { await search() }
+        .task(id: query) { await suggest() }
+    }
+
+    // MARK: - Подсказки
+
+    /// Варианты продолжения запроса: лента над вкладками, нажатие подставляет запрос.
+    private var hints: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(suggestions, id: \.self) { item in
+                    Button {
+                        query = item
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "magnifyingglass")
+                                .font(.system(size: 12, weight: .semibold))
+                            Text(item)
+                                .font(.system(size: 14, weight: .medium))
+                                .lineLimit(1)
+                        }
+                        .foregroundStyle(.white.opacity(0.85))
+                        .padding(.horizontal, 12)
+                        .frame(height: 34)
+                        .overlay(Capsule().strokeBorder(.white.opacity(0.18)))
+                        .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 16)
+        }
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+        .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 2, trailing: 0))
+    }
+
+    private func suggest() async {
+        let asked = text
+        guard asked.count > 1 else {
+            suggestions = []
+            return
+        }
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        if Task.isCancelled { return }
+        let found = (try? await API.shared.suggest(asked)) ?? []
+        if Task.isCancelled { return }
+        suggestions = Array(found.filter { $0.caseInsensitiveCompare(asked) != .orderedSame }.prefix(8))
     }
 
     // MARK: - Вкладки

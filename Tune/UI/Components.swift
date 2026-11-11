@@ -268,6 +268,9 @@ struct TrackRow: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .contextMenu {
+                TrackMenu(track: track, onRemove: onRemove, navigate: navigate, pick: pickPlaylist)
+            }
 
             if let value = downloads.active[track.id] {
                 ProgressRing(value: value)
@@ -440,7 +443,58 @@ struct HomeCard: View {
     var size: CGFloat = 148
 
     @ObservedObject private var now = Player.shared.now
+    @EnvironmentObject private var session: Session
     @Environment(\.navigate) private var navigate
+
+    /// Меню по долгому нажатию на карточку.
+    @ViewBuilder private var menu: some View {
+        switch item {
+        case .album(let card):
+            let liked = session.likedAlbums.contains(card.id)
+            Button {
+                session.toggleAlbum(card.id)
+            } label: {
+                Label(liked ? "Убрать из коллекции" : "В коллекцию", systemImage: liked ? "heart.slash" : "heart")
+            }
+            if let url = URL(string: "https://music.yandex.ru/album/\(card.id)") {
+                ShareLink(item: url) {
+                    Label("Поделиться", systemImage: "square.and.arrow.up")
+                }
+            }
+        case .artist(let card):
+            let liked = session.likedArtists.contains(card.id)
+            Button {
+                session.toggleArtist(card.id)
+            } label: {
+                Label(liked ? "Убрать из коллекции" : "В коллекцию", systemImage: liked ? "heart.slash" : "heart")
+            }
+            Button {
+                Player.shared.playWave(seeds: ["artist:\(card.id)"], name: card.title)
+            } label: {
+                Label("Волна по исполнителю", systemImage: "dot.radiowaves.left.and.right")
+            }
+        case .playlist(let playlist):
+            if !session.playlists.contains(where: { $0.id == playlist.id }) {
+                let liked = session.isLiked(playlist)
+                Button {
+                    session.togglePlaylist(playlist)
+                } label: {
+                    Label(liked ? "Убрать из коллекции" : "В коллекцию", systemImage: liked ? "heart.slash" : "heart")
+                }
+            }
+            if let url = playlist.shareURL {
+                ShareLink(item: url) {
+                    Label("Поделиться", systemImage: "square.and.arrow.up")
+                }
+            }
+        case .wave(let wave):
+            Button {
+                Player.shared.playWave(seeds: wave.seeds, name: wave.title)
+            } label: {
+                Label("Запустить заново", systemImage: "play")
+            }
+        }
+    }
 
     /// nil — карточка не играет, иначе — идёт ли звук.
     private func playing(_ kind: String, _ id: String) -> Bool? {
@@ -468,6 +522,7 @@ struct HomeCard: View {
             }
         }
         .buttonStyle(.plain)
+        .contextMenu { menu }
     }
 }
 

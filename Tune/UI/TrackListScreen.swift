@@ -150,6 +150,8 @@ struct TrackListScreen: View {
     /// Режим перестановки треков в своём плейлисте.
     @State private var reordering = false
     @State private var pickingMany = false
+    /// Шапка ушла за край: название страницы показывается в панели навигации.
+    @State private var compact = false
 
     private var all: [Track] {
         switch kind {
@@ -268,6 +270,8 @@ struct TrackListScreen: View {
         ScrollViewReader { proxy in
             List {
                 header(count: all.count)
+                    .onAppear { compact = false }
+                    .onDisappear { compact = true }
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
                     .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 14, trailing: 16))
@@ -353,6 +357,14 @@ struct TrackListScreen: View {
         }
         .refreshable { await model.load(kind, force: true) }
         .toolbar {
+            ToolbarItem(placement: .principal) {
+                Text(title)
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .opacity(compact && !searching ? 1 : 0)
+                    .animation(.easeInOut(duration: 0.2), value: compact)
+            }
             ToolbarItemGroup(placement: .navigationBarTrailing) {
                 if let liked {
                     Button(action: toggleLike) {

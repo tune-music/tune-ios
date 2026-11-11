@@ -392,6 +392,13 @@ final class API {
     }
 
     /// `types` — что искать через запятую: track, album, artist, playlist.
+    /// Подсказки: как Яндекс предлагает закончить запрос.
+    func suggest(_ text: String) async throws -> [String] {
+        if Demo.on { return ["queen bohemian rhapsody", "queen of the damned", "queens of the stone age", "queencard"] }
+        let value = result(try await get("search/suggest", [("part", text)]))
+        return value["suggestions"].array.compactMap { $0.string }
+    }
+
     func search(_ text: String, types: String = "track,album,artist,playlist", size: Int = 36) async throws -> SearchResult {
         if Demo.on {
             var demo = SearchResult(tracks: Demo.data.tracks, albums: Demo.data.albums, artists: Demo.data.artists, playlists: Demo.data.playlists)
