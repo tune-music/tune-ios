@@ -1,19 +1,28 @@
 import AVKit
 import SwiftUI
 
+/// Сдвиг обложки под пальцем. Отдельный объект, чтобы жест жил на всём экране плеера,
+/// а перерисовывалась от него только обложка.
+@MainActor
+final class CoverSwipe: ObservableObject {
+    @Published var x: CGFloat = 0
+    @Published var forward = true
+}
+
 /// Полноэкранный плеер. Лежит поверх вкладок, а не в отдельном окне: при смахивании
 /// под ним видно приложение.
 ///
-/// Здесь только сдвиг под пальцем. Всё содержимое вынесено в PlayerBody, чтобы при
-/// перетаскивании оно не пересчитывалось на каждом кадре.
+/// Здесь только жесты и сдвиг под пальцем. Содержимое вынесено в PlayerBody без входных
+/// данных, поэтому при перетаскивании оно не пересчитывается на каждом кадре.
 struct PlayerScreen: View {
-    let close: () -> Void
+    @Environment(\.closePlayer) private var close
+    @StateObject private var swipe = CoverSwipe()
     @State private var drag: CGFloat = 0
     @State private var axis: Axis?
 
     var body: some View {
-        PlayerBody(close: close)
-            .equatable()
+        PlayerBody()
+            .environmentObject(swipe)
             .background {
                 PlayerBackdrop(rounded: drag > 0)
             }
@@ -22,18 +31,30 @@ struct PlayerScreen: View {
             }
             .offset(y: drag)
             .gesture(
-                // Смахивание вниз закрывает плеер. Направление жеста определяется в его начале.
+                // Вниз — закрыть плеер, в стороны — переключить трек. Направление жеста
+                // определяется в его начале и до конца не меняется.
                 DragGesture(minimumDistance: 16)
                     .onChanged { value in
                         let move = value.translation
                         if axis == nil { axis = abs(move.width) > abs(move.height) ? .horizontal : .vertical }
-                        if axis == .vertical { drag = max(0, move.height) }
+                        if axis == .vertical {
+                            drag = max(0, move.height)
+                        } else {
+                            swipe.x = move.width
+                            let ahead = move.width < 0
+                            if ahead != swipe.forward { swipe.forward = ahead }
+                        }
                     }
                     .onEnded { value in
                         let locked = axis
                         axis = nil
-                        guard locked == .vertical else { return }
-                        if value.translation.height > 140 || value.predictedEndTranslation.height > 420 {
+                        if locked == .horizontal {
+                            let far = abs(value.translation.width) > 70 || abs(value.predictedEndTranslation.width) > 220
+                            if far {
+                                if swipe.forward { Player.shared.next() } else { Player.shared.previous() }
+                            }
+                            withAnimation(.easeOut(duration: 0.26)) { swipe.x = 0 }
+                        } else if value.translation.height > 140 || value.predictedEndTranslation.height > 420 {
                             close()
                         } else {
                             withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { drag = 0 }
@@ -64,71 +85,41 @@ private struct PlayerBackdrop: View {
     }
 }
 
-/// Обложка: смахивание в сторону переключает трек, новая обложка въезжает с другой стороны.
+/// Обложка: при смене трека новая въезжает с той стороны, куда смахнули.
 private struct PlayerCover: View {
     let side: CGFloat
     @EnvironmentObject private var player: Player
-    @State private var slide: CGFloat = 0
-    @State private var axis: Axis?
-    @State private var forward = true
+    @EnvironmentObject private var swipe: CoverSwipe
 
     var body: some View {
         ZStack {
             CoverView(uri: player.current?.cover, size: side, corner: 22)
-                .offset(x: slide * 0.7)
-                .opacity(1 - min(Double(abs(slide)) / 320.0, 0.5))
+                .offset(x: swipe.x * 0.7)
+                .opacity(1 - min(Double(abs(swipe.x)) / 320.0, 0.5))
                 .id(player.current?.id)
                 .transition(.asymmetric(
-                    insertion: .move(edge: forward ? .trailing : .leading).combined(with: .opacity),
-                    removal: .move(edge: forward ? .leading : .trailing).combined(with: .opacity)))
+                    insertion: .move(edge: swipe.forward ? .trailing : .leading).combined(with: .opacity),
+                    removal: .move(edge: swipe.forward ? .leading : .trailing).combined(with: .opacity)))
         }
         // Анимируется только сама обложка: смена трека не тянет за собой анимацию всего экрана.
         .animation(.easeOut(duration: 0.26), value: player.current?.id)
         .shadow(color: .black.opacity(0.4), radius: 22, y: 14)
         .scaleEffect(player.isPlaying ? 1 : 0.9)
         .animation(.spring(response: 0.45, dampingFraction: 0.75), value: player.isPlaying)
-        .contentShape(Rectangle())
-        .simultaneousGesture(
-            DragGesture(minimumDistance: 16)
-                .onChanged { value in
-                    let move = value.translation
-                    if axis == nil { axis = abs(move.width) > abs(move.height) ? .horizontal : .vertical }
-                    guard axis == .horizontal else { return }
-                    slide = move.width
-                    let ahead = move.width < 0
-                    if ahead != forward { forward = ahead }
-                }
-                .onEnded { value in
-                    let locked = axis
-                    axis = nil
-                    guard locked == .horizontal else { return }
-                    let far = abs(slide) > 70 || abs(value.predictedEndTranslation.width) > 220
-                    if far {
-                        if forward { player.next() } else { player.previous() }
-                    }
-                    withAnimation(.easeOut(duration: 0.26)) { slide = 0 }
-                }
-        )
     }
 }
 
-/// Содержимое плеера. Сравнение всегда «равно»: экран перерисовывается только от своих
-/// данных (плеер, коллекция, загрузки), а не от сдвига под пальцем.
-private struct PlayerBody: View, Equatable {
-    private enum Panel: String, Identifiable {
-        case queue, lyrics
-        var id: String { rawValue }
-    }
-
-    nonisolated static func == (lhs: PlayerBody, rhs: PlayerBody) -> Bool { true }
-
-    let close: () -> Void
-
+/// Содержимое плеера. Входных данных у него нет: экран перерисовывается только от своих
+/// источников (плеер, коллекция, загрузки), а не от сдвига под пальцем.
+private struct PlayerBody: View {
+    @Environment(\.closePlayer) private var close
     @EnvironmentObject private var player: Player
     @EnvironmentObject private var session: Session
     @EnvironmentObject private var downloads: Downloads
     @EnvironmentObject private var router: Router
-    @State private var panel: Panel? = Demo.screen == "queue" ? .queue : Demo.screen == "lyrics" ? .lyrics : nil
+    @State private var queue = Demo.screen == "queue"
+    /// Текст песни показывается на месте обложки.
+    @State private var lyrics = Demo.screen == "lyrics"
     @State private var picking: Track?
 
     var body: some View {
@@ -136,9 +127,18 @@ private struct PlayerBody: View, Equatable {
             let side = max(140, min(geometry.size.width - 48, geometry.size.height * 0.44))
             VStack(spacing: 0) {
                 top
-                Spacer(minLength: 10)
-                PlayerCover(side: side)
-                Spacer(minLength: 10)
+                ZStack {
+                    if lyrics, let track = player.current {
+                        LyricsPane(track: track, progress: player.progress)
+                            .transition(.opacity)
+                    } else {
+                        PlayerCover(side: side)
+                            .transition(.opacity.combined(with: .scale(scale: 0.92)))
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(.vertical, 10)
+                .animation(.easeInOut(duration: 0.25), value: lyrics)
                 if let track = player.current {
                     titles(track)
                     SeekBar(progress: player.progress) { player.seek(to: $0) }
@@ -154,15 +154,8 @@ private struct PlayerBody: View, Equatable {
             .padding(.bottom, 12)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .sheet(item: $panel) { panel in
-            switch panel {
-            case .queue:
-                QueueSheet()
-            case .lyrics:
-                if let track = player.current {
-                    LyricsSheet(track: track, progress: player.progress)
-                }
-            }
+        .sheet(isPresented: $queue) {
+            QueueSheet()
         }
         .sheet(item: $picking) { track in
             PlaylistPicker(track: track)
@@ -180,7 +173,8 @@ private struct PlayerBody: View, Equatable {
                 Image(systemName: "chevron.down")
                     .font(.system(size: 18, weight: .semibold))
                     .frame(width: 44, height: 44)
-                    .glass(in: Circle(), interactive: true)
+                    .background(Color.white.opacity(0.14), in: Circle())
+                    .contentShape(Circle())
             }
             .buttonStyle(.plain)
             Spacer()
@@ -208,11 +202,11 @@ private struct PlayerBody: View, Equatable {
                 Image(systemName: "ellipsis")
                     .font(.system(size: 18, weight: .semibold))
                     .frame(width: 44, height: 44)
+                    // Обычная подложка вместо стекла: стеклянная кнопка после открытия меню
+                    // отставала от плеера, когда его смахивали вниз.
+                    .background(Color.white.opacity(0.14), in: Circle())
                     .contentShape(Circle())
             }
-            // Стекло на самом меню, а не на значке: при удержании подсвечивается круг, а не квадрат.
-            .glass(in: Circle(), interactive: true)
-            .clipShape(Circle())
         }
         .foregroundStyle(.white)
     }
@@ -331,14 +325,15 @@ private struct PlayerBody: View, Equatable {
     private func bottom(_ track: Track) -> some View {
         HStack {
             Button {
-                panel = .lyrics
+                lyrics.toggle()
             } label: {
                 Image(systemName: "text.quote")
+                    .foregroundStyle(lyrics ? Theme.accent : Color.white.opacity(0.85))
                     .frame(width: 48, height: 44)
                     .contentShape(Rectangle())
             }
-            .disabled(!track.hasLyrics)
-            .opacity(track.hasLyrics ? 1 : 0.35)
+            .disabled(!track.hasLyrics && !lyrics)
+            .opacity(track.hasLyrics || lyrics ? 1 : 0.35)
             Spacer()
             RoutePicker()
                 .frame(width: 48, height: 44)
@@ -387,7 +382,7 @@ private struct PlayerBody: View, Equatable {
             }
             Spacer()
             Button {
-                panel = .queue
+                queue = true
             } label: {
                 Image(systemName: "list.bullet")
                     .frame(width: 48, height: 44)
@@ -541,10 +536,10 @@ private struct QueueSheet: View {
     }
 }
 
-private struct LyricsSheet: View {
+/// Текст песни на месте обложки: звучащая строка подсвечена, нажатие на строку перематывает.
+private struct LyricsPane: View {
     let track: Track
     @ObservedObject var progress: PlaybackProgress
-    @Environment(\.dismiss) private var dismiss
     @State private var lines: [LyricLine]?
 
     /// Строка, которая сейчас звучит. У текста без времени её нет.
@@ -557,31 +552,27 @@ private struct LyricsSheet: View {
     }
 
     var body: some View {
-        NavigationStack {
-            Group {
-                if let lines {
-                    if lines.isEmpty {
-                        Placeholder(icon: "text.quote", title: "Текста нет")
-                    } else {
-                        text(lines)
+        Group {
+            if let lines {
+                if lines.isEmpty {
+                    VStack(spacing: 10) {
+                        Image(systemName: "text.quote")
+                            .font(.system(size: 34))
+                        Text("Текста нет")
+                            .font(.system(size: 18, weight: .semibold))
                     }
+                    .foregroundStyle(.white.opacity(0.6))
                 } else {
-                    ProgressView()
-                        .tint(.white)
+                    text(lines)
                 }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color(white: 0.07))
-            .navigationTitle(track.title)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Закрыть") { dismiss() }
-                }
+            } else {
+                ProgressView()
+                    .tint(.white)
             }
         }
-        .tint(.white)
-        .task {
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .task(id: track.id) {
+            lines = nil
             lines = (try? await API.shared.lyrics(track: track.id)) ?? []
         }
     }
@@ -590,8 +581,8 @@ private struct LyricsSheet: View {
         let current = active
         let timed = lines.contains { $0.time != nil }
         return ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 18) {
+            ScrollView(showsIndicators: false) {
+                LazyVStack(alignment: .leading, spacing: 16) {
                     ForEach(lines) { line in
                         Text(line.text.isEmpty ? "♪" : line.text)
                             .font(.system(size: 24, weight: .bold))
@@ -604,7 +595,13 @@ private struct LyricsSheet: View {
                             .id(line.id)
                     }
                 }
-                .padding(24)
+                .padding(.vertical, 28)
+            }
+            // Строки растворяются у верхнего и нижнего края.
+            .mask {
+                LinearGradient(
+                    stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.08), .init(color: .black, location: 0.92), .init(color: .clear, location: 1)],
+                    startPoint: .top, endPoint: .bottom)
             }
             .onChange(of: current) { line in
                 guard let line else { return }

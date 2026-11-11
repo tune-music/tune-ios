@@ -1,173 +1,5 @@
 import SwiftUI
 
-// MARK: - Поиск
-
-struct SearchScreen: View {
-    @EnvironmentObject private var player: Player
-    @Environment(\.navigate) private var navigate
-    @State private var query = Demo.screen == "search" ? "queen" : ""
-    @State private var result = SearchResult()
-    @State private var loading = false
-    @State private var failed = false
-    @State private var recent = UserDefaults.standard.stringArray(forKey: "recentSearches") ?? []
-
-    var body: some View {
-        List {
-            if query.trimmingCharacters(in: .whitespaces).isEmpty {
-                if recent.isEmpty {
-                    Placeholder(icon: "magnifyingglass", title: "Найдётся всё", text: "Треки, альбомы, исполнители и плейлисты")
-                } else {
-                    history
-                }
-            } else if failed && result.isEmpty {
-                Placeholder(icon: "wifi.slash", title: "Не удалось выполнить поиск")
-            } else if result.isEmpty {
-                if loading {
-                    Spinner()
-                } else {
-                    Placeholder(icon: "magnifyingglass", title: "Ничего не найдено")
-                }
-            } else {
-                if !result.artists.isEmpty {
-                    row {
-                        Shelf("Исполнители") {
-                            ForEach(result.artists) { card in
-                                HomeCard(item: .artist(card), size: 116)
-                            }
-                        }
-                    }
-                }
-                if !result.tracks.isEmpty {
-                    title("Треки")
-                    ForEach(Array(result.tracks.enumerated()), id: \.offset) { index, track in
-                        TrackRow(track: track) {
-                            remember()
-                            player.play(result.tracks, at: index, context: .various("Поиск"))
-                        }
-                    }
-                }
-                if !result.albums.isEmpty {
-                    row {
-                        Shelf("Альбомы") {
-                            ForEach(result.albums) { card in
-                                HomeCard(item: .album(card))
-                            }
-                        }
-                    }
-                }
-                if !result.playlists.isEmpty {
-                    row {
-                        Shelf("Плейлисты") {
-                            ForEach(result.playlists) { playlist in
-                                HomeCard(item: .playlist(playlist))
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
-        .background(Theme.background)
-        .navigationTitle("Поиск")
-        .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Трек, альбом, исполнитель")
-        .autocorrectionDisabled()
-        .scrollDismissesKeyboard(.immediately)
-        .onSubmit(of: .search) { remember() }
-        .task(id: query) { await search() }
-    }
-
-    /// Недавние запросы: показываются, пока строка поиска пуста.
-    @ViewBuilder private var history: some View {
-        HStack {
-            Text("Вы искали")
-                .font(.system(size: 22, weight: .bold))
-                .foregroundStyle(.white)
-            Spacer()
-            Button {
-                recent = []
-                UserDefaults.standard.removeObject(forKey: "recentSearches")
-            } label: {
-                Text("Очистить")
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(Theme.dim)
-            }
-            .buttonStyle(.plain)
-        }
-        .listRowBackground(Color.clear)
-        .listRowSeparator(.hidden)
-        .listRowInsets(EdgeInsets(top: 14, leading: 16, bottom: 6, trailing: 16))
-        ForEach(recent, id: \.self) { text in
-            Button {
-                query = text
-            } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: "clock.arrow.circlepath")
-                        .foregroundStyle(Theme.dim)
-                    Text(text)
-                        .font(.system(size: 16))
-                        .foregroundStyle(.white)
-                    Spacer(minLength: 0)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
-            .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
-        }
-    }
-
-    private func remember() {
-        let text = query.trimmingCharacters(in: .whitespaces)
-        guard text.count > 1, !Demo.on else { return }
-        var list = recent.filter { $0.caseInsensitiveCompare(text) != .orderedSame }
-        list.insert(text, at: 0)
-        recent = Array(list.prefix(12))
-        UserDefaults.standard.set(recent, forKey: "recentSearches")
-    }
-
-    private func title(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: 22, weight: .bold))
-            .foregroundStyle(.white)
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
-            .listRowInsets(EdgeInsets(top: 14, leading: 16, bottom: 6, trailing: 16))
-    }
-
-    private func row<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        content()
-            .simultaneousGesture(TapGesture().onEnded { remember() })
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
-            .listRowInsets(EdgeInsets(top: 14, leading: 0, bottom: 8, trailing: 0))
-    }
-
-    private func search() async {
-        let text = query.trimmingCharacters(in: .whitespaces)
-        guard !text.isEmpty else {
-            result = SearchResult()
-            loading = false
-            return
-        }
-        // Запрос уходит, когда пользователь перестал печатать.
-        try? await Task.sleep(nanoseconds: 350_000_000)
-        if Task.isCancelled { return }
-        loading = true
-        do {
-            let found = try await API.shared.search(text)
-            if Task.isCancelled { return }
-            result = found
-            failed = false
-        } catch {
-            if Task.isCancelled { return }
-            failed = true
-        }
-        loading = false
-    }
-}
-
 // MARK: - Коллекция
 
 struct LibraryScreen: View {
@@ -500,6 +332,26 @@ struct CardGridScreen: View {
             if Task.isCancelled { return }
             self.error = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
+    }
+}
+
+/// Все карточки полки главной сеткой.
+struct ItemGridScreen: View {
+    let title: String
+    let items: [HomeItem]
+
+    var body: some View {
+        ScrollView {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 16, alignment: .top)], spacing: 20) {
+                ForEach(items) { item in
+                    HomeCard(item: item, size: 160)
+                }
+            }
+            .padding(16)
+        }
+        .background(Theme.background)
+        .navigationTitle(title)
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 

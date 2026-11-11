@@ -421,19 +421,38 @@ struct WaveTile: View {
 /// Полка: заголовок и горизонтальная лента карточек.
 struct Shelf<Content: View>: View {
     let title: String
+    private let more: (() -> Void)?
     private let content: Content
 
-    init(_ title: String, @ViewBuilder content: () -> Content) {
+    init(_ title: String, more: (() -> Void)? = nil, @ViewBuilder content: () -> Content) {
         self.title = title
+        self.more = more
         self.content = content()
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(title)
-                .font(.system(size: 22, weight: .bold))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 16)
+            HStack(alignment: .firstTextBaseline) {
+                Text(title)
+                    .font(.system(size: 22, weight: .bold))
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+                Spacer(minLength: 8)
+                if let more {
+                    Button(action: more) {
+                        HStack(spacing: 3) {
+                            Text("Все")
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 12, weight: .semibold))
+                        }
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(Theme.dim)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 16)
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(alignment: .top, spacing: 14) {
                     content

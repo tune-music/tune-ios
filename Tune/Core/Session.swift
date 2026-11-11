@@ -97,6 +97,7 @@ final class Session: ObservableObject {
         disliked = []
         Storage.remove("session.json")
         Storage.remove("likes-tracks.json")
+        Storage.remove("home.json")
         WKWebsiteDataStore.default().removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) {}
     }
 
@@ -346,6 +347,7 @@ final class Router: ObservableObject {
         case "likes", "filter": tab = 2; paths[2] = [.likes]
         case "history": tab = 2; paths[2] = [.history]
         case "settings": tab = 2; paths[2] = [.settings]
+        case "shelf": paths[0] = Demo.home.first.map { [.block($0)] } ?? []
         case "playlist": tab = 2; paths[2] = data.playlists.first.map { [.playlist($0)] } ?? []
         case "album", "albumscroll": paths[0] = data.albums.first.map { [.album($0.id)] } ?? []
         case "artist": paths[0] = data.artists.first.map { [.artist($0.id, $0.title)] } ?? []

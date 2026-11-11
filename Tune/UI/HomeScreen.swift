@@ -7,6 +7,13 @@ final class HomeModel: ObservableObject {
     @Published var failed = false
     private var loaded = false
 
+    init() {
+        // Прошлая главная показывается сразу, свежая подменяет её, когда придёт.
+        if !Demo.on, let saved = Storage.load("home.json", as: HomePage.self) {
+            page = saved
+        }
+    }
+
     func load(force: Bool = false) async {
         if loaded && !force { return }
         loading = true
@@ -17,6 +24,9 @@ final class HomeModel: ObservableObject {
             if !fresh.blocks.isEmpty || page.blocks.isEmpty { page = fresh }
             loaded = true
             failed = false
+            if !Demo.on, !fresh.blocks.isEmpty {
+                Task.detached(priority: .utility) { Storage.save(fresh, "home.json") }
+            }
         } catch {
             if Task.isCancelled { return }
             failed = page.blocks.isEmpty
@@ -24,7 +34,7 @@ final class HomeModel: ObservableObject {
     }
 }
 
-/// Главная: «Моя волна», волны по настроению и полки, как у Яндекс Музыки.
+/// Главная: «Моя волна», волны по настроению, быстрый доступ к своему и полки Яндекса.
 struct HomeScreen: View {
     @EnvironmentObject private var session: Session
     @EnvironmentObject private var player: Player
@@ -35,7 +45,7 @@ struct HomeScreen: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 30) {
+            VStack(alignment: .leading, spacing: 28) {
                 WaveHero(tune: { tuning = true })
                 if session.offline || model.failed {
                     offline
@@ -43,15 +53,16 @@ struct HomeScreen: View {
                 if !model.page.waves.isEmpty {
                     stations
                 }
+                quick
                 ForEach(model.page.blocks) { block in
-                    Shelf(block.title) {
+                    Shelf(block.title, more: block.items.count > 3 ? { navigate(.block(block)) } : nil) {
                         ForEach(block.items) { item in
                             HomeCard(item: item)
                         }
                     }
                 }
                 if model.loading && model.page.blocks.isEmpty {
-                    Spinner()
+                    HomeSkeleton()
                 }
             }
             .padding(.bottom, 24)
@@ -87,6 +98,20 @@ struct HomeScreen: View {
                 await Updater.shared.check()
             }.value
         }
+    }
+
+    /// Быстрый доступ: своё любимое в одно нажатие, не заходя в коллекцию.
+    private var quick: some View {
+        let columns = [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
+        return LazyVGrid(columns: columns, spacing: 10) {
+            QuickTile(title: "Мне нравится", symbol: "heart.fill", colors: SymbolCover.likes) { navigate(.likes) }
+            QuickTile(title: "Скачанное", symbol: "arrow.down", colors: SymbolCover.downloads) { navigate(.downloads) }
+            QuickTile(title: "История", symbol: "clock.arrow.circlepath", colors: SymbolCover.history) { navigate(.history) }
+            ForEach(session.playlists.prefix(3)) { playlist in
+                QuickTile(title: playlist.title, cover: playlist.cover) { navigate(.playlist(playlist)) }
+            }
+        }
+        .padding(.horizontal, 16)
     }
 
     private var offline: some View {
@@ -139,6 +164,66 @@ struct HomeScreen: View {
             }
             .padding(.horizontal, 16)
         }
+    }
+}
+
+/// Плитка быстрого доступа: обложка слева, название справа.
+private struct QuickTile: View {
+    let title: String
+    var symbol: String?
+    var colors: [Color] = []
+    var cover: String?
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                if let symbol {
+                    SymbolCover(symbol: symbol, colors: colors, size: 56, corner: 0)
+                } else {
+                    CoverView(uri: cover, size: 56, corner: 0)
+                }
+                Text(title)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                Spacer(minLength: 4)
+            }
+            .frame(height: 56)
+            .background(Theme.surface)
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PressStyle())
+    }
+}
+
+/// Заглушка полок, пока главная грузится в первый раз.
+private struct HomeSkeleton: View {
+    @State private var dim = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 28) {
+            ForEach(0..<2, id: \.self) { _ in
+                VStack(alignment: .leading, spacing: 14) {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Theme.surface)
+                        .frame(width: 170, height: 22)
+                    HStack(spacing: 14) {
+                        ForEach(0..<3, id: \.self) { _ in
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .fill(Theme.surface)
+                                .frame(width: 148, height: 148)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .opacity(dim ? 0.45 : 1)
+        .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: dim)
+        .onAppear { dim = true }
     }
 }
 

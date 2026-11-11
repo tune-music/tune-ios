@@ -113,7 +113,7 @@ struct WaveCard: Codable, Hashable, Identifiable {
 }
 
 /// Карточка на полке главной.
-enum HomeItem: Hashable, Identifiable {
+enum HomeItem: Hashable, Identifiable, Codable {
     case album(Card)
     case artist(Card)
     case playlist(Playlist)
@@ -130,13 +130,13 @@ enum HomeItem: Hashable, Identifiable {
 }
 
 /// Полка главной: название и карточки.
-struct HomeBlock: Identifiable {
+struct HomeBlock: Identifiable, Hashable, Codable {
     var id: String
     var title: String
     var items: [HomeItem]
 }
 
-struct HomePage {
+struct HomePage: Codable {
     var waves: [WaveCard] = []
     var blocks: [HomeBlock] = []
 }
@@ -165,7 +165,16 @@ struct ArtistPage {
     var similar: [Card] = []
 }
 
+/// Первое, что нашёл Яндекс: показывается крупной карточкой.
+enum SearchBest {
+    case track(Track)
+    case artist(Card)
+    case album(Card)
+    case playlist(Playlist)
+}
+
 struct SearchResult {
+    var best: SearchBest?
     var tracks: [Track] = []
     var albums: [Card] = []
     var artists: [Card] = []

@@ -198,6 +198,11 @@ final class API {
     /// У блоков главной разные ответы, но элементы в них одни и те же.
     private static func homeItems(_ value: JSON) -> [HomeItem] {
         var items: [HomeItem] = []
+        // Чарт приходит плейлистом внутри chart.
+        let chart = value["chart"]
+        if chart.isObject, let owner = chart["uid"].idText, let playlist = parsePlaylist(chart, owner: owner) {
+            items.append(.playlist(playlist))
+        }
         for release in value["newReleases"].array {
             if let card = releaseCard(release) { items.append(.album(card)) }
         }
@@ -345,23 +350,39 @@ final class API {
         return value["tracks"].array.compactMap(Self.parseTrack)
     }
 
-    func search(_ text: String) async throws -> SearchResult {
+    /// `types` — что искать через запятую: track, album, artist, playlist.
+    func search(_ text: String, types: String = "track,album,artist,playlist", size: Int = 36) async throws -> SearchResult {
         if Demo.on {
-            return SearchResult(tracks: Demo.data.tracks, albums: Demo.data.albums, artists: Demo.data.artists, playlists: Demo.data.playlists)
+            var demo = SearchResult(tracks: Demo.data.tracks, albums: Demo.data.albums, artists: Demo.data.artists, playlists: Demo.data.playlists)
+            demo.best = Demo.data.artists.first.map { .artist($0) }
+            return demo
         }
-        let value = result(try await get("search/instant/mixed", [("text", text), ("type", "track,album,artist,playlist"), ("page", "0"), ("pageSize", "36")]))
+        let value = result(try await get("search/instant/mixed", [("text", text), ("type", types), ("page", "0"), ("pageSize", "\(size)")]))
         var found = SearchResult()
+        // Результаты идут по убыванию точности: первый из них и есть лучший.
         for item in value["results"].array {
             switch item["type"].string {
             case "track":
-                if let track = Self.parseTrack(item["track"]) { found.tracks.append(track) }
+                if let track = Self.parseTrack(item["track"]) {
+                    if found.best == nil { found.best = .track(track) }
+                    found.tracks.append(track)
+                }
             case "album":
-                if let card = Self.albumCard(item["album"]) { found.albums.append(card) }
+                if let card = Self.albumCard(item["album"]) {
+                    if found.best == nil { found.best = .album(card) }
+                    found.albums.append(card)
+                }
             case "artist":
-                if let card = Self.artistCard(item["artist"]) { found.artists.append(card) }
+                if let card = Self.artistCard(item["artist"]) {
+                    if found.best == nil { found.best = .artist(card) }
+                    found.artists.append(card)
+                }
             case "playlist":
                 let owner = item["playlist"]["uid"].idText ?? ""
-                if let playlist = Self.parsePlaylist(item["playlist"], owner: owner) { found.playlists.append(playlist) }
+                if let playlist = Self.parsePlaylist(item["playlist"], owner: owner) {
+                    if found.best == nil { found.best = .playlist(playlist) }
+                    found.playlists.append(playlist)
+                }
             default:
                 break
             }

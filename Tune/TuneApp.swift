@@ -58,6 +58,7 @@ enum Route: Hashable {
     case album(String)
     case artist(String, String)
     case artistTracks(String, String)
+    case block(HomeBlock)
     case likedAlbums
     case likedArtists
     case settings
@@ -72,6 +73,10 @@ private struct OpenPlayerKey: EnvironmentKey {
     static let defaultValue: () -> Void = {}
 }
 
+private struct ClosePlayerKey: EnvironmentKey {
+    static let defaultValue: () -> Void = {}
+}
+
 extension EnvironmentValues {
     /// Открыть страницу во вкладке, где находится вид.
     var navigate: (Route) -> Void {
@@ -82,6 +87,11 @@ extension EnvironmentValues {
     var openPlayer: () -> Void {
         get { self[OpenPlayerKey.self] }
         set { self[OpenPlayerKey.self] = newValue }
+    }
+
+    var closePlayer: () -> Void {
+        get { self[ClosePlayerKey.self] }
+        set { self[ClosePlayerKey.self] = newValue }
     }
 }
 
@@ -145,7 +155,8 @@ struct RootView: View {
         }
         .overlay {
             if showPlayer {
-                PlayerScreen(close: { withAnimation(Self.fall) { showPlayer = false } })
+                PlayerScreen()
+                    .environment(\.closePlayer, { withAnimation(Self.fall) { showPlayer = false } })
                     .environmentObject(router)
                     // Сдвиг на всю высоту экрана: фон плеера выходит за безопасную область,
                     // и при сдвиге только на высоту содержимого его край оставался на виду.
@@ -193,6 +204,7 @@ struct TabRoot<Content: View>: View {
         case .album(let id): TrackListScreen(kind: .album(id))
         case .artistTracks(let id, let name): TrackListScreen(kind: .artist(id, name))
         case .artist(let id, let name): ArtistScreen(id: id, name: name)
+        case .block(let block): ItemGridScreen(title: block.title, items: block.items)
         case .likedAlbums: CardGridScreen(kind: .albums)
         case .likedArtists: CardGridScreen(kind: .artists)
         case .settings: SettingsScreen()
