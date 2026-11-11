@@ -165,6 +165,9 @@ jobs:
             xcrun simctl launch "$UDID" dev.tune.music -demo -screen "$screen"
             sleep 10
             xcrun simctl io "$UDID" screenshot "screens/$screen.png"
+            if [ "$screen" = "player" ]; then
+              xcrun simctl spawn "$UDID" log show --last 30s --style compact --predicate 'eventMessage CONTAINS "TUNE-PW"' | tail -n 20 || true
+            fi
             xcrun simctl terminate "$UDID" dev.tune.music || true
           done
 

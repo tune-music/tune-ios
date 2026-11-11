@@ -22,6 +22,7 @@ final class PlayerWindow: ObservableObject {
     }
 
     func show(animated: Bool = true) {
+        if Demo.on { NSLog("TUNE-PW show: window=%d current=%d scenes=%d", window == nil ? 0 : 1, Player.shared.current == nil ? 0 : 1, UIApplication.shared.connectedScenes.count) }
         guard window == nil, Player.shared.current != nil else { return }
         let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
         guard let scene = scenes.first(where: { $0.activationState == .foregroundActive }) ?? scenes.first else {
@@ -51,7 +52,14 @@ final class PlayerWindow: ObservableObject {
         window.frame = scene.coordinateSpace.bounds
         self.window = window
         window.transform = CGAffineTransform(translationX: 0, y: height)
-        window.isHidden = false
+        window.makeKeyAndVisible()
+        if Demo.on {
+            NSLog("TUNE-PW shown: frame=%@ hidden=%d level=%f windows=%d", NSCoder.string(for: window.frame), window.isHidden ? 1 : 0, Double(window.windowLevel.rawValue), scene.windows.count)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+                guard let window = self?.window else { NSLog("TUNE-PW later: window gone"); return }
+                NSLog("TUNE-PW later: frame=%@ hidden=%d alpha=%f tx=%f ty=%f root=%@ sub=%d", NSCoder.string(for: window.frame), window.isHidden ? 1 : 0, Double(window.alpha), Double(window.transform.tx), Double(window.transform.ty), NSCoder.string(for: window.rootViewController?.view.frame ?? .zero), window.subviews.count)
+            }
+        }
         offset = 0
         closing = false
         visible = true
