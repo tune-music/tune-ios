@@ -58,6 +58,34 @@ extension View {
     }
 }
 
+/// Нажатие с откликом: кнопка поджимается под пальцем и пружинит обратно.
+struct PressStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.86 : 1)
+            .opacity(configuration.isPressed ? 0.75 : 1)
+            .animation(.spring(response: 0.25, dampingFraction: 0.6), value: configuration.isPressed)
+    }
+}
+
+/// Значок «играть / пауза»: одна фигура перетекает в другую, а не сменяется затуханием.
+struct PlayGlyph: View {
+    let playing: Bool
+    let size: CGFloat
+
+    var body: some View {
+        let image = Image(systemName: playing ? "pause.fill" : "play.fill")
+            .font(.system(size: size))
+        if #available(iOS 17.0, *) {
+            image
+                .contentTransition(.symbolEffect(.replace))
+                .animation(.spring(response: 0.3, dampingFraction: 0.8), value: playing)
+        } else {
+            image
+        }
+    }
+}
+
 /// Разрыв между кнопками панели навигации: на iOS 26 меню «…» получает свою стеклянную
 /// кнопку и раскрывается из неё, а не из общей плашки.
 @ToolbarContentBuilder
@@ -89,7 +117,7 @@ struct TrackMenu: View {
     let navigate: (Route) -> Void
     let pick: (Track) -> Void
 
-    @EnvironmentObject private var player: Player
+    private var player: Player { Player.shared }
     @EnvironmentObject private var downloads: Downloads
     @EnvironmentObject private var session: Session
 
@@ -176,7 +204,8 @@ struct TrackRow: View {
     var onRemove: (() -> Void)?
     let action: () -> Void
 
-    @EnvironmentObject private var player: Player
+    @ObservedObject private var now = Player.shared.now
+    private var player: Player { Player.shared }
     @EnvironmentObject private var downloads: Downloads
     @EnvironmentObject private var session: Session
     @Environment(\.navigate) private var navigate
@@ -187,7 +216,7 @@ struct TrackRow: View {
     }
 
     var body: some View {
-        let playing = player.current?.id == track.id
+        let playing = now.id == track.id
         HStack(spacing: 4) {
             Button(action: action) {
                 HStack(spacing: 12) {
@@ -196,7 +225,7 @@ struct TrackRow: View {
                             if playing {
                                 ZStack {
                                     Color.black.opacity(0.6)
-                                    Image(systemName: player.isPlaying ? "waveform" : "pause.fill")
+                                    Image(systemName: now.playing ? "waveform" : "pause.fill")
                                         .font(.system(size: 17, weight: .semibold))
                                         .foregroundStyle(Theme.accent)
                                 }
@@ -597,12 +626,12 @@ struct MiniPlayer: View {
                 axis = nil
                 if locked == .horizontal {
                     let far = abs(value.translation.width) > 50 || abs(value.predictedEndTranslation.width) > 160
-                    withAnimation(.easeOut(duration: 0.24)) {
-                        shift = 0
-                        if far {
-                            if forward { player.next() } else { player.previous() }
-                        }
+                    // Трек переключается без общей анимации: иначе вместе с названием
+                    // анимировались все строки списка под мини-плеером.
+                    if far {
+                        if forward { player.next() } else { player.previous() }
                     }
+                    withAnimation(.easeOut(duration: 0.24)) { shift = 0 }
                 } else if value.translation.height < -36 {
                     // Плеер открывается только явным движением вверх.
                     openPlayer()
@@ -636,6 +665,7 @@ struct MiniPlayer: View {
                     .transition(change)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .animation(.easeOut(duration: 0.24), value: track.id)
                 .clipped()
                 .contentShape(Rectangle())
                 .onTapGesture(perform: openPlayer)
@@ -655,22 +685,15 @@ struct MiniPlayer: View {
                 Button {
                     player.toggle()
                 } label: {
-                    ZStack {
-                        if player.isBuffering {
-                            ProgressView()
-                                .tint(.white)
-                        } else {
-                            Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                                .font(.system(size: 22))
-                                .foregroundStyle(.white)
-                        }
-                    }
-                    .frame(width: 50)
+                    PlayGlyph(playing: player.isPlaying, size: 22)
+                        .foregroundStyle(.white)
+                        .opacity(player.isBuffering ? 0.5 : 1)
+                        .frame(width: 50)
                     .frame(maxHeight: .infinity)
                     // Нажатие ловит вся площадь кнопки, а не только сам значок.
                     .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(PressStyle())
             }
             .padding(.leading, 8)
             .padding(.trailing, 2)

@@ -1,26 +1,135 @@
 import AVKit
 import SwiftUI
 
-/// Полноэкранный плеер: фон подстраивается под цвет обложки.
+/// Полноэкранный плеер. Лежит поверх вкладок, а не в отдельном окне: при смахивании
+/// под ним видно приложение.
+///
+/// Здесь только сдвиг под пальцем. Всё содержимое вынесено в PlayerBody, чтобы при
+/// перетаскивании оно не пересчитывалось на каждом кадре.
 struct PlayerScreen: View {
+    let close: () -> Void
+    @State private var drag: CGFloat = 0
+    @State private var axis: Axis?
+
+    var body: some View {
+        PlayerBody(close: close)
+            .equatable()
+            .background {
+                PlayerBackdrop(rounded: drag > 0)
+            }
+            .overlay(alignment: .top) {
+                ToastView()
+            }
+            .offset(y: drag)
+            .gesture(
+                // Смахивание вниз закрывает плеер. Направление жеста определяется в его начале.
+                DragGesture(minimumDistance: 16)
+                    .onChanged { value in
+                        let move = value.translation
+                        if axis == nil { axis = abs(move.width) > abs(move.height) ? .horizontal : .vertical }
+                        if axis == .vertical { drag = max(0, move.height) }
+                    }
+                    .onEnded { value in
+                        let locked = axis
+                        axis = nil
+                        guard locked == .vertical else { return }
+                        if value.translation.height > 140 || value.predictedEndTranslation.height > 420 {
+                            close()
+                        } else {
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { drag = 0 }
+                        }
+                    }
+            )
+    }
+}
+
+/// Фон плеера: цвет обложки, уходящий в чёрный.
+private struct PlayerBackdrop: View {
+    let rounded: Bool
+    @EnvironmentObject private var player: Player
+    @State private var tone = Theme.tone
+
+    var body: some View {
+        ZStack {
+            Color(white: 0.05)
+            LinearGradient(colors: [tone, Color(white: 0.05)], startPoint: .top, endPoint: .bottom)
+        }
+        // Скругление появляется, когда плеер тянут вниз: видно, что это отдельный лист.
+        .clipShape(RoundedRectangle(cornerRadius: rounded ? 38 : 0, style: .continuous))
+        .ignoresSafeArea()
+        .task(id: player.current?.cover) {
+            let color = await ImageLoader.shared.tone(player.current?.cover)
+            withAnimation(.easeInOut(duration: 0.4)) { tone = color ?? Theme.tone }
+        }
+    }
+}
+
+/// Обложка: смахивание в сторону переключает трек, новая обложка въезжает с другой стороны.
+private struct PlayerCover: View {
+    let side: CGFloat
+    @EnvironmentObject private var player: Player
+    @State private var slide: CGFloat = 0
+    @State private var axis: Axis?
+    @State private var forward = true
+
+    var body: some View {
+        ZStack {
+            CoverView(uri: player.current?.cover, size: side, corner: 22)
+                .offset(x: slide * 0.7)
+                .opacity(1 - min(Double(abs(slide)) / 320.0, 0.5))
+                .id(player.current?.id)
+                .transition(.asymmetric(
+                    insertion: .move(edge: forward ? .trailing : .leading).combined(with: .opacity),
+                    removal: .move(edge: forward ? .leading : .trailing).combined(with: .opacity)))
+        }
+        // Анимируется только сама обложка: смена трека не тянет за собой анимацию всего экрана.
+        .animation(.easeOut(duration: 0.26), value: player.current?.id)
+        .shadow(color: .black.opacity(0.4), radius: 22, y: 14)
+        .scaleEffect(player.isPlaying ? 1 : 0.9)
+        .animation(.spring(response: 0.45, dampingFraction: 0.75), value: player.isPlaying)
+        .contentShape(Rectangle())
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 16)
+                .onChanged { value in
+                    let move = value.translation
+                    if axis == nil { axis = abs(move.width) > abs(move.height) ? .horizontal : .vertical }
+                    guard axis == .horizontal else { return }
+                    slide = move.width
+                    let ahead = move.width < 0
+                    if ahead != forward { forward = ahead }
+                }
+                .onEnded { value in
+                    let locked = axis
+                    axis = nil
+                    guard locked == .horizontal else { return }
+                    let far = abs(slide) > 70 || abs(value.predictedEndTranslation.width) > 220
+                    if far {
+                        if forward { player.next() } else { player.previous() }
+                    }
+                    withAnimation(.easeOut(duration: 0.26)) { slide = 0 }
+                }
+        )
+    }
+}
+
+/// Содержимое плеера. Сравнение всегда «равно»: экран перерисовывается только от своих
+/// данных (плеер, коллекция, загрузки), а не от сдвига под пальцем.
+private struct PlayerBody: View, Equatable {
     private enum Panel: String, Identifiable {
         case queue, lyrics
         var id: String { rawValue }
     }
 
+    nonisolated static func == (lhs: PlayerBody, rhs: PlayerBody) -> Bool { true }
+
+    let close: () -> Void
+
     @EnvironmentObject private var player: Player
     @EnvironmentObject private var session: Session
     @EnvironmentObject private var downloads: Downloads
     @EnvironmentObject private var router: Router
-    /// Плеер лежит поверх вкладок, а не в отдельном окне: при смахивании под ним видно приложение.
-    let close: () -> Void
     @State private var panel: Panel? = Demo.screen == "queue" ? .queue : Demo.screen == "lyrics" ? .lyrics : nil
     @State private var picking: Track?
-    @State private var tone = Theme.tone
-    @State private var drag: CGFloat = 0
-    /// Сдвиг обложки, когда её смахивают в сторону, чтобы переключить трек.
-    @State private var slide: CGFloat = 0
-    @State private var forward = true
 
     var body: some View {
         GeometryReader { geometry in
@@ -28,16 +137,7 @@ struct PlayerScreen: View {
             VStack(spacing: 0) {
                 top
                 Spacer(minLength: 10)
-                CoverView(uri: player.current?.cover, size: side, corner: 22)
-                    .shadow(color: .black.opacity(0.45), radius: 28, y: 16)
-                    .scaleEffect(player.isPlaying ? 1 : 0.9)
-                    .animation(.spring(response: 0.45, dampingFraction: 0.75), value: player.isPlaying)
-                    .offset(x: slide * 0.7)
-                    .opacity(1 - min(Double(abs(slide)) / 320.0, 0.5))
-                    .id(player.current?.id)
-                    .transition(.asymmetric(
-                        insertion: .move(edge: forward ? .trailing : .leading).combined(with: .opacity),
-                        removal: .move(edge: forward ? .leading : .trailing).combined(with: .opacity)))
+                PlayerCover(side: side)
                 Spacer(minLength: 10)
                 if let track = player.current {
                     titles(track)
@@ -53,52 +153,6 @@ struct PlayerScreen: View {
             .padding(.top, 8)
             .padding(.bottom, 12)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-        .background {
-            ZStack {
-                Color(white: 0.05)
-                LinearGradient(colors: [tone, Color(white: 0.05)], startPoint: .top, endPoint: .bottom)
-            }
-            // Скругление появляется, когда плеер тянут вниз: видно, что это отдельный лист.
-            .clipShape(RoundedRectangle(cornerRadius: drag > 0 ? 38 : 0, style: .continuous))
-            .ignoresSafeArea()
-        }
-        .overlay(alignment: .top) {
-            ToastView()
-        }
-        .offset(y: drag)
-        .gesture(
-            // Смахивание вниз закрывает плеер, в стороны — переключает трек.
-            DragGesture(minimumDistance: 24)
-                .onChanged { value in
-                    let move = value.translation
-                    if drag == 0, slide != 0 || abs(move.width) > abs(move.height) {
-                        slide = move.width
-                        let ahead = move.width < 0
-                        if ahead != forward { forward = ahead }
-                    } else if move.height > 0 {
-                        drag = move.height
-                    }
-                }
-                .onEnded { value in
-                    if slide != 0 {
-                        let far = abs(slide) > 70 || abs(value.predictedEndTranslation.width) > 220
-                        withAnimation(.easeOut(duration: 0.26)) {
-                            slide = 0
-                            if far {
-                                if forward { player.next() } else { player.previous() }
-                            }
-                        }
-                    } else if value.translation.height > 140 || value.predictedEndTranslation.height > 420 {
-                        close()
-                    } else {
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { drag = 0 }
-                    }
-                }
-        )
-        .task(id: player.current?.cover) {
-            let color = await ImageLoader.shared.tone(player.current?.cover)
-            withAnimation(.easeInOut(duration: 0.4)) { tone = color ?? Theme.tone }
         }
         .sheet(item: $panel) { panel in
             switch panel {
@@ -177,10 +231,19 @@ struct PlayerScreen: View {
                             .foregroundStyle(Theme.accent)
                     }
                 }
-                Text(track.artists)
-                    .font(.system(size: 17))
-                    .foregroundStyle(.white.opacity(0.65))
-                    .lineLimit(1)
+                // Нажатие на исполнителя ведёт на его страницу.
+                Button {
+                    guard let artist = track.artistList.first(where: { !$0.id.isEmpty }) else { return }
+                    close()
+                    router.push(.artist(artist.id, artist.name))
+                } label: {
+                    Text(track.artists)
+                        .font(.system(size: 17))
+                        .foregroundStyle(.white.opacity(0.65))
+                        .lineLimit(1)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
             }
             Spacer(minLength: 8)
             let disliked = session.disliked.contains(track.id)
@@ -189,8 +252,9 @@ struct PlayerScreen: View {
                     .font(.system(size: 22))
                     .foregroundStyle(disliked ? Theme.accent : Color.white.opacity(0.8))
                     .frame(width: 44, height: 48)
+                    .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PressStyle())
             let liked = session.isLiked(track.id)
             Button {
                 session.toggleLike(track)
@@ -199,8 +263,9 @@ struct PlayerScreen: View {
                     .font(.system(size: 26))
                     .foregroundStyle(liked ? Theme.accent : Color.white)
                     .frame(width: 44, height: 48)
+                    .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PressStyle())
         }
     }
 
@@ -211,6 +276,7 @@ struct PlayerScreen: View {
                     .font(.system(size: 20, weight: .semibold))
                     .foregroundStyle(player.shuffle ? Theme.accent : Color.white.opacity(0.6))
                     .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
             .disabled(player.isWave)
             .opacity(player.isWave ? 0.35 : 1)
@@ -219,28 +285,31 @@ struct PlayerScreen: View {
                 Image(systemName: "backward.fill")
                     .font(.system(size: 30))
                     .frame(width: 60, height: 60)
+                    .contentShape(Rectangle())
             }
             Spacer()
             Button(action: player.toggle) {
                 ZStack {
                     Circle()
                         .fill(Color.white)
-                    if player.isBuffering {
-                        ProgressView()
-                            .tint(.black)
-                    } else {
-                        Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                            .font(.system(size: 30))
-                            .foregroundStyle(.black)
-                    }
+                    PlayGlyph(playing: player.isPlaying, size: 30)
+                        .foregroundStyle(.black)
                 }
                 .frame(width: 76, height: 76)
+                .overlay {
+                    // Пока трек грузится, вокруг кнопки бежит дуга; сам значок не пропадает.
+                    if player.isBuffering {
+                        BufferRing()
+                            .padding(-7)
+                    }
+                }
             }
             Spacer()
             Button(action: player.next) {
                 Image(systemName: "forward.fill")
                     .font(.system(size: 30))
                     .frame(width: 60, height: 60)
+                    .contentShape(Rectangle())
             }
             Spacer()
             Button(action: player.cycleRepeat) {
@@ -248,9 +317,10 @@ struct PlayerScreen: View {
                     .font(.system(size: 20, weight: .semibold))
                     .foregroundStyle(player.repeatMode == .off ? Color.white.opacity(0.6) : Theme.accent)
                     .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressStyle())
         .foregroundStyle(.white)
     }
 
@@ -265,6 +335,7 @@ struct PlayerScreen: View {
             } label: {
                 Image(systemName: "text.quote")
                     .frame(width: 48, height: 44)
+                    .contentShape(Rectangle())
             }
             .disabled(!track.hasLyrics)
             .opacity(track.hasLyrics ? 1 : 0.35)
@@ -289,6 +360,7 @@ struct PlayerScreen: View {
                 Image(systemName: sleeping ? "moon.zzz.fill" : "moon.zzz")
                     .foregroundStyle(sleeping ? Theme.accent : Color.white.opacity(0.85))
                     .frame(width: 48, height: 44)
+                    .contentShape(Rectangle())
             }
             Spacer()
             if let value = downloads.active[track.id] {
@@ -302,6 +374,7 @@ struct PlayerScreen: View {
                     Image(systemName: "arrow.down.circle.fill")
                         .foregroundStyle(Theme.accent)
                         .frame(width: 48, height: 44)
+                        .contentShape(Rectangle())
                 }
             } else {
                 Button {
@@ -309,6 +382,7 @@ struct PlayerScreen: View {
                 } label: {
                     Image(systemName: "arrow.down.circle")
                         .frame(width: 48, height: 44)
+                        .contentShape(Rectangle())
                 }
             }
             Spacer()
@@ -317,11 +391,27 @@ struct PlayerScreen: View {
             } label: {
                 Image(systemName: "list.bullet")
                     .frame(width: 48, height: 44)
+                    .contentShape(Rectangle())
             }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressStyle())
         .font(.system(size: 21, weight: .medium))
         .foregroundStyle(.white.opacity(0.85))
+    }
+}
+
+/// Дуга, бегущая вокруг кнопки, пока трек грузится.
+private struct BufferRing: View {
+    @State private var turning = false
+
+    var body: some View {
+        Circle()
+            .trim(from: 0, to: 0.3)
+            .stroke(Color.white.opacity(0.9), style: StrokeStyle(lineWidth: 3, lineCap: .round))
+            .rotationEffect(.degrees(turning ? 360 : 0))
+            .animation(.linear(duration: 0.9).repeatForever(autoreverses: false), value: turning)
+            .onAppear { turning = true }
+            .transition(.opacity)
     }
 }
 

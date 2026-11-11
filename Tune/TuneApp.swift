@@ -91,6 +91,7 @@ struct RootView: View {
     @StateObject private var router = Router.shared
     @State private var showPlayer = ["player", "queue", "lyrics"].contains(Demo.screen)
     @State private var picking: Track? = Demo.screen == "picker" ? Demo.data.tracks.first : nil
+    @Environment(\.scenePhase) private var phase
 
     var body: some View {
         Group {
@@ -99,6 +100,9 @@ struct RootView: View {
             } else {
                 tabs
             }
+        }
+        .onChange(of: phase) { now in
+            if now == .active { Task { await Updater.shared.check() } }
         }
         .alert("Tune", isPresented: errorShown) {
             Button("Понятно", role: .cancel) {}
@@ -127,6 +131,9 @@ struct RootView: View {
                 .tag(2)
         }
         .tint(Theme.accent)
+        // Пока открыт плеер, вкладки под ним не принимают нажатия: иначе кнопка «назад»
+        // страницы срабатывала вместо кнопки плеера над ней.
+        .allowsHitTesting(!showPlayer)
         .environmentObject(router)
         .environment(\.openPlayer, { withAnimation(Self.rise) { showPlayer = true } })
         .environment(\.pickPlaylist, { picking = $0 })

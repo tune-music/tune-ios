@@ -24,13 +24,6 @@ final class HomeModel: ObservableObject {
     }
 }
 
-private struct OffsetKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
-
 /// Главная: «Моя волна», волны по настроению и полки, как у Яндекс Музыки.
 struct HomeScreen: View {
     @EnvironmentObject private var session: Session
@@ -38,7 +31,6 @@ struct HomeScreen: View {
     @EnvironmentObject private var downloads: Downloads
     @Environment(\.navigate) private var navigate
     @StateObject private var model = HomeModel()
-    @State private var scrolled = false
     @State private var tuning = Demo.screen == "wave"
 
     var body: some View {
@@ -63,28 +55,25 @@ struct HomeScreen: View {
                 }
             }
             .padding(.bottom, 24)
-            .background {
-                GeometryReader { geometry in
-                    Color.clear.preference(key: OffsetKey.self, value: geometry.frame(in: .named("home")).minY)
-                }
-            }
-        }
-        .coordinateSpace(name: "home")
-        .onPreferenceChange(OffsetKey.self) { offset in
-            let now = offset < -40
-            if now != scrolled { scrolled = now }
         }
         .background(Theme.background)
         .ignoresSafeArea(edges: .top)
         .toolbar(.hidden, for: .navigationBar)
         .overlay(alignment: .top) {
-            // Тёмная дымка под часами и островком: появляется, когда страница прокручена.
-            LinearGradient(colors: [.black.opacity(0.92), .black.opacity(0.6), .clear], startPoint: .top, endPoint: .bottom)
-                .frame(height: 120)
-                .ignoresSafeArea(edges: .top)
-                .opacity(scrolled ? 1 : 0)
-                .animation(.easeInOut(duration: 0.2), value: scrolled)
-                .allowsHitTesting(false)
+            // Размытие под часами и островком: прокрученные полки уходят в него плавно.
+            // Оно есть всегда: поверх волны его не видно, потому что она сама размыта.
+            ZStack {
+                Rectangle().fill(.ultraThinMaterial)
+                Color.black.opacity(0.35)
+            }
+            .mask {
+                LinearGradient(
+                    stops: [.init(color: .black, location: 0), .init(color: .black, location: 0.5), .init(color: .clear, location: 1)],
+                    startPoint: .top, endPoint: .bottom)
+            }
+            .frame(height: 112)
+            .ignoresSafeArea(edges: .top)
+            .allowsHitTesting(false)
         }
         .sheet(isPresented: $tuning) {
             WaveSettingsSheet()
@@ -95,6 +84,7 @@ struct HomeScreen: View {
             await Task {
                 await model.load(force: true)
                 await session.refresh()
+                await Updater.shared.check()
             }.value
         }
     }

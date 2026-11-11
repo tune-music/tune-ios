@@ -273,7 +273,12 @@ struct LibraryScreen: View {
         }
         .background(Theme.background)
         .navigationTitle("Коллекция")
-        .refreshable { await session.refresh() }
+        .refreshable {
+            await Task {
+                await session.refresh()
+                await Updater.shared.check()
+            }.value
+        }
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button {

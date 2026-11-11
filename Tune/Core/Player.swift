@@ -1,4 +1,5 @@
 import AVFoundation
+import Combine
 import MediaPlayer
 import SwiftUI
 import UIKit
@@ -71,9 +72,20 @@ private struct Listen {
     }
 }
 
+/// Какой трек играет и играет ли он. Строки списков следят только за этим, а не за всем
+/// плеером: буферизация, очередь и прочее их не перерисовывают.
+@MainActor
+final class NowPlaying: ObservableObject {
+    @Published fileprivate(set) var id: String?
+    @Published fileprivate(set) var playing = false
+}
+
 @MainActor
 final class Player: NSObject, ObservableObject {
     static let shared = Player()
+
+    let now = NowPlaying()
+    private var bag = Set<AnyCancellable>()
 
     @Published private(set) var queue: [Track] = []
     @Published private(set) var index = 0
@@ -129,6 +141,13 @@ final class Player: NSObject, ObservableObject {
         restore()
         observe()
         remoteCommands()
+        $queue.combineLatest($index, $isPlaying)
+            .sink { [now] queue, index, playing in
+                let id = queue.indices.contains(index) ? queue[index].id : nil
+                if now.id != id { now.id = id }
+                if now.playing != playing { now.playing = playing }
+            }
+            .store(in: &bag)
     }
 
     // MARK: - Запуск
