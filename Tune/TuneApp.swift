@@ -39,6 +39,7 @@ struct TuneApp: App {
                 .environmentObject(downloads)
                 .preferredColorScheme(.dark)
                 .tint(.white)
+                .task { await Updater.shared.check() }
                 .task {
                     await session.refresh()
                     if Demo.on {
@@ -158,13 +159,17 @@ struct TabRoot<Content: View>: View {
     var body: some View {
         NavigationStack(path: $router.paths[index]) {
             content
+                .safeAreaInset(edge: .bottom, spacing: 0) { MiniPlayerSpace() }
                 .navigationDestination(for: Route.self) { route in
                     destination(route)
+                        .safeAreaInset(edge: .bottom, spacing: 0) { MiniPlayerSpace() }
                 }
         }
         .tint(.white)
         .environment(\.navigate, { router.paths[index].append($0) })
-        .safeAreaInset(edge: .bottom, spacing: 0) {
+        // Мини-плеер лежит поверх страницы, а место под него отступает каждая страница сама:
+        // так список докручивается до конца и последние строки не прячутся.
+        .overlay(alignment: .bottom) {
             MiniPlayer()
         }
     }

@@ -18,6 +18,8 @@ struct PlayerScreen: View {
     @State private var picking: Track?
     @State private var tone = Theme.tone
     @State private var drag: CGFloat = 0
+    /// Сдвиг обложки, когда её смахивают в сторону, чтобы переключить трек.
+    @State private var slide: CGFloat = 0
 
     var body: some View {
         GeometryReader { geometry in
@@ -29,6 +31,8 @@ struct PlayerScreen: View {
                     .shadow(color: .black.opacity(0.45), radius: 28, y: 16)
                     .scaleEffect(player.isPlaying ? 1 : 0.9)
                     .animation(.spring(response: 0.45, dampingFraction: 0.75), value: player.isPlaying)
+                    .offset(x: slide * 0.7)
+                    .opacity(1 - min(abs(slide) / 320, 0.5))
                 Spacer(minLength: 10)
                 if let track = player.current {
                     titles(track)
@@ -59,13 +63,21 @@ struct PlayerScreen: View {
         }
         .offset(y: drag)
         .gesture(
-            // Смахивание вниз закрывает плеер.
+            // Смахивание вниз закрывает плеер, в стороны — переключает трек.
             DragGesture(minimumDistance: 24)
                 .onChanged { value in
-                    if value.translation.height > 0 { drag = value.translation.height }
+                    let move = value.translation
+                    if drag == 0, slide != 0 || abs(move.width) > abs(move.height) {
+                        slide = move.width
+                    } else if move.height > 0 {
+                        drag = move.height
+                    }
                 }
                 .onEnded { value in
-                    if value.translation.height > 140 {
+                    if slide != 0 {
+                        if slide < -70 { player.next() } else if slide > 70 { player.previous() }
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { slide = 0 }
+                    } else if value.translation.height > 140 {
                         close()
                     } else {
                         withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { drag = 0 }
@@ -130,8 +142,11 @@ struct PlayerScreen: View {
                 Image(systemName: "ellipsis")
                     .font(.system(size: 18, weight: .semibold))
                     .frame(width: 44, height: 44)
-                    .glass(in: Circle(), interactive: true)
+                    .contentShape(Circle())
             }
+            // Стекло на самом меню, а не на значке: при удержании подсвечивается круг, а не квадрат.
+            .glass(in: Circle(), interactive: true)
+            .clipShape(Circle())
         }
         .foregroundStyle(.white)
     }

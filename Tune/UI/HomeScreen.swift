@@ -12,7 +12,9 @@ final class HomeModel: ObservableObject {
         loading = true
         defer { loading = false }
         do {
-            page = try await API.shared.home()
+            let fresh = try await API.shared.home()
+            // Пустой ответ не стирает то, что уже показано.
+            if !fresh.blocks.isEmpty || page.blocks.isEmpty { page = fresh }
             loaded = true
             failed = false
         } catch {
@@ -41,13 +43,8 @@ struct HomeScreen: View {
 
     var body: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 30) {
-                GeometryReader { geometry in
-                    Color.clear.preference(key: OffsetKey.self, value: geometry.frame(in: .named("home")).minY)
-                }
-                .frame(height: 0)
+            VStack(alignment: .leading, spacing: 30) {
                 WaveHero(tune: { tuning = true })
-                    .padding(.top, -30)
                 if session.offline || model.failed {
                     offline
                 }
@@ -66,6 +63,11 @@ struct HomeScreen: View {
                 }
             }
             .padding(.bottom, 24)
+            .background {
+                GeometryReader { geometry in
+                    Color.clear.preference(key: OffsetKey.self, value: geometry.frame(in: .named("home")).minY)
+                }
+            }
         }
         .coordinateSpace(name: "home")
         .onPreferenceChange(OffsetKey.self) { offset in
@@ -89,8 +91,11 @@ struct HomeScreen: View {
         }
         .task { await model.load() }
         .refreshable {
-            await model.load(force: true)
-            await session.refresh()
+            // Отдельная задача: жест обновления отменяет свою, и запрос обрывался на полпути.
+            await Task {
+                await model.load(force: true)
+                await session.refresh()
+            }.value
         }
     }
 
@@ -230,7 +235,10 @@ private struct WaveHero: View {
         .scaleEffect(moving ? 1.1 : 0.95)
         .blur(radius: 56)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .clipped()
+        // Сверху пятно не обрезается: когда страницу тянут вниз, свечение уходит под часы плавно.
+        .mask {
+            Rectangle().padding(.top, -500)
+        }
         .overlay {
             LinearGradient(colors: [.clear, .clear, Theme.background], startPoint: .top, endPoint: .bottom)
         }

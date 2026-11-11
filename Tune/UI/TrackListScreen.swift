@@ -250,6 +250,9 @@ struct TrackListScreen: View {
                 } label: {
                     Image(systemName: "magnifyingglass")
                 }
+            }
+            toolbarGap()
+            ToolbarItem(placement: .navigationBarTrailing) {
                 Menu {
                     menu
                 } label: {
@@ -257,10 +260,12 @@ struct TrackListScreen: View {
                 }
             }
         }
-        .confirmationDialog("Удалить всю скачанную музыку?", isPresented: $confirmRemove, titleVisibility: .visible) {
+        .alert("Удалить всю скачанную музыку?", isPresented: $confirmRemove) {
+            Button("Отмена", role: .cancel) {}
             Button("Удалить", role: .destructive) { downloads.removeAll() }
         }
-        .confirmationDialog("Удалить плейлист «\(title)»?", isPresented: $confirmDelete, titleVisibility: .visible) {
+        .alert("Удалить плейлист «\(title)»?", isPresented: $confirmDelete) {
+            Button("Отмена", role: .cancel) {}
             Button("Удалить", role: .destructive) {
                 guard let playlist else { return }
                 Task {

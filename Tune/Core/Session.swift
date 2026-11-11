@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 import WebKit
 
 /// Аккаунт и коллекция. Последнее состояние хранится на диске: приложение открывается
@@ -150,6 +151,7 @@ final class Session: ObservableObject {
     func toggleLike(_ track: Track) {
         guard let uid = profile?.uid else { return }
         let liked = !isLiked(track.id)
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
         apply(track.id, liked)
         if liked { disliked.remove(track.id) }
         Task {
@@ -168,6 +170,7 @@ final class Session: ObservableObject {
     func toggleDislike(_ track: Track) -> Bool {
         guard let uid = profile?.uid else { return false }
         let now = !disliked.contains(track.id)
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
         if now {
             disliked.insert(track.id)
             apply(track.id, false)

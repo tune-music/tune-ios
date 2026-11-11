@@ -58,6 +58,17 @@ extension View {
     }
 }
 
+/// Разрыв между кнопками панели навигации: на iOS 26 меню «…» получает свою стеклянную
+/// кнопку и раскрывается из неё, а не из общей плашки.
+@ToolbarContentBuilder
+func toolbarGap() -> some ToolbarContent {
+    #if compiler(>=6.2)
+    if #available(iOS 26.0, *) {
+        ToolbarSpacer(.fixed, placement: .navigationBarTrailing)
+    }
+    #endif
+}
+
 private struct PickPlaylistKey: EnvironmentKey {
     static let defaultValue: (Track) -> Void = { _ in }
 }
@@ -543,7 +554,17 @@ struct ToastView: View {
     }
 }
 
-/// Плашка с текущим треком над панелью вкладок.
+/// Место под мини-плеер внизу страницы.
+struct MiniPlayerSpace: View {
+    @EnvironmentObject private var player: Player
+
+    var body: some View {
+        Color.clear.frame(height: player.current == nil ? 0 : 68)
+    }
+}
+
+/// Плашка с текущим треком над панелью вкладок. Смахивание вверх открывает плеер,
+/// в стороны — переключает трек.
 struct MiniPlayer: View {
     @EnvironmentObject private var player: Player
     @EnvironmentObject private var session: Session
@@ -554,7 +575,7 @@ struct MiniPlayer: View {
         if let track = player.current {
             let liked = session.isLiked(track.id)
             let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
-            HStack(spacing: 2) {
+            HStack(spacing: 0) {
                 Button(action: openPlayer) {
                     HStack(spacing: 10) {
                         CoverView(uri: track.cover, size: 42, corner: 10)
@@ -570,6 +591,7 @@ struct MiniPlayer: View {
                         }
                         Spacer(minLength: 0)
                     }
+                    .frame(maxHeight: .infinity)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -580,10 +602,14 @@ struct MiniPlayer: View {
                     Image(systemName: liked ? "heart.fill" : "heart")
                         .font(.system(size: 20))
                         .foregroundStyle(liked ? Theme.accent : Color.white)
-                        .frame(width: 42, height: 42)
+                        .frame(width: 46)
+                        .frame(maxHeight: .infinity)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                Button(action: player.toggle) {
+                Button {
+                    player.toggle()
+                } label: {
                     ZStack {
                         if player.isBuffering {
                             ProgressView()
@@ -594,18 +620,40 @@ struct MiniPlayer: View {
                                 .foregroundStyle(.white)
                         }
                     }
-                    .frame(width: 42, height: 42)
+                    .frame(width: 50)
+                    .frame(maxHeight: .infinity)
+                    // Нажатие ловит вся площадь кнопки, а не только сам значок.
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }
             .padding(.leading, 8)
-            .padding(.trailing, 6)
-            .padding(.vertical, 8)
+            .padding(.trailing, 2)
+            .frame(height: 58)
             .overlay(alignment: .bottom) {
                 MiniProgress(progress: player.progress)
                     .padding(.horizontal, 18)
+                    .allowsHitTesting(false)
             }
-            .glass(in: shape, tint: tone.opacity(0.75))
+            // Стекло лежит подложкой под кнопками и не перехватывает их нажатия.
+            .background {
+                Color.clear.glass(in: shape, tint: tone.opacity(0.75))
+            }
+            .contentShape(shape)
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 20)
+                    .onEnded { value in
+                        let x = value.translation.width
+                        let y = value.translation.height
+                        if abs(y) > abs(x) {
+                            if y < -24 { openPlayer() }
+                        } else if x < -50 {
+                            player.next()
+                        } else if x > 50 {
+                            player.previous()
+                        }
+                    }
+            )
             .padding(.horizontal, 10)
             .padding(.bottom, 6)
             .task(id: track.cover) {

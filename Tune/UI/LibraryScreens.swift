@@ -176,10 +176,34 @@ struct LibraryScreen: View {
     @Environment(\.navigate) private var navigate
     @State private var creating = false
     @State private var name = ""
+    @ObservedObject private var updater = Updater.shared
 
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
+                if let version = updater.latest {
+                    Button {
+                        navigate(.settings)
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "arrow.down.circle.fill")
+                                .font(.system(size: 22))
+                                .foregroundStyle(Theme.accent)
+                            Text("Доступна версия \(version)")
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundStyle(.white)
+                            Spacer(minLength: 0)
+                            Text("Обновить")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(Theme.accent)
+                        }
+                        .padding(14)
+                        .glass(in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 12)
+                }
                 Button {
                     navigate(.likes)
                 } label: {
@@ -486,9 +510,22 @@ struct SettingsScreen: View {
     @State private var cacheBytes: Int64 = 0
     @State private var confirmLogout = false
     @State private var confirmRemove = false
+    @ObservedObject private var updater = Updater.shared
 
     var body: some View {
         Form {
+            if let version = updater.latest {
+                Section {
+                    Button("Обновить через AltStore") { updater.install(with: "altstore") }
+                    Button("Обновить через SideStore") { updater.install(with: "sidestore") }
+                    Button("Скачать файл .ipa") { updater.download() }
+                } header: {
+                    Text("Доступна версия \(version)")
+                } footer: {
+                    Text("Установка идёт поверх: вход, настройки и скачанная музыка сохраняются.")
+                }
+                .tint(Theme.accent)
+            }
             Section("Аккаунт") {
                 LabeledContent("Имя", value: session.profile?.name ?? "—")
                 LabeledContent("Плюс", value: session.profile?.plus == true ? "Активен" : "Нет")
@@ -551,12 +588,14 @@ struct SettingsScreen: View {
         .task {
             cacheBytes = await Task.detached { Storage.size(of: Storage.stream) + Storage.size(of: Storage.images) }.value
         }
-        .confirmationDialog("Выйти из аккаунта?", isPresented: $confirmLogout, titleVisibility: .visible) {
+        .alert("Выйти из аккаунта?", isPresented: $confirmLogout) {
+            Button("Отмена", role: .cancel) {}
             Button("Выйти", role: .destructive) { session.logout() }
         } message: {
             Text("Скачанная музыка останется на устройстве.")
         }
-        .confirmationDialog("Удалить всю скачанную музыку?", isPresented: $confirmRemove, titleVisibility: .visible) {
+        .alert("Удалить всю скачанную музыку?", isPresented: $confirmRemove) {
+            Button("Отмена", role: .cancel) {}
             Button("Удалить", role: .destructive) { downloads.removeAll() }
         }
     }
