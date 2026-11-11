@@ -97,6 +97,40 @@ func toolbarGap() -> some ToolbarContent {
     #endif
 }
 
+private struct ZoomSpaceKey: EnvironmentKey {
+    static let defaultValue: Namespace.ID? = nil
+}
+
+extension EnvironmentValues {
+    /// Пространство переходов вкладки: связывает карточку со страницей, в которую она раскрывается.
+    var zoomSpace: Namespace.ID? {
+        get { self[ZoomSpaceKey.self] }
+        set { self[ZoomSpaceKey.self] = newValue }
+    }
+}
+
+extension View {
+    /// Карточка, из которой вырастает страница (iOS 18 и новее).
+    @ViewBuilder
+    func zoomSource(_ id: String, in space: Namespace.ID?) -> some View {
+        if #available(iOS 18.0, *), let space {
+            self.matchedTransitionSource(id: id, in: space)
+        } else {
+            self
+        }
+    }
+
+    /// Страница, которая вырастает из карточки с тем же идентификатором.
+    @ViewBuilder
+    func zoomTarget(_ id: String?, in space: Namespace.ID?) -> some View {
+        if #available(iOS 18.0, *), let space, let id {
+            self.navigationTransition(.zoom(sourceID: id, in: space))
+        } else {
+            self
+        }
+    }
+}
+
 private struct PickPlaylistKey: EnvironmentKey {
     static let defaultValue: (Track) -> Void = { _ in }
 }
@@ -116,6 +150,8 @@ struct TrackMenu: View {
     var onRemove: (() -> Void)?
     let navigate: (Route) -> Void
     let pick: (Track) -> Void
+    /// Вызывается после выбора пункта: в плеере меню показано листом, и его надо закрыть.
+    var done: () -> Void = {}
 
     private var player: Player { Player.shared }
     @EnvironmentObject private var downloads: Downloads
@@ -126,15 +162,18 @@ struct TrackMenu: View {
         let disliked = session.disliked.contains(track.id)
         Button {
             session.toggleLike(track)
+            done()
         } label: {
             Label(liked ? "Убрать из «Мне нравится»" : "Нравится", systemImage: liked ? "heart.slash" : "heart")
         }
         Button {
             if inPlayer { player.dislikeCurrent() } else { session.toggleDislike(track) }
+            done()
         } label: {
             Label(disliked ? "Снять дизлайк" : "Не нравится", systemImage: disliked ? "hand.thumbsup" : "hand.thumbsdown")
         }
         Button {
+            done()
             pick(track)
         } label: {
             Label("Добавить в плейлист", systemImage: "text.badge.plus")
@@ -142,12 +181,14 @@ struct TrackMenu: View {
         if downloads.has(track.id) {
             Button(role: .destructive) {
                 downloads.remove(track.id)
+                done()
             } label: {
                 Label("Удалить с устройства", systemImage: "trash")
             }
         } else if !downloads.isBusy(track.id) {
             Button {
                 downloads.download(track)
+                done()
             } label: {
                 Label("Скачать", systemImage: "arrow.down.circle")
             }
@@ -167,6 +208,7 @@ struct TrackMenu: View {
         Divider()
         if let album = track.albumId {
             Button {
+                done()
                 navigate(.album(album))
             } label: {
                 Label("Перейти к альбому", systemImage: "square.stack")
@@ -174,6 +216,7 @@ struct TrackMenu: View {
         }
         ForEach(track.artistList.filter { !$0.id.isEmpty }.prefix(3), id: \.id) { artist in
             Button {
+                done()
                 navigate(.artist(artist.id, artist.name))
             } label: {
                 Label(artist.name, systemImage: "music.mic")
@@ -181,6 +224,7 @@ struct TrackMenu: View {
         }
         Button {
             player.playWave(seeds: ["track:\(track.id)"], name: "Волна по треку")
+            done()
         } label: {
             Label("Волна по треку", systemImage: "dot.radiowaves.left.and.right")
         }
@@ -397,6 +441,7 @@ struct HomeCard: View {
 
     @EnvironmentObject private var player: Player
     @Environment(\.navigate) private var navigate
+    @Environment(\.zoomSpace) private var zoomSpace
 
     var body: some View {
         Button {
@@ -419,6 +464,7 @@ struct HomeCard: View {
             }
         }
         .buttonStyle(.plain)
+        .zoomSource(item.id, in: zoomSpace)
     }
 }
 

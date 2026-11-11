@@ -45,7 +45,7 @@ struct TuneApp: App {
                     await session.refresh()
                     if Demo.on {
                         player.showDemo(Demo.data.tracks, name: "Мне нравится")
-                        if ["player", "queue", "lyrics"].contains(Demo.screen) {
+                        if ["player", "queue", "lyrics", "actions"].contains(Demo.screen) {
                             // Окно плеера создаётся, когда сцена уже на экране.
                             try? await Task.sleep(nanoseconds: 1_500_000_000)
                             PlayerWindow.shared.show(animated: false)
@@ -162,6 +162,9 @@ struct TabRoot<Content: View>: View {
     let index: Int
     private let content: Content
     @EnvironmentObject private var router: Router
+    @Namespace private var zoom
+    /// Вкладка проявляется, когда на неё переключились.
+    @State private var shown = true
 
     init(index: Int, @ViewBuilder content: () -> Content) {
         self.index = index
@@ -175,14 +178,35 @@ struct TabRoot<Content: View>: View {
                 .navigationDestination(for: Route.self) { route in
                     destination(route)
                         .safeAreaInset(edge: .bottom, spacing: 0) { MiniPlayerSpace() }
+                        .zoomTarget(Self.zoomId(route), in: zoom)
                 }
         }
         .tint(.white)
         .environment(\.navigate, { router.paths[index].append($0) })
+        .environment(\.zoomSpace, zoom)
+        .opacity(shown ? 1 : 0)
+        .scaleEffect(shown ? 1 : 0.985)
+        .onChange(of: router.tab) { tab in
+            guard tab == index else { return }
+            shown = false
+            DispatchQueue.main.async {
+                withAnimation(.easeOut(duration: 0.22)) { shown = true }
+            }
+        }
         // Мини-плеер лежит поверх страницы, а место под него отступает каждая страница сама:
         // так список докручивается до конца и последние строки не прячутся.
         .overlay(alignment: .bottom) {
             MiniPlayer()
+        }
+    }
+
+    /// Какая карточка раскрывается в эту страницу. У остальных страниц переход обычный.
+    private static func zoomId(_ route: Route) -> String? {
+        switch route {
+        case .album(let id): return "album:\(id)"
+        case .artist(let id, _): return "artist:\(id)"
+        case .playlist(let playlist): return "playlist:\(playlist.id)"
+        default: return nil
         }
     }
 

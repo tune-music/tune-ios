@@ -110,6 +110,8 @@ private struct PlayerBody: View {
     /// Текст песни показывается на месте обложки.
     @State private var lyrics = Demo.screen == "lyrics"
     @State private var picking: Track?
+    @State private var actions = Demo.screen == "actions"
+    @State private var sleep = false
 
     var body: some View {
         GeometryReader { geometry in
@@ -145,6 +147,23 @@ private struct PlayerBody: View {
         }
         .sheet(isPresented: $queue) {
             QueueSheet()
+        }
+        .sheet(isPresented: $actions) {
+            if let track = player.current {
+                TrackActionsSheet(
+                    track: track,
+                    navigate: { route in
+                        close()
+                        router.push(route)
+                    },
+                    // Выбор плейлиста открывается, когда этот лист уже закрылся.
+                    pick: { track in
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { picking = track }
+                    })
+            }
+        }
+        .sheet(isPresented: $sleep) {
+            SleepSheet()
         }
         .sheet(item: $picking) { track in
             PlaylistPicker(track: track)
@@ -182,25 +201,18 @@ private struct PlayerBody: View {
                     .lineLimit(1)
             }
             Spacer()
-            Menu {
-                if let track = player.current {
-                    TrackMenu(
-                        track: track, inPlayer: true,
-                        navigate: { route in
-                            close()
-                            router.push(route)
-                        },
-                        pick: { picking = $0 })
-                }
+            // Меню открывается листом, а не всплывающим окном: всплывающее система
+            // прикрепляет к экрану, и его кнопка отставала от плеера при сворачивании.
+            Button {
+                actions = true
             } label: {
                 Image(systemName: "ellipsis")
                     .font(.system(size: 18, weight: .semibold))
                     .frame(width: 44, height: 44)
+                    .glass(in: Circle(), interactive: true)
                     .contentShape(Circle())
             }
-            // Стекло на самом меню, а не на значке: при удержании подсвечивается круг, а не квадрат.
-            .glass(in: Circle(), interactive: true)
-            .clipShape(Circle())
+            .buttonStyle(.plain)
         }
         .foregroundStyle(.white)
     }
@@ -332,19 +344,8 @@ private struct PlayerBody: View {
             RoutePicker()
                 .frame(width: 48, height: 44)
             Spacer()
-            Menu {
-                if let date = player.sleepAt {
-                    Text("Остановится в \(date.formatted(date: .omitted, time: .shortened))")
-                } else if player.sleepAfterTrack {
-                    Text("Остановится после этого трека")
-                }
-                ForEach([15, 30, 45, 60], id: \.self) { minutes in
-                    Button("Через \(minutes) минут") { player.setSleep(minutes: minutes) }
-                }
-                Button("После этого трека") { player.sleepAfterCurrentTrack() }
-                if sleeping {
-                    Button("Выключить таймер", role: .destructive) { player.setSleep(minutes: nil) }
-                }
+            Button {
+                sleep = true
             } label: {
                 Image(systemName: sleeping ? "moon.zzz.fill" : "moon.zzz")
                     .foregroundStyle(sleeping ? Theme.accent : Color.white.opacity(0.85))
@@ -389,9 +390,11 @@ private struct PlayerBody: View {
     }
 }
 
-/// Дуга, бегущая вокруг кнопки, пока трек грузится.
+/// Дуга, бегущая вокруг кнопки, пока трек грузится. Появляется не сразу: при обычном
+/// запуске трек готов раньше, и дуга не успевает мелькнуть.
 private struct BufferRing: View {
     @State private var turning = false
+    @State private var shown = false
 
     var body: some View {
         Circle()
@@ -399,8 +402,117 @@ private struct BufferRing: View {
             .stroke(Color.white.opacity(0.9), style: StrokeStyle(lineWidth: 3, lineCap: .round))
             .rotationEffect(.degrees(turning ? 360 : 0))
             .animation(.linear(duration: 0.9).repeatForever(autoreverses: false), value: turning)
+            .opacity(shown ? 1 : 0)
             .onAppear { turning = true }
-            .transition(.opacity)
+            .task {
+                try? await Task.sleep(nanoseconds: 600_000_000)
+                if Task.isCancelled { return }
+                withAnimation(.easeIn(duration: 0.2)) { shown = true }
+            }
+    }
+}
+
+/// Действия с играющим треком: лист снизу.
+private struct TrackActionsSheet: View {
+    let track: Track
+    let navigate: (Route) -> Void
+    let pick: (Track) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        List {
+            HStack(spacing: 12) {
+                CoverView(uri: track.cover, size: 56, corner: 10)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(track.fullTitle)
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                    Text(track.artists)
+                        .font(.system(size: 14))
+                        .foregroundStyle(Theme.dim)
+                        .lineLimit(1)
+                }
+            }
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets(top: 18, leading: 20, bottom: 10, trailing: 20))
+            Group {
+                TrackMenu(track: track, inPlayer: true, navigate: navigate, pick: pick, done: { dismiss() })
+            }
+            .font(.system(size: 17))
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets(top: 4, leading: 20, bottom: 4, trailing: 20))
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .tint(.white)
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+    }
+}
+
+/// Таймер сна: лист снизу.
+private struct SleepSheet: View {
+    @EnvironmentObject private var player: Player
+    @Environment(\.dismiss) private var dismiss
+
+    private var active: Bool { player.sleepAt != nil || player.sleepAfterTrack }
+
+    var body: some View {
+        List {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Таймер сна")
+                    .font(.system(size: 20, weight: .bold))
+                    .foregroundStyle(.white)
+                if let date = player.sleepAt {
+                    Text("Музыка остановится в \(date.formatted(date: .omitted, time: .shortened))")
+                        .font(.system(size: 14))
+                        .foregroundStyle(Theme.accent)
+                } else if player.sleepAfterTrack {
+                    Text("Музыка остановится после этого трека")
+                        .font(.system(size: 14))
+                        .foregroundStyle(Theme.accent)
+                }
+            }
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets(top: 18, leading: 20, bottom: 8, trailing: 20))
+            Group {
+                ForEach([15, 30, 45, 60], id: \.self) { minutes in
+                    Button {
+                        player.setSleep(minutes: minutes)
+                        dismiss()
+                    } label: {
+                        Label("Через \(minutes) минут", systemImage: "timer")
+                    }
+                }
+                Button {
+                    player.sleepAfterCurrentTrack()
+                    dismiss()
+                } label: {
+                    Label("После этого трека", systemImage: "music.note")
+                }
+                if active {
+                    Button(role: .destructive) {
+                        player.setSleep(minutes: nil)
+                        dismiss()
+                    } label: {
+                        Label("Выключить таймер", systemImage: "xmark.circle")
+                    }
+                }
+            }
+            .font(.system(size: 17))
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets(top: 4, leading: 20, bottom: 4, trailing: 20))
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .tint(.white)
+        .presentationDetents([.medium])
+        .presentationDragIndicator(.visible)
     }
 }
 

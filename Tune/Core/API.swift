@@ -51,6 +51,8 @@ final class API {
         request.httpMethod = method
         request.setValue("OAuth \(token)", forHTTPHeaderField: "Authorization")
         request.setValue(client, forHTTPHeaderField: "X-Yandex-Music-Client")
+        // Без этого названия волн и подборок приходят на языке телефона.
+        request.setValue("ru", forHTTPHeaderField: "Accept-Language")
         if let type { request.setValue(type, forHTTPHeaderField: "Content-Type") }
         request.httpBody = body
 
