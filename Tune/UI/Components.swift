@@ -189,7 +189,7 @@ struct TrackMenu: View {
             }
         }
         Button {
-            player.playWave(seeds: ["track:\(track.id)"], name: "Волна по треку")
+            player.playWave(seeds: ["track:\(track.id)"], name: "Волна по треку «\(track.title)»")
             done()
         } label: {
             Label("Волна по треку", systemImage: "dot.radiowaves.left.and.right")
@@ -382,14 +382,22 @@ struct CardView: View {
     let cover: String?
     var round = false
     var size: CGFloat = 148
+    /// Отметка «играет»: nil — карточка не играет, иначе — идёт ли звук.
+    var playing: Bool?
 
     var body: some View {
         VStack(alignment: round ? .center : .leading, spacing: 4) {
             CoverView(uri: cover, size: size, corner: 14, round: round)
+                .overlay(alignment: round ? .bottom : .bottomTrailing) {
+                    if let playing {
+                        PlayingBadge(playing: playing)
+                            .padding(8)
+                    }
+                }
                 .padding(.bottom, 4)
             Text(title)
                 .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(.white)
+                .foregroundStyle(playing == nil ? .white : Theme.accent)
                 .lineLimit(1)
             if !subtitle.isEmpty {
                 Text(subtitle)
@@ -402,13 +410,42 @@ struct CardView: View {
     }
 }
 
+/// Значок «играет» на карточке: жёлтый кружок с волной, на паузе — с двумя полосками.
+struct PlayingBadge: View {
+    let playing: Bool
+    var size: CGFloat = 34
+
+    var body: some View {
+        mark
+            .font(.system(size: size * 0.44, weight: .bold))
+            .foregroundStyle(.black)
+            .frame(width: size, height: size)
+            .background(Theme.accent, in: Circle())
+            .shadow(color: .black.opacity(0.35), radius: 6, y: 2)
+    }
+
+    @ViewBuilder private var mark: some View {
+        let image = Image(systemName: playing ? "waveform" : "pause.fill")
+        if #available(iOS 17.0, *) {
+            image.symbolEffect(.variableColor.iterative, isActive: playing)
+        } else {
+            image
+        }
+    }
+}
+
 /// Карточка полки главной: ведёт на страницу или запускает волну.
 struct HomeCard: View {
     let item: HomeItem
     var size: CGFloat = 148
 
-    @EnvironmentObject private var player: Player
+    @ObservedObject private var now = Player.shared.now
     @Environment(\.navigate) private var navigate
+
+    /// nil — карточка не играет, иначе — идёт ли звук.
+    private func playing(_ kind: String, _ id: String) -> Bool? {
+        now.from(kind, id) ? now.playing : nil
+    }
 
     var body: some View {
         Button {
@@ -416,18 +453,18 @@ struct HomeCard: View {
             case .album(let card): navigate(.album(card.id))
             case .artist(let card): navigate(.artist(card.id, card.title))
             case .playlist(let playlist): navigate(.playlist(playlist))
-            case .wave(let wave): player.playWave(seeds: wave.seeds, name: wave.title)
+            case .wave(let wave): Player.shared.tapWave(seeds: wave.seeds, name: wave.title)
             }
         } label: {
             switch item {
             case .album(let card):
-                CardView(title: card.title, subtitle: card.subtitle, cover: card.cover, size: size)
+                CardView(title: card.title, subtitle: card.subtitle, cover: card.cover, size: size, playing: playing("album", card.id))
             case .artist(let card):
-                CardView(title: card.title, subtitle: "", cover: card.cover, round: true, size: size)
+                CardView(title: card.title, subtitle: "", cover: card.cover, round: true, size: size, playing: playing("artist", card.id))
             case .playlist(let playlist):
-                CardView(title: playlist.title, subtitle: playlist.count > 0 ? plural(playlist.count, "трек", "трека", "треков") : "", cover: playlist.cover, size: size)
+                CardView(title: playlist.title, subtitle: playlist.count > 0 ? plural(playlist.count, "трек", "трека", "треков") : "", cover: playlist.cover, size: size, playing: playing("playlist", playlist.id))
             case .wave(let wave):
-                WaveTile(wave: wave, size: size)
+                WaveTile(wave: wave, size: size, playing: playing("radio", wave.id))
             }
         }
         .buttonStyle(.plain)
@@ -438,6 +475,8 @@ struct HomeCard: View {
 struct WaveTile: View {
     let wave: WaveCard
     var size: CGFloat = 148
+    /// nil — волна не играет, иначе — идёт ли звук.
+    var playing: Bool?
 
     var body: some View {
         let color = Color(hex: wave.color) ?? Theme.raised
@@ -445,14 +484,20 @@ struct WaveTile: View {
             ZStack {
                 Circle()
                     .fill(RadialGradient(colors: [color, color.opacity(0.3)], center: .center, startRadius: 4, endRadius: size * 0.55))
-                Image(systemName: "play.fill")
-                    .font(.system(size: 26))
-                    .foregroundStyle(.white)
+                if let playing {
+                    Circle()
+                        .strokeBorder(Theme.accent, lineWidth: 3)
+                    PlayingBadge(playing: playing, size: 52)
+                } else {
+                    Image(systemName: "play.fill")
+                        .font(.system(size: 26))
+                        .foregroundStyle(.white)
+                }
             }
             .frame(width: size, height: size)
             Text(wave.title)
                 .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(.white)
+                .foregroundStyle(playing == nil ? .white : Theme.accent)
                 .multilineTextAlignment(.center)
                 .lineLimit(2)
         }

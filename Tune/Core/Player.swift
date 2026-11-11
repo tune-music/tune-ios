@@ -78,6 +78,17 @@ private struct Listen {
 final class NowPlaying: ObservableObject {
     @Published fileprivate(set) var id: String?
     @Published fileprivate(set) var playing = false
+    /// Откуда играет очередь: radio, album, playlist, artist или various.
+    @Published fileprivate(set) var kind = ""
+    /// Что именно: номер альбома или плейлиста, а у волны — её настройки через запятую.
+    @Published fileprivate(set) var item: String?
+    /// Название источника: «Моя волна», имя плейлиста.
+    @Published fileprivate(set) var name = ""
+
+    /// Играет ли сейчас очередь из этого источника (пусть и на паузе).
+    func from(_ kind: String, _ item: String) -> Bool {
+        self.kind == kind && self.item == item
+    }
 }
 
 @MainActor
@@ -184,13 +195,31 @@ final class Player: NSObject, ObservableObject {
         shuffle = shuffled
         self.context = context
         contextName = context.name
+        mark(context.kind, context.item, context.name)
         queue = list
         saveQueue()
         load(first, autoplay: true)
     }
 
+    /// Запоминает источник очереди для отметок «играет» на карточках.
+    private func mark(_ kind: String, _ item: String?, _ name: String) {
+        if now.kind != kind { now.kind = kind }
+        if now.item != item { now.item = item }
+        if now.name != name { now.name = name }
+    }
+
+    /// Нажатие на волну: играющая ставится на паузу и снимается с неё, другая — запускается.
+    func tapWave(seeds: [String] = ["user:onyourwave"], name: String = "Моя волна") {
+        if isWave, now.from("radio", seeds.joined(separator: ",")) {
+            toggle()
+        } else {
+            playWave(seeds: seeds, name: name)
+        }
+    }
+
     func playWave(seeds: [String] = ["user:onyourwave"], name: String = "Моя волна") {
         isBuffering = true
+        let waveId = seeds.joined(separator: ",")
         let seeds = seeds == ["user:onyourwave"] ? seeds + Self.waveSettings : seeds
         Task { [weak self] in
             do {
@@ -203,6 +232,7 @@ final class Player: NSObject, ObservableObject {
                 self.shuffle = false
                 self.context = PlayContext(kind: "radio", item: seeds.first, name: name)
                 self.contextName = name
+                self.mark("radio", waveId, name)
                 self.queue = started.tracks
                 self.saveQueue()
                 let session = started.session
@@ -442,6 +472,7 @@ final class Player: NSObject, ObservableObject {
         isPlaying = false
         isBuffering = false
         contextName = ""
+        mark("", nil, "")
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
         Storage.remove("player.json")
     }
@@ -780,6 +811,15 @@ final class Player: NSObject, ObservableObject {
         queue = tracks
         index = 2
         contextName = name
+        mark("various", nil, name)
+        // На снимке главной играет волна по настроению, на полке — альбом.
+        if Demo.screen == "home", let wave = Demo.data.waves.first {
+            contextName = wave.title
+            mark("radio", wave.id, wave.title)
+        } else if Demo.screen == "shelf", let album = Demo.data.albums.first {
+            contextName = album.title
+            mark("album", album.id, album.title)
+        }
         isPlaying = true
         progress.duration = tracks[2].duration
         progress.position = tracks[2].duration * 0.37
@@ -812,6 +852,7 @@ final class Player: NSObject, ObservableObject {
         queue = saved.queue
         contextName = saved.name
         context = .various(saved.name)
+        mark("various", nil, saved.name)
         index = min(max(UserDefaults.standard.integer(forKey: "playerIndex"), 0), saved.queue.count - 1)
         let position = UserDefaults.standard.double(forKey: "playerPosition")
         progress.position = position

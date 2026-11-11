@@ -178,6 +178,17 @@ private struct PlayerBody: View {
         }
     }
 
+    /// Что за очередь играет: волна, альбом, плейлист.
+    private var sourceLabel: String {
+        switch player.now.kind {
+        case "radio": return "ИГРАЕТ ВОЛНА"
+        case "album": return "ИГРАЕТ АЛЬБОМ"
+        case "playlist": return "ИГРАЕТ ПЛЕЙЛИСТ"
+        case "artist": return "ИГРАЕТ ИСПОЛНИТЕЛЬ"
+        default: return "ИГРАЕТ"
+        }
+    }
+
     private var top: some View {
         HStack {
             Button {
@@ -192,7 +203,7 @@ private struct PlayerBody: View {
             .buttonStyle(.plain)
             Spacer()
             VStack(spacing: 2) {
-                Text(player.isWave ? "ИГРАЕТ ВОЛНА" : "ИГРАЕТ")
+                Text(sourceLabel)
                     .font(.system(size: 11, weight: .semibold))
                     .kerning(1)
                     .foregroundStyle(.white.opacity(0.6))

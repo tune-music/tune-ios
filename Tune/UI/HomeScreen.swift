@@ -41,6 +41,7 @@ struct HomeScreen: View {
     @EnvironmentObject private var downloads: Downloads
     @Environment(\.navigate) private var navigate
     @StateObject private var model = HomeModel()
+    @ObservedObject private var now = Player.shared.now
     @State private var tuning = Demo.screen == "wave"
 
     var body: some View {
@@ -147,23 +148,28 @@ struct HomeScreen: View {
             HStack(spacing: 8) {
                 ForEach(model.page.waves) { wave in
                     let color = Color(hex: wave.color) ?? Theme.raised
+                    let active = now.from("radio", wave.id)
                     Button {
-                        player.playWave(seeds: wave.seeds, name: wave.title)
+                        player.tapWave(seeds: wave.seeds, name: wave.title)
                     } label: {
                         HStack(spacing: 7) {
-                            Image(systemName: "dot.radiowaves.left.and.right")
+                            Image(systemName: active ? (now.playing ? "waveform" : "pause.fill") : "dot.radiowaves.left.and.right")
                                 .font(.system(size: 12, weight: .bold))
                             Text(wave.title)
                                 .font(.system(size: 15, weight: .semibold))
                                 .lineLimit(1)
                         }
-                        .foregroundStyle(.white)
+                        .foregroundStyle(active ? .black : .white)
                         .padding(.horizontal, 15)
                         .frame(height: 40)
                         .background {
-                            Capsule()
-                                .fill(LinearGradient(colors: [color, color.opacity(0.6)], startPoint: .topLeading, endPoint: .bottomTrailing))
-                                .overlay(Capsule().fill(Color.black.opacity(0.22)))
+                            if active {
+                                Capsule().fill(Theme.accent)
+                            } else {
+                                Capsule()
+                                    .fill(LinearGradient(colors: [color, color.opacity(0.6)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                                    .overlay(Capsule().fill(Color.black.opacity(0.22)))
+                            }
                         }
                     }
                     .buttonStyle(PressStyle())
@@ -242,21 +248,42 @@ private struct WaveHero: View {
     let tune: () -> Void
 
     @EnvironmentObject private var player: Player
+    @ObservedObject private var now = Player.shared.now
     @State private var moving = false
 
-    private var active: Bool { player.isWave && player.contextName == "Моя волна" }
+    private var active: Bool { now.from("radio", "user:onyourwave") }
+
+    /// Подпись под названием: что играет, если это не сама «Моя волна».
+    private var other: String? {
+        guard !active, !now.name.isEmpty else { return nil }
+        switch now.kind {
+        case "radio": return now.name.hasPrefix("Волна") ? now.name : "Волна «\(now.name)»"
+        case "album": return "Альбом «\(now.name)»"
+        case "playlist": return "Плейлист «\(now.name)»"
+        case "artist": return now.name
+        default: return now.name
+        }
+    }
 
     var body: some View {
-        let playing = active && player.isPlaying
+        let playing = active && now.playing
         ZStack {
             blob
             VStack(spacing: 18) {
-                Button {
-                    if active {
-                        player.toggle()
-                    } else {
-                        player.playWave()
+                if let other {
+                    HStack(spacing: 7) {
+                        Image(systemName: now.playing ? "waveform" : "pause.fill")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(Theme.accent)
+                        Text("Сейчас играет: \(other)")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.85))
+                            .lineLimit(1)
                     }
+                    .padding(.horizontal, 24)
+                }
+                Button {
+                    player.tapWave()
                 } label: {
                     HStack(spacing: 12) {
                         Image(systemName: playing ? "pause.fill" : "play.fill")
