@@ -84,20 +84,6 @@ struct HomeScreen: View {
                 .animation(.easeInOut(duration: 0.2), value: scrolled)
                 .allowsHitTesting(false)
         }
-        .overlay(alignment: .topLeading) {
-            Button {
-                navigate(.settings)
-            } label: {
-                Text(String((session.profile?.name ?? "T").prefix(1)).uppercased())
-                    .font(.system(size: 16, weight: .bold))
-                    .foregroundStyle(.white)
-                    .frame(width: 38, height: 38)
-                    .glass(in: Circle(), interactive: true)
-            }
-            .buttonStyle(.plain)
-            .padding(.leading, 16)
-            .padding(.top, 4)
-        }
         .sheet(isPresented: $tuning) {
             WaveSettingsSheet()
         }

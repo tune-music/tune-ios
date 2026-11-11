@@ -12,7 +12,8 @@ struct PlayerScreen: View {
     @EnvironmentObject private var session: Session
     @EnvironmentObject private var downloads: Downloads
     @EnvironmentObject private var router: Router
-    @Environment(\.dismiss) private var dismiss
+    /// Плеер лежит поверх вкладок, а не в отдельном окне: при смахивании под ним видно приложение.
+    let close: () -> Void
     @State private var panel: Panel? = Demo.screen == "queue" ? .queue : Demo.screen == "lyrics" ? .lyrics : nil
     @State private var picking: Track?
     @State private var tone = Theme.tone
@@ -45,12 +46,16 @@ struct PlayerScreen: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background {
-            LinearGradient(colors: [tone, Color(white: 0.05)], startPoint: .top, endPoint: .bottom)
-                .ignoresSafeArea()
+            ZStack {
+                Color(white: 0.05)
+                LinearGradient(colors: [tone, Color(white: 0.05)], startPoint: .top, endPoint: .bottom)
+            }
+            .ignoresSafeArea()
         }
         .overlay(alignment: .top) {
             ToastView()
         }
+        .clipShape(RoundedRectangle(cornerRadius: drag > 0 ? 38 : 0, style: .continuous))
         .offset(y: drag)
         .gesture(
             // Смахивание вниз закрывает плеер.
@@ -60,7 +65,7 @@ struct PlayerScreen: View {
                 }
                 .onEnded { value in
                     if value.translation.height > 140 {
-                        dismiss()
+                        close()
                     } else {
                         withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { drag = 0 }
                     }
@@ -84,14 +89,14 @@ struct PlayerScreen: View {
             PlaylistPicker(track: track)
         }
         .onChange(of: player.current == nil) { empty in
-            if empty { dismiss() }
+            if empty { close() }
         }
     }
 
     private var top: some View {
         HStack {
             Button {
-                dismiss()
+                close()
             } label: {
                 Image(systemName: "chevron.down")
                     .font(.system(size: 18, weight: .semibold))
@@ -115,7 +120,7 @@ struct PlayerScreen: View {
                     TrackMenu(
                         track: track, inPlayer: true,
                         navigate: { route in
-                            dismiss()
+                            close()
                             router.push(route)
                         },
                         pick: { picking = $0 })

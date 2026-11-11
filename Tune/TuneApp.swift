@@ -106,6 +106,8 @@ struct RootView: View {
         }
     }
 
+    private static let slide = Animation.spring(response: 0.38, dampingFraction: 0.92)
+
     private var errorShown: Binding<Bool> {
         Binding(get: { player.errorText != nil }, set: { if !$0 { player.errorText = nil } })
     }
@@ -124,7 +126,7 @@ struct RootView: View {
         }
         .tint(Theme.accent)
         .environmentObject(router)
-        .environment(\.openPlayer, { showPlayer = true })
+        .environment(\.openPlayer, { withAnimation(Self.slide) { showPlayer = true } })
         .environment(\.pickPlaylist, { picking = $0 })
         .overlay(alignment: .top) {
             ToastView()
@@ -132,9 +134,12 @@ struct RootView: View {
         .sheet(item: $picking) { track in
             PlaylistPicker(track: track)
         }
-        .fullScreenCover(isPresented: $showPlayer) {
-            PlayerScreen()
-                .environmentObject(router)
+        .overlay {
+            if showPlayer {
+                PlayerScreen(close: { withAnimation(Self.slide) { showPlayer = false } })
+                    .environmentObject(router)
+                    .transition(.move(edge: .bottom))
+            }
         }
     }
 }
