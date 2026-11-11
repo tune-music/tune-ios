@@ -3,14 +3,24 @@
 Нативный клиент Яндекс Музыки на SwiftUI: «Моя волна», лайки, плейлисты, поиск, тексты,
 «Без цензуры» по списку FckCensor и скачивание треков для игры без сети.
 
-## Установка через SideStore
+## Установка
 
-1. Один раз поставьте [SideStore](https://sidestore.io) — для первой установки нужен компьютер.
-   Дальше он сам продлевает подпись на телефоне раз в 7 дней.
-2. Скачайте на iPhone [Tune.ipa](https://github.com/tune-music/tune-ios/releases/latest/download/Tune.ipa).
-3. В SideStore: «My Apps» → «+» → выберите `Tune.ipa`.
+Нужен SideStore или AltStore (для первой установки самого магазина понадобится компьютер).
 
-Обновление ставится так же, поверх старой версии: скачанная музыка и вход сохраняются.
+**С обновлениями одной кнопкой.** Добавьте источник в SideStore или AltStore
+(Sources → «+») и установите Tune из него:
+
+```
+https://github.com/tune-music/tune-ios/releases/latest/download/altstore.json
+```
+
+Когда выйдет новая сборка, в магазине появится кнопка Update.
+
+**Файлом.** Скачайте на iPhone
+[Tune.ipa](https://github.com/tune-music/tune-ios/releases/latest/download/Tune.ipa)
+и откройте его в SideStore или AltStore: «My Apps» → «+».
+
+Обновление ставится поверх старой версии: скачанная музыка и вход сохраняются.
 Музыка пропадает, только если удалить приложение.
 
 ## Сборка

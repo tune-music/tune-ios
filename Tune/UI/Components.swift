@@ -2,6 +2,7 @@ import SwiftUI
 
 enum Theme {
     static let background = Color.black
+    static let accent = Color("AccentColor")
     static let surface = Color(white: 0.11)
     static let raised = Color(white: 0.17)
     static let dim = Color(white: 0.58)
@@ -44,7 +45,7 @@ struct TrackRow: View {
                                     Color.black.opacity(0.6)
                                     Image(systemName: player.isPlaying ? "waveform" : "pause.fill")
                                         .font(.system(size: 17, weight: .semibold))
-                                        .foregroundStyle(Color.accentColor)
+                                        .foregroundStyle(Theme.accent)
                                 }
                                 .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                             }
@@ -52,13 +53,13 @@ struct TrackRow: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(track.fullTitle)
                             .font(.system(size: 16, weight: .medium))
-                            .foregroundStyle(playing ? Color.accentColor : Color.white)
+                            .foregroundStyle(playing ? Theme.accent : Color.white)
                             .lineLimit(1)
                         HStack(spacing: 5) {
                             if track.uncensored {
                                 Image(systemName: "lock.open.fill")
                                     .font(.system(size: 10))
-                                    .foregroundStyle(Color.accentColor)
+                                    .foregroundStyle(Theme.accent)
                             } else if track.explicit {
                                 Text("E")
                                     .font(.system(size: 9, weight: .heavy))
@@ -69,7 +70,7 @@ struct TrackRow: View {
                             if downloads.has(track.id) {
                                 Image(systemName: "arrow.down.circle.fill")
                                     .font(.system(size: 11))
-                                    .foregroundStyle(Color.accentColor)
+                                    .foregroundStyle(Theme.accent)
                             }
                             Text(track.artists.isEmpty ? track.albumTitle : track.artists)
                                 .font(.system(size: 14))
@@ -115,7 +116,7 @@ struct TrackRow: View {
                 } label: {
                     Label("Скачать", systemImage: "arrow.down.circle")
                 }
-                .tint(.accentColor)
+                .tint(Theme.accent)
             }
         }
         .swipeActions(edge: .leading, allowsFullSwipe: true) {
@@ -186,7 +187,7 @@ struct ProgressRing: View {
                 .stroke(Theme.raised, lineWidth: 2.5)
             Circle()
                 .trim(from: 0, to: max(0.04, min(value, 1)))
-                .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                .stroke(Theme.accent, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
                 .rotationEffect(.degrees(-90))
         }
     }
@@ -389,7 +390,7 @@ struct RoundButton: View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: 19, weight: .semibold))
-                .foregroundStyle(active ? Color.accentColor : Color.white)
+                .foregroundStyle(active ? Theme.accent : Color.white)
                 .frame(width: 50, height: 50)
                 .background(Color.white.opacity(0.12), in: Circle())
         }
@@ -432,7 +433,7 @@ struct MiniPlayer: View {
                 } label: {
                     Image(systemName: liked ? "heart.fill" : "heart")
                         .font(.system(size: 20))
-                        .foregroundStyle(liked ? Color.accentColor : Color.white)
+                        .foregroundStyle(liked ? Theme.accent : Color.white)
                         .frame(width: 42, height: 42)
                 }
                 .buttonStyle(.plain)

@@ -61,6 +61,9 @@ final class TrackListModel: ObservableObject {
                 loading = false
             }
         }
+        if Session.shared.profile == nil {
+            await Session.shared.refresh()
+        }
         guard let uid = Session.shared.profile?.uid else { throw APIError.network("") }
         let ids = try await API.shared.likedIds(uid: uid)
         Session.shared.setLiked(ids)
@@ -277,7 +280,7 @@ struct TrackListScreen: View {
                     .foregroundStyle(.black)
                     .frame(maxWidth: .infinity)
                     .frame(height: 50)
-                    .background(Color.accentColor, in: Capsule())
+                    .background(Theme.accent, in: Capsule())
                 }
                 .buttonStyle(.plain)
                 RoundButton(symbol: "shuffle") {
@@ -330,7 +333,7 @@ struct ArtistScreen: View {
                             .foregroundStyle(.black)
                             .frame(maxWidth: .infinity)
                             .frame(height: 50)
-                            .background(Color.accentColor, in: Capsule())
+                            .background(Theme.accent, in: Capsule())
                         }
                         .buttonStyle(.plain)
                         RoundButton(symbol: "dot.radiowaves.left.and.right") {

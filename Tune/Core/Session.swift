@@ -19,7 +19,7 @@ final class Session: ObservableObject {
     @Published private(set) var playlists: [Playlist] = []
     @Published private(set) var offline = false
     private var likedSet: Set<String> = []
-    private var refreshing = false
+    private var refreshTask: Task<Void, Never>?
 
     private init() {
         token = Demo.on ? "demo" : TokenStore.token
@@ -57,9 +57,18 @@ final class Session: ObservableObject {
 
     /// Профиль, лайки и плейлисты с сервера. Без сети остаётся то, что было.
     func refresh() async {
-        guard token != nil, !refreshing else { return }
-        refreshing = true
-        defer { refreshing = false }
+        guard token != nil else { return }
+        if let task = refreshTask {
+            await task.value
+            return
+        }
+        let task = Task { await load() }
+        refreshTask = task
+        await task.value
+        refreshTask = nil
+    }
+
+    private func load() async {
         do {
             let profile = try await API.shared.profile()
             self.profile = profile

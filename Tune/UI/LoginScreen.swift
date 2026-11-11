@@ -13,7 +13,7 @@ struct LoginScreen: View {
             Spacer()
             Image(systemName: "slider.vertical.3")
                 .font(.system(size: 64, weight: .semibold))
-                .foregroundStyle(Color.accentColor)
+                .foregroundStyle(Theme.accent)
             Text("Tune")
                 .font(.system(size: 40, weight: .bold))
             Text("Яндекс Музыка без цензуры\nи с офлайн-библиотекой")

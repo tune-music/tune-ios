@@ -51,6 +51,47 @@ jobs:
           cp -R build/Build/Products/Release-iphoneos/Tune.app Payload/
           zip -qry Tune.ipa Payload
 
+      # Источник для AltStore и SideStore: по нему приложение обновляется одной кнопкой.
+      - name: Источник обновлений
+        run: |
+          python3 - <<'EOF'
+          import json, os, datetime
+          number = os.environ["GITHUB_RUN_NUMBER"]
+          repo = "https://github.com/tune-music/tune-ios"
+          source = {
+              "name": "Tune",
+              "identifier": "dev.tune.music.source",
+              "subtitle": "Яндекс Музыка без цензуры и с офлайн-библиотекой",
+              "iconURL": "https://raw.githubusercontent.com/tune-music/tune-ios/main/Tune/Assets.xcassets/AppIcon.appiconset/icon.png",
+              "website": repo,
+              "tintColor": "#facc15",
+              "apps": [{
+                  "name": "Tune",
+                  "bundleIdentifier": "dev.tune.music",
+                  "developerName": "Tune",
+                  "subtitle": "Яндекс Музыка без цензуры",
+                  "localizedDescription": "Нативный клиент Яндекс Музыки: «Моя волна», коллекция, поиск, тексты, версии треков без цензуры и скачивание для игры без сети.",
+                  "iconURL": "https://raw.githubusercontent.com/tune-music/tune-ios/main/Tune/Assets.xcassets/AppIcon.appiconset/icon.png",
+                  "tintColor": "#facc15",
+                  "category": "entertainment",
+                  "screenshots": [],
+                  "versions": [{
+                      "version": "0.1." + number,
+                      "buildVersion": number,
+                      "date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                      "localizedDescription": "Сборка " + os.environ["GITHUB_SHA"][:7],
+                      "downloadURL": repo + "/releases/download/latest/Tune.ipa",
+                      "size": os.path.getsize("Tune.ipa"),
+                      "minOSVersion": "16.0",
+                  }],
+                  "appPermissions": {"entitlements": [], "privacy": {}},
+              }],
+              "news": [],
+          }
+          json.dump(source, open("altstore.json", "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+          EOF
+          cat altstore.json
+
       - uses: actions/upload-artifact@v4
         with:
           name: Tune-ipa
@@ -62,7 +103,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release delete latest --yes --cleanup-tag || true
-          gh release create latest Tune.ipa \
+          gh release create latest Tune.ipa altstore.json \
             --title "Последняя сборка 0.1.${{ github.run_number }}" \
             --notes "Неподписанный .ipa для установки через SideStore или AltStore. Собран из ${GITHUB_SHA::7}." \
             --latest --target "$GITHUB_SHA"

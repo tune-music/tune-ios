@@ -270,6 +270,9 @@ struct CardGridScreen: View {
 
     private func load() async {
         error = nil
+        if session.profile == nil {
+            await session.refresh()
+        }
         guard let uid = session.profile?.uid else {
             error = "Нет связи с Яндексом"
             return
@@ -308,7 +311,7 @@ struct SettingsScreen: View {
             }
             Section {
                 Toggle("Без цензуры", isOn: $uncensor)
-                    .tint(.accentColor)
+                    .tint(Theme.accent)
             } footer: {
                 Text("Вместо версий с вырезанными словами играют оригинальные — из открытого списка FckCensor. Треки, удалённые из Яндекса, но оставшиеся в списке, снова доступны.")
             }

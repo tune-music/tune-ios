@@ -126,7 +126,7 @@ struct RootView: View {
                 .tabItem { Label("Коллекция", systemImage: "heart.fill") }
                 .tag(2)
         }
-        .tint(.accentColor)
+        .tint(Theme.accent)
         .environment(\.openPlayer, { showPlayer = true })
         .fullScreenCover(isPresented: $showPlayer) {
             PlayerScreen()

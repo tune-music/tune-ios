@@ -117,7 +117,7 @@ struct PlayerScreen: View {
                     if track.uncensored {
                         Image(systemName: "lock.open.fill")
                             .font(.system(size: 13))
-                            .foregroundStyle(Color.accentColor)
+                            .foregroundStyle(Theme.accent)
                     }
                 }
                 Text(track.artists)
@@ -132,7 +132,7 @@ struct PlayerScreen: View {
             } label: {
                 Image(systemName: liked ? "heart.fill" : "heart")
                     .font(.system(size: 26))
-                    .foregroundStyle(liked ? Color.accentColor : Color.white)
+                    .foregroundStyle(liked ? Theme.accent : Color.white)
                     .frame(width: 48, height: 48)
             }
         }
@@ -143,7 +143,7 @@ struct PlayerScreen: View {
             Button(action: player.toggleShuffle) {
                 Image(systemName: "shuffle")
                     .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(player.shuffle ? Color.accentColor : Color.white.opacity(0.6))
+                    .foregroundStyle(player.shuffle ? Theme.accent : Color.white.opacity(0.6))
                     .frame(width: 44, height: 44)
             }
             Spacer()
@@ -178,7 +178,7 @@ struct PlayerScreen: View {
             Button(action: player.cycleRepeat) {
                 Image(systemName: player.repeatMode == .one ? "repeat.1" : "repeat")
                     .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(player.repeatMode == .off ? Color.white.opacity(0.6) : Color.accentColor)
+                    .foregroundStyle(player.repeatMode == .off ? Color.white.opacity(0.6) : Theme.accent)
                     .frame(width: 44, height: 44)
             }
         }
@@ -205,7 +205,7 @@ struct PlayerScreen: View {
                     downloads.remove(track.id)
                 } label: {
                     Image(systemName: "arrow.down.circle.fill")
-                        .foregroundStyle(Color.accentColor)
+                        .foregroundStyle(Theme.accent)
                         .frame(width: 48, height: 44)
                 }
             } else {
@@ -305,7 +305,7 @@ private struct QueueSheet: View {
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(track.fullTitle)
                                         .font(.system(size: 16, weight: .medium))
-                                        .foregroundStyle(index == player.index ? Color.accentColor : Color.white)
+                                        .foregroundStyle(index == player.index ? Theme.accent : Color.white)
                                         .lineLimit(1)
                                     Text(track.artists)
                                         .font(.system(size: 14))
@@ -315,7 +315,7 @@ private struct QueueSheet: View {
                                 Spacer(minLength: 0)
                                 if index == player.index {
                                     Image(systemName: "waveform")
-                                        .foregroundStyle(Color.accentColor)
+                                        .foregroundStyle(Theme.accent)
                                 }
                             }
                             .contentShape(Rectangle())
