@@ -46,6 +46,8 @@ struct TuneApp: App {
                     if Demo.on {
                         player.showDemo(Demo.data.tracks, name: "Мне нравится")
                         if ["player", "queue", "lyrics"].contains(Demo.screen) {
+                            // Окно плеера создаётся, когда сцена уже на экране.
+                            try? await Task.sleep(nanoseconds: 1_500_000_000)
                             PlayerWindow.shared.show(animated: false)
                         }
                     }

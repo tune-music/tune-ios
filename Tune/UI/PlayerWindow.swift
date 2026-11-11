@@ -24,7 +24,10 @@ final class PlayerWindow: ObservableObject {
     func show(animated: Bool = true) {
         guard window == nil, Player.shared.current != nil else { return }
         let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-        guard let scene = scenes.first(where: { $0.activationState == .foregroundActive }) ?? scenes.first else { return }
+        guard let scene = scenes.first(where: { $0.activationState == .foregroundActive }) ?? scenes.first else {
+            Log.shared.add("плеер: нет сцены для окна")
+            return
+        }
 
         let root = PlayerScreen()
             .environmentObject(Session.shared)
@@ -45,9 +48,10 @@ final class PlayerWindow: ObservableObject {
         window.rootViewController = host
         window.layer.cornerCurve = .continuous
         window.clipsToBounds = true
+        window.frame = scene.coordinateSpace.bounds
+        self.window = window
         window.transform = CGAffineTransform(translationX: 0, y: height)
         window.isHidden = false
-        self.window = window
         offset = 0
         closing = false
         visible = true
