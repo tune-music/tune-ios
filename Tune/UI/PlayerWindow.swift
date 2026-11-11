@@ -5,12 +5,17 @@ import UIKit
 ///
 /// Так он двигается целиком, одним слоем: под пальцем ничего не пересчитывается, кнопки
 /// и меню не отстают от него, а нажатия не доходят до страницы, которая осталась под ним.
+///
+/// Двигается не само окно, а его содержимое: положение окна система выставляет сама
+/// и сдвинутое окно возвращает на место по-своему.
 @MainActor
 final class PlayerWindow: ObservableObject {
     static let shared = PlayerWindow()
 
     @Published private(set) var visible = false
     private var window: UIWindow?
+    /// Слой с плеером: его и возит палец.
+    private var panel: UIView?
     /// На сколько плеер сейчас сдвинут вниз пальцем.
     private var offset: CGFloat = 0
     private var closing = false
@@ -22,7 +27,6 @@ final class PlayerWindow: ObservableObject {
     }
 
     func show(animated: Bool = true) {
-        if Demo.on { NSLog("TUNE-PW show: window=%d current=%d scenes=%d", window == nil ? 0 : 1, Player.shared.current == nil ? 0 : 1, UIApplication.shared.connectedScenes.count) }
         guard window == nil, Player.shared.current != nil else { return }
         let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
         guard let scene = scenes.first(where: { $0.activationState == .foregroundActive }) ?? scenes.first else {
@@ -43,70 +47,75 @@ final class PlayerWindow: ObservableObject {
         host.view.backgroundColor = .clear
         host.overrideUserInterfaceStyle = .dark
 
+        // Плеер — дочерний экран прозрачного контейнера: контейнер стоит на месте,
+        // а сдвигается только вложенный в него слой.
+        let container = UIViewController()
+        container.view.backgroundColor = .clear
+        container.overrideUserInterfaceStyle = .dark
+        container.addChild(host)
+        host.view.frame = container.view.bounds
+        host.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        host.view.layer.cornerCurve = .continuous
+        host.view.clipsToBounds = true
+        container.view.addSubview(host.view)
+        host.didMove(toParent: container)
+
         let window = UIWindow(windowScene: scene)
         window.windowLevel = .normal + 1
         window.backgroundColor = .clear
-        window.rootViewController = host
-        window.layer.cornerCurve = .continuous
-        window.clipsToBounds = true
-        window.frame = scene.coordinateSpace.bounds
+        window.rootViewController = container
         self.window = window
-        window.transform = CGAffineTransform(translationX: 0, y: height)
-        window.makeKeyAndVisible()
-        if Demo.on {
-            NSLog("TUNE-PW shown: frame=%@ hidden=%d level=%f windows=%d", NSCoder.string(for: window.frame), window.isHidden ? 1 : 0, Double(window.windowLevel.rawValue), scene.windows.count)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
-                guard let window = self?.window else { NSLog("TUNE-PW later: window gone"); return }
-                NSLog("TUNE-PW later: frame=%@ hidden=%d alpha=%f tx=%f ty=%f root=%@ sub=%d", NSCoder.string(for: window.frame), window.isHidden ? 1 : 0, Double(window.alpha), Double(window.transform.tx), Double(window.transform.ty), NSCoder.string(for: window.rootViewController?.view.frame ?? .zero), window.subviews.count)
-            }
-        }
+        panel = host.view
         offset = 0
         closing = false
         visible = true
 
+        host.view.transform = CGAffineTransform(translationX: 0, y: height)
+        window.isHidden = false
         if animated {
             UIView.animate(withDuration: 0.45, delay: 0, usingSpringWithDamping: 1, initialSpringVelocity: 0, options: [.allowUserInteraction]) {
-                window.transform = .identity
+                host.view.transform = .identity
             }
         } else {
-            window.transform = .identity
+            host.view.transform = .identity
         }
     }
 
     /// Сдвиг под пальцем. Жест считает перемещение в координатах самого плеера, который
     /// едет вместе с пальцем, поэтому к нему прибавляется уже набранный сдвиг.
     func drag(_ local: CGFloat) {
-        guard let window, !closing else { return }
+        guard let panel, !closing else { return }
         offset = max(0, local + offset)
-        window.transform = CGAffineTransform(translationX: 0, y: offset)
-        window.layer.cornerRadius = offset > 0 ? 38 : 0
+        panel.transform = CGAffineTransform(translationX: 0, y: offset)
+        panel.layer.cornerRadius = offset > 0 ? 38 : 0
     }
 
     /// Палец отпущен: плеер либо уезжает вниз, либо возвращается на место.
     func release(predicted local: CGFloat) {
-        guard let window, !closing else { return }
+        guard let panel, !closing else { return }
         if offset > 140 || local + offset > 420 {
             hide()
             return
         }
         offset = 0
         UIView.animate(withDuration: 0.35, delay: 0, usingSpringWithDamping: 0.85, initialSpringVelocity: 0, options: [.allowUserInteraction]) {
-            window.transform = .identity
+            panel.transform = .identity
         } completion: { _ in
-            if self.offset == 0 { window.layer.cornerRadius = 0 }
+            if self.offset == 0 { panel.layer.cornerRadius = 0 }
         }
     }
 
     func hide() {
-        guard let window, !closing else { return }
+        guard let window, let panel, !closing else { return }
         closing = true
         let target = CGAffineTransform(translationX: 0, y: height)
         UIView.animate(withDuration: 0.28, delay: 0, options: [.curveEaseIn]) {
-            window.transform = target
+            panel.transform = target
         } completion: { _ in
             window.isHidden = true
             window.rootViewController = nil
             self.window = nil
+            self.panel = nil
             self.offset = 0
             self.closing = false
             self.visible = false
