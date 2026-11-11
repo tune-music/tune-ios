@@ -349,7 +349,7 @@ struct TrackListScreen: View {
         .sheet(isPresented: $pickingMany, onDismiss: endModes) {
             PlaylistPicker(tracks: chosen)
         }
-        .navigationTitle("")
+        .navigationTitle(compact && !searching ? title : "")
         .navigationBarTitleDisplayMode(.inline)
         .task { await model.load(kind) }
         .task(id: cover) {
@@ -365,14 +365,6 @@ struct TrackListScreen: View {
         }
         .refreshable { await model.load(kind, force: true) }
         .toolbar {
-            ToolbarItem(placement: .principal) {
-                Text(title)
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                    .opacity(compact && !searching ? 1 : 0)
-                    .animation(.easeInOut(duration: 0.2), value: compact)
-            }
             ToolbarItemGroup(placement: .navigationBarTrailing) {
                 if let liked {
                     Button(action: toggleLike) {
