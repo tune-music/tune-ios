@@ -816,7 +816,7 @@ final class Player: NSObject, ObservableObject {
         if Demo.screen == "home", let wave = Demo.data.waves.first {
             contextName = wave.title
             mark("radio", wave.id, wave.title)
-        } else if Demo.screen == "shelf", let album = Demo.data.albums.first {
+        } else if Demo.screen == "shelf", let album = Demo.data.releases.first {
             contextName = album.title
             mark("album", album.id, album.title)
         }
