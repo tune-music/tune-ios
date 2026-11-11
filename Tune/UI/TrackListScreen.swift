@@ -270,7 +270,15 @@ struct TrackListScreen: View {
         ScrollViewReader { proxy in
             List {
                 header(count: all.count)
-                    .onAppear { compact = false }
+                    .background {
+                        // Шапка почти ушла под панель навигации: пора показать название в панели.
+                        GeometryReader { geometry in
+                            let hidden = geometry.frame(in: .global).maxY < 150
+                            Color.clear
+                                .onAppear { compact = hidden }
+                                .onChange(of: hidden) { compact = $0 }
+                        }
+                    }
                     .onDisappear { compact = true }
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
