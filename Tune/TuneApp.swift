@@ -60,6 +60,7 @@ enum Route: Hashable {
     case likes
     case downloads
     case history
+    case disliked
     case playlist(Playlist)
     case album(String)
     case artist(String, String)
@@ -162,7 +163,6 @@ struct TabRoot<Content: View>: View {
     let index: Int
     private let content: Content
     @EnvironmentObject private var router: Router
-    @Namespace private var zoom
     /// Вкладка проявляется, когда на неё переключились.
     @State private var shown = true
 
@@ -178,14 +178,11 @@ struct TabRoot<Content: View>: View {
                 .navigationDestination(for: Route.self) { route in
                     destination(route)
                         .safeAreaInset(edge: .bottom, spacing: 0) { MiniPlayerSpace() }
-                        .zoomTarget(Self.zoomId(route), in: zoom)
                 }
         }
         .tint(.white)
         .environment(\.navigate, { router.paths[index].append($0) })
-        .environment(\.zoomSpace, zoom)
         .opacity(shown ? 1 : 0)
-        .scaleEffect(shown ? 1 : 0.985)
         .onChange(of: router.tab) { tab in
             guard tab == index else { return }
             shown = false
@@ -200,21 +197,12 @@ struct TabRoot<Content: View>: View {
         }
     }
 
-    /// Какая карточка раскрывается в эту страницу. У остальных страниц переход обычный.
-    private static func zoomId(_ route: Route) -> String? {
-        switch route {
-        case .album(let id): return "album:\(id)"
-        case .artist(let id, _): return "artist:\(id)"
-        case .playlist(let playlist): return "playlist:\(playlist.id)"
-        default: return nil
-        }
-    }
-
     @ViewBuilder private func destination(_ route: Route) -> some View {
         switch route {
         case .likes: TrackListScreen(kind: .likes)
         case .downloads: TrackListScreen(kind: .downloads)
         case .history: TrackListScreen(kind: .history)
+        case .disliked: TrackListScreen(kind: .disliked)
         case .playlist(let playlist): TrackListScreen(kind: .playlist(playlist))
         case .album(let id): TrackListScreen(kind: .album(id))
         case .artistTracks(let id, let name): TrackListScreen(kind: .artist(id, name))

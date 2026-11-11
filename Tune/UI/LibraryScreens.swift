@@ -8,6 +8,7 @@ struct LibraryScreen: View {
     @Environment(\.navigate) private var navigate
     @State private var creating = false
     @State private var name = ""
+    @AppStorage("playlistsByName") private var byName = false
     @ObservedObject private var updater = Updater.shared
 
     var body: some View {
@@ -65,12 +66,29 @@ struct LibraryScreen: View {
                 entry("square.stack.fill", "Альбомы", session.likedAlbums.isEmpty ? "" : "\(session.likedAlbums.count)", .likedAlbums)
                 entry("music.mic", "Исполнители", session.likedArtists.isEmpty ? "" : "\(session.likedArtists.count)", .likedArtists)
                 entry("clock.arrow.circlepath", "История", "", .history)
+                if !session.disliked.isEmpty {
+                    entry("hand.thumbsdown.fill", "Не нравится", "\(session.disliked.count)", .disliked)
+                }
 
                 HStack {
                     Text("Плейлисты")
                         .font(.system(size: 22, weight: .bold))
                         .foregroundStyle(.white)
                     Spacer()
+                    Button {
+                        byName.toggle()
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "arrow.up.arrow.down")
+                                .font(.system(size: 12, weight: .semibold))
+                            Text(byName ? "По названию" : "Недавние")
+                                .font(.system(size: 14, weight: .medium))
+                        }
+                        .foregroundStyle(Theme.dim)
+                        .padding(.trailing, 6)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
                     Button {
                         name = ""
                         creating = true
@@ -94,10 +112,10 @@ struct LibraryScreen: View {
                         .padding(.horizontal, 16)
                         .padding(.top, 4)
                 }
-                ForEach(session.playlists) { playlist in
+                ForEach(ordered(session.playlists)) { playlist in
                     playlistRow(playlist, own: true)
                 }
-                ForEach(session.likedPlaylists) { playlist in
+                ForEach(ordered(session.likedPlaylists)) { playlist in
                     playlistRow(playlist, own: false)
                 }
             }
@@ -130,6 +148,10 @@ struct LibraryScreen: View {
             }
             Button("Отмена", role: .cancel) {}
         }
+    }
+
+    private func ordered(_ list: [Playlist]) -> [Playlist] {
+        byName ? list.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending } : list
     }
 
     private func playlistRow(_ playlist: Playlist, own: Bool) -> some View {
@@ -190,7 +212,15 @@ struct LibraryScreen: View {
 
 /// Выбор плейлиста, в который добавить трек.
 struct PlaylistPicker: View {
-    let track: Track
+    let tracks: [Track]
+
+    init(track: Track) {
+        tracks = [track]
+    }
+
+    init(tracks: [Track]) {
+        self.tracks = tracks
+    }
 
     @EnvironmentObject private var session: Session
     @Environment(\.dismiss) private var dismiss
@@ -222,7 +252,7 @@ struct PlaylistPicker: View {
                 .listRowSeparator(.hidden)
                 ForEach(session.playlists) { playlist in
                     Button {
-                        Task { await session.add(track, to: playlist) }
+                        Task { await session.add(tracks, to: playlist) }
                         dismiss()
                     } label: {
                         HStack(spacing: 12) {
@@ -247,7 +277,7 @@ struct PlaylistPicker: View {
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
-            .navigationTitle("Добавить в плейлист")
+            .navigationTitle(tracks.count == 1 ? "Добавить в плейлист" : "Добавить в плейлист: \(tracks.count)")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -260,7 +290,7 @@ struct PlaylistPicker: View {
                     let title = name
                     Task {
                         if let playlist = await session.createPlaylist(title) {
-                            await session.add(track, to: playlist)
+                            await session.add(tracks, to: playlist)
                         }
                     }
                     dismiss()

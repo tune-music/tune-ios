@@ -295,14 +295,30 @@ final class Session: ObservableObject {
     }
 
     func add(_ track: Track, to playlist: Playlist) async {
-        guard let uid = profile?.uid else { return }
+        await add([track], to: playlist)
+    }
+
+    func add(_ tracks: [Track], to playlist: Playlist) async {
+        guard let uid = profile?.uid, !tracks.isEmpty else { return }
         do {
-            try await API.shared.addToPlaylist(uid: uid, kind: playlist.kind, track: track)
-            if let index = playlists.firstIndex(where: { $0.id == playlist.id }) { playlists[index].count += 1 }
-            show("Добавлено в «\(playlist.title)»")
+            try await API.shared.addToPlaylist(uid: uid, kind: playlist.kind, tracks: tracks)
+            if let index = playlists.firstIndex(where: { $0.id == playlist.id }) { playlists[index].count += tracks.count }
+            show(tracks.count == 1 ? "Добавлено в «\(playlist.title)»" : "В «\(playlist.title)» добавлено: \(plural(tracks.count, "трек", "трека", "треков"))")
             save()
         } catch {
-            fail("Не удалось добавить трек в плейлист")
+            fail("Не удалось добавить в плейлист")
+        }
+    }
+
+    /// Переставляет трек в своём плейлисте: перед треком `before` или в конец.
+    func move(_ track: Track, in playlist: Playlist, before: String?) async -> Bool {
+        guard let uid = profile?.uid else { return false }
+        do {
+            try await API.shared.moveInPlaylist(uid: uid, kind: playlist.kind, track: track, before: before)
+            return true
+        } catch {
+            fail("Не удалось переставить трек")
+            return false
         }
     }
 
@@ -348,7 +364,7 @@ final class Router: ObservableObject {
         case "history": tab = 2; paths[2] = [.history]
         case "settings": tab = 2; paths[2] = [.settings]
         case "shelf": paths[0] = Demo.home.first.map { [.block($0)] } ?? []
-        case "playlist": tab = 2; paths[2] = data.playlists.first.map { [.playlist($0)] } ?? []
+        case "playlist", "select": tab = 2; paths[2] = data.playlists.first.map { [.playlist($0)] } ?? []
         case "album", "albumscroll": paths[0] = data.albums.first.map { [.album($0.id)] } ?? []
         case "artist": paths[0] = data.artists.first.map { [.artist($0.id, $0.title)] } ?? []
         default: break

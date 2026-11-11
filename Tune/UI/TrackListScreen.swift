@@ -4,9 +4,25 @@ enum ListKind: Hashable {
     case likes
     case downloads
     case history
+    case disliked
     case playlist(Playlist)
     case album(String)
     case artist(String, String)
+}
+
+/// Порядок треков на странице.
+enum TrackSort: String, CaseIterable, Identifiable {
+    case original, title, artist
+
+    var id: String { rawValue }
+
+    var name: String {
+        switch self {
+        case .original: return "Как в списке"
+        case .title: return "По названию"
+        case .artist: return "По исполнителю"
+        }
+    }
 }
 
 @MainActor
@@ -21,6 +37,8 @@ final class TrackListModel: ObservableObject {
     @Published var album: AlbumPage?
     /// Другие альбомы того же исполнителя.
     @Published var more: [Card] = []
+    /// Автор и описание плейлиста.
+    @Published var info: PlaylistPage?
     private var loaded = false
 
     func load(_ kind: ListKind, force: Bool = false) async {
@@ -36,10 +54,19 @@ final class TrackListModel: ObservableObject {
                 try await loadLikes()
             case .history:
                 tracks = try await API.shared.history()
+            case .disliked:
+                if Session.shared.profile == nil { await Session.shared.refresh() }
+                var found: [Track] = []
+                for chunk in Array(Session.shared.disliked).chunked(150) {
+                    found += try await API.shared.tracks(ids: chunk)
+                }
+                tracks = found
             case .playlist(let playlist):
                 if title.isEmpty { title = playlist.title }
                 cover = playlist.cover
-                tracks = try await API.shared.playlistTracks(playlist)
+                let page = try await API.shared.playlist(playlist)
+                tracks = page.tracks
+                info = page
             case .album(let id):
                 let page = try await API.shared.album(id: id)
                 title = page.card.title
@@ -114,15 +141,46 @@ struct TrackListScreen: View {
     @State private var renaming = false
     @State private var name = ""
     @State private var tone = Theme.tone
+    @State private var sort = TrackSort.original
+    @State private var onlyDownloaded = false
+    /// Режим выбора нескольких треков.
+    @State private var selecting = Demo.screen == "select"
+    @State private var selected = Set<String>()
+    /// Режим перестановки треков в своём плейлисте.
+    @State private var reordering = false
+    @State private var pickingMany = false
 
     private var all: [Track] {
-        kind == .downloads ? downloads.tracks : model.tracks
+        switch kind {
+        case .downloads: return downloads.tracks
+        // Трек пропадает из списка, как только с него сняли дизлайк.
+        case .disliked: return model.tracks.filter { session.disliked.contains($0.id) }
+        default: return model.tracks
+        }
     }
 
     private var shown: [Track] {
+        var list = all
+        if onlyDownloaded { list = list.filter { downloads.has($0.id) } }
         let text = filter.trimmingCharacters(in: .whitespaces)
-        guard !text.isEmpty else { return all }
-        return all.filter { $0.title.localizedCaseInsensitiveContains(text) || $0.artists.localizedCaseInsensitiveContains(text) }
+        if !text.isEmpty {
+            list = list.filter { $0.title.localizedCaseInsensitiveContains(text) || $0.artists.localizedCaseInsensitiveContains(text) }
+        }
+        switch sort {
+        case .original: break
+        case .title: list.sort { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        case .artist: list.sort { $0.artists.localizedCaseInsensitiveCompare($1.artists) == .orderedAscending }
+        }
+        return list
+    }
+
+    /// Список показан как есть: без фильтра и своей сортировки.
+    private var plainOrder: Bool {
+        filter.isEmpty && sort == .original && !onlyDownloaded
+    }
+
+    private var chosen: [Track] {
+        shown.filter { selected.contains($0.id) }
     }
 
     private var playlist: Playlist? {
@@ -139,6 +197,7 @@ struct TrackListScreen: View {
         case .likes: return .various("Мне нравится")
         case .downloads: return .various("Скачанные треки")
         case .history: return .various("История")
+        case .disliked: return .various("Не нравится")
         case .playlist(let playlist): return PlayContext(kind: "playlist", item: playlist.id, name: title)
         case .album(let id): return PlayContext(kind: "album", item: id, name: model.title)
         case .artist(let id, let name): return PlayContext(kind: "artist", item: id, name: name)
@@ -150,6 +209,7 @@ struct TrackListScreen: View {
         case .likes: return "Мне нравится"
         case .downloads: return "Скачанные треки"
         case .history: return "История"
+        case .disliked: return "Не нравится"
         case .playlist(let playlist): return model.title.isEmpty ? playlist.title : model.title
         case .artist(_, let name): return name
         case .album: return model.title
@@ -167,6 +227,7 @@ struct TrackListScreen: View {
             }
         case .artist: return "Все треки"
         case .history: return "Вы слушали"
+        case .disliked: return "Скрыто из рекомендаций"
         default: return "Плейлист"
         }
     }
@@ -220,18 +281,28 @@ struct TrackListScreen: View {
                             .listRowSeparator(.hidden)
                             .listRowInsets(EdgeInsets(top: 16, leading: 16, bottom: 4, trailing: 16))
                     }
-                    TrackRow(track: track, number: number(index), onRemove: own ? { remove(track) } : nil) {
-                        player.play(tracks, at: index, context: context)
+                    Group {
+                        if selecting {
+                            SelectRow(track: track, on: selected.contains(track.id)) {
+                                if selected.contains(track.id) { selected.remove(track.id) } else { selected.insert(track.id) }
+                            }
+                        } else {
+                            TrackRow(track: track, number: number(index), fadesDisliked: kind != .disliked, onRemove: own ? { remove(track) } : nil) {
+                                player.play(tracks, at: index, context: context)
+                            }
+                        }
                     }
                     .id(index)
                 }
-                if let album = model.album, filter.isEmpty, !tracks.isEmpty {
+                .onMove(perform: reordering ? move : nil)
+                if let album = model.album, plainOrder, !selecting, !tracks.isEmpty {
                     albumFooter(album)
                 }
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
             .scrollDismissesKeyboard(.immediately)
+            .environment(\.editMode, .constant(reordering ? .active : .inactive))
             .onChange(of: model.tracks.count) { _ in
                 // Снимок прокрученной страницы: по нему проверяется читаемость шапки.
                 if Demo.screen == "albumscroll" { proxy.scrollTo(7, anchor: .top) }
@@ -251,11 +322,20 @@ struct TrackListScreen: View {
                 searchBar
             }
         }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if selecting {
+                selectionBar
+            }
+        }
+        .sheet(isPresented: $pickingMany, onDismiss: endModes) {
+            PlaylistPicker(tracks: chosen)
+        }
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .task { await model.load(kind) }
         .task(id: cover) {
             switch kind {
+            case .disliked: tone = Color(white: 0.24)
             case .likes: tone = Color(red: 0.42, green: 0.16, blue: 0.5)
             case .downloads: tone = Color(red: 0.1, green: 0.25, blue: 0.52)
             case .history: tone = Color(red: 0.08, green: 0.36, blue: 0.34)
@@ -282,10 +362,14 @@ struct TrackListScreen: View {
             }
             toolbarGap()
             ToolbarItem(placement: .navigationBarTrailing) {
-                Menu {
-                    menu
-                } label: {
-                    Image(systemName: "ellipsis")
+                if selecting || reordering {
+                    Button("Готово", action: endModes)
+                } else {
+                    Menu {
+                        menu
+                    } label: {
+                        Image(systemName: "ellipsis")
+                    }
                 }
             }
         }
@@ -315,6 +399,107 @@ struct TrackListScreen: View {
         }
     }
 
+    // MARK: - Выбор и перестановка
+
+    private func endModes() {
+        selecting = false
+        reordering = false
+        selected = []
+    }
+
+    /// Панель действий над выбранными треками.
+    private var selectionBar: some View {
+        let list = chosen
+        return HStack(spacing: 4) {
+            Button {
+                selected = selected.count == shown.count ? [] : Set(shown.map(\.id))
+            } label: {
+                VStack(spacing: 3) {
+                    Text("\(list.count)")
+                        .font(.system(size: 17, weight: .bold))
+                    Text(selected.count == shown.count ? "Снять" : "Все")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .frame(maxWidth: .infinity)
+                .contentShape(Rectangle())
+            }
+            barButton("arrow.down.circle", kind == .downloads ? "Удалить" : "Скачать", symbol: kind == .downloads ? "trash" : nil) {
+                if kind == .downloads {
+                    list.forEach { downloads.remove($0.id) }
+                } else {
+                    downloads.download(list)
+                    session.show("Скачиваем: \(plural(list.count, "трек", "трека", "треков"))")
+                }
+                endModes()
+            }
+            barButton("text.badge.plus", "В плейлист") {
+                pickingMany = true
+            }
+            barButton("text.insert", "Далее") {
+                list.reversed().forEach { player.playNext($0) }
+                session.show("В очереди: \(plural(list.count, "трек", "трека", "треков"))")
+                endModes()
+            }
+            if own {
+                barButton("minus.circle", "Убрать") {
+                    removeMany(list)
+                    endModes()
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.white)
+        .frame(height: 58)
+        .padding(.horizontal, 8)
+        .background {
+            Color.clear.glass(in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        }
+        .padding(.horizontal, 10)
+        .padding(.bottom, 6)
+        .disabled(shown.isEmpty)
+    }
+
+    private func barButton(_ icon: String, _ title: String, symbol: String? = nil, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 3) {
+                Image(systemName: symbol ?? icon)
+                    .font(.system(size: 19))
+                Text(title)
+                    .font(.system(size: 11, weight: .medium))
+            }
+            .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
+        }
+        .disabled(selected.isEmpty)
+        .opacity(selected.isEmpty ? 0.4 : 1)
+    }
+
+    private func removeMany(_ list: [Track]) {
+        guard let playlist else { return }
+        Task {
+            for track in list {
+                if await session.remove(track, from: playlist), let index = model.tracks.firstIndex(where: { $0.id == track.id }) {
+                    model.tracks.remove(at: index)
+                }
+            }
+        }
+    }
+
+    /// Перестановка в своём плейлисте: сначала на экране, потом на сервере.
+    private func move(_ offsets: IndexSet, _ target: Int) {
+        guard let playlist, let from = offsets.first, model.tracks.indices.contains(from) else { return }
+        let track = model.tracks[from]
+        model.tracks.move(fromOffsets: offsets, toOffset: target)
+        guard let now = model.tracks.firstIndex(where: { $0.id == track.id }), now != from else { return }
+        let before = now + 1 < model.tracks.count ? model.tracks[now + 1].id : nil
+        Task {
+            // Не вышло — показываем порядок, который на самом деле у Яндекса.
+            if !(await session.move(track, in: playlist, before: before)) {
+                await model.load(kind, force: true)
+            }
+        }
+    }
+
     // MARK: - Альбом
 
     private var isAlbum: Bool {
@@ -324,7 +509,7 @@ struct TrackListScreen: View {
 
     /// Номер трека на своём диске. Только в альбоме и без фильтра: иначе слева обложка.
     private func number(_ index: Int) -> Int? {
-        guard isAlbum, filter.isEmpty else { return nil }
+        guard isAlbum, plainOrder else { return nil }
         var rest = index
         for count in model.album?.disks ?? [] {
             if rest < count { return rest + 1 }
@@ -335,7 +520,7 @@ struct TrackListScreen: View {
 
     /// Номер диска, если с этого трека он начинается. У альбома на одном диске заголовков нет.
     private func diskStart(_ index: Int) -> Int? {
-        guard isAlbum, filter.isEmpty, let disks = model.album?.disks, disks.count > 1 else { return nil }
+        guard isAlbum, plainOrder, let disks = model.album?.disks, disks.count > 1 else { return nil }
         var first = 0
         for (disk, count) in disks.enumerated() {
             if index == first { return disk + 1 }
@@ -346,13 +531,12 @@ struct TrackListScreen: View {
 
     /// Под треками: год, лейбл, длительность и другие альбомы исполнителя.
     @ViewBuilder private func albumFooter(_ album: AlbumPage) -> some View {
-        let minutes = Int(model.tracks.reduce(0) { $0 + $1.duration } / 60)
         let facts = [album.year.map { "\($0)" } ?? "", album.label].filter { !$0.isEmpty }.joined(separator: " · ")
         VStack(alignment: .leading, spacing: 4) {
             if !facts.isEmpty {
                 Text(facts)
             }
-            Text("\(plural(model.tracks.count, "трек", "трека", "треков")) · \(minutes >= 60 ? "\(minutes / 60) ч \(minutes % 60) мин" : "\(minutes) мин")")
+            Text("\(plural(model.tracks.count, "трек", "трека", "треков")) · \(lengthText(model.tracks))")
         }
         .font(.system(size: 13))
         .foregroundStyle(Theme.dim)
@@ -432,6 +616,27 @@ struct TrackListScreen: View {
                 Label("Остановить загрузки", systemImage: "xmark.circle")
             }
         }
+        Divider()
+        Button {
+            selected = []
+            selecting = true
+        } label: {
+            Label("Выбрать треки", systemImage: "checkmark.circle")
+        }
+        Menu {
+            Picker("Сортировка", selection: $sort) {
+                ForEach(TrackSort.allCases) { item in
+                    Text(item.name).tag(item)
+                }
+            }
+        } label: {
+            Label("Сортировка", systemImage: "arrow.up.arrow.down")
+        }
+        if kind != .downloads {
+            Toggle(isOn: $onlyDownloaded) {
+                Label("Только скачанные", systemImage: "arrow.down.circle")
+            }
+        }
         if let shareURL {
             ShareLink(item: shareURL) {
                 Label("Поделиться", systemImage: "square.and.arrow.up")
@@ -439,6 +644,14 @@ struct TrackListScreen: View {
         }
         if own {
             Divider()
+            Button {
+                filter = ""
+                sort = .original
+                onlyDownloaded = false
+                reordering = true
+            } label: {
+                Label("Изменить порядок", systemImage: "line.3.horizontal")
+            }
             Button {
                 name = title
                 renaming = true
@@ -488,9 +701,22 @@ struct TrackListScreen: View {
             SymbolCover(symbol: "arrow.down", colors: SymbolCover.downloads, size: 200, corner: 22)
         case .history:
             SymbolCover(symbol: "clock.arrow.circlepath", colors: SymbolCover.history, size: 200, corner: 22)
+        case .disliked:
+            SymbolCover(symbol: "hand.thumbsdown.fill", colors: SymbolCover.disliked, size: 200, corner: 22)
         default:
             CoverView(uri: cover, size: 220, corner: 18)
         }
+    }
+
+    /// Строка под названием: автор чужого плейлиста, число треков, длительность.
+    private func summary(_ count: Int) -> String {
+        let amount = plural(count, "трек", "трека", "треков")
+        if kind == .downloads { return "\(amount) · \(Storage.sizeText(downloads.totalBytes))" }
+        var parts: [String] = []
+        if !own, let author = model.info?.author, !author.isEmpty { parts.append(author) }
+        parts.append(amount)
+        if !isAlbum { parts.append(lengthText(all)) }
+        return parts.joined(separator: " · ")
     }
 
     private func header(count: Int) -> some View {
@@ -519,9 +745,18 @@ struct TrackListScreen: View {
                 .buttonStyle(.plain)
             }
             if count > 0 {
-                Text(kind == .downloads ? "\(plural(count, "трек", "трека", "треков")) · \(Storage.sizeText(downloads.totalBytes))" : plural(count, "трек", "трека", "треков"))
+                Text(summary(count))
                     .font(.system(size: 13))
                     .foregroundStyle(.white.opacity(0.55))
+                    .multilineTextAlignment(.center)
+            }
+            if let about = model.info?.about, !about.isEmpty {
+                Text(about)
+                    .font(.system(size: 14))
+                    .foregroundStyle(.white.opacity(0.7))
+                    .multilineTextAlignment(.center)
+                    .lineLimit(3)
+                    .padding(.top, 4)
             }
             HStack(spacing: 14) {
                 RoundButton(symbol: kind == .downloads ? "trash" : "arrow.down.to.line") {
@@ -544,6 +779,40 @@ struct TrackListScreen: View {
             .opacity(count == 0 ? 0.5 : 1)
         }
         .frame(maxWidth: .infinity)
+    }
+}
+
+/// Строка в режиме выбора: вместо меню — отметка, нажатие отмечает трек.
+private struct SelectRow: View {
+    let track: Track
+    let on: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: on ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 23))
+                    .foregroundStyle(on ? Theme.accent : Theme.dim)
+                CoverView(uri: track.cover, size: 50, corner: 8)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(track.fullTitle)
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                    Text(track.artists.isEmpty ? track.albumTitle : track.artists)
+                        .font(.system(size: 14))
+                        .foregroundStyle(Theme.dim)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+        .listRowInsets(EdgeInsets(top: 5, leading: 16, bottom: 5, trailing: 16))
     }
 }
 

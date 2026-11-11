@@ -94,6 +94,19 @@ struct Playlist: Codable, Hashable, Identifiable {
     }
 }
 
+/// Плейлист целиком: треки и то, что показывается в шапке.
+struct PlaylistPage {
+    var tracks: [Track] = []
+    var author = ""
+    var about = ""
+}
+
+/// «58 мин», «2 ч 5 мин»: общая длительность списка.
+func lengthText(_ tracks: [Track]) -> String {
+    let minutes = Int(tracks.reduce(0) { $0 + $1.duration } / 60)
+    return minutes >= 60 ? "\(minutes / 60) ч \(minutes % 60) мин" : "\(minutes) мин"
+}
+
 /// Карточка альбома или исполнителя.
 struct Card: Codable, Hashable, Identifiable {
     var id: String

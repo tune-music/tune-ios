@@ -97,40 +97,6 @@ func toolbarGap() -> some ToolbarContent {
     #endif
 }
 
-private struct ZoomSpaceKey: EnvironmentKey {
-    static let defaultValue: Namespace.ID? = nil
-}
-
-extension EnvironmentValues {
-    /// Пространство переходов вкладки: связывает карточку со страницей, в которую она раскрывается.
-    var zoomSpace: Namespace.ID? {
-        get { self[ZoomSpaceKey.self] }
-        set { self[ZoomSpaceKey.self] = newValue }
-    }
-}
-
-extension View {
-    /// Карточка, из которой вырастает страница (iOS 18 и новее).
-    @ViewBuilder
-    func zoomSource(_ id: String, in space: Namespace.ID?) -> some View {
-        if #available(iOS 18.0, *), let space {
-            self.matchedTransitionSource(id: id, in: space)
-        } else {
-            self
-        }
-    }
-
-    /// Страница, которая вырастает из карточки с тем же идентификатором.
-    @ViewBuilder
-    func zoomTarget(_ id: String?, in space: Namespace.ID?) -> some View {
-        if #available(iOS 18.0, *), let space, let id {
-            self.navigationTransition(.zoom(sourceID: id, in: space))
-        } else {
-            self
-        }
-    }
-}
-
 private struct PickPlaylistKey: EnvironmentKey {
     static let defaultValue: (Track) -> Void = { _ in }
 }
@@ -247,6 +213,8 @@ struct TrackRow: View {
     let track: Track
     /// Номер в альбоме: показывается вместо обложки, она у всех треков одна.
     var number: Int?
+    /// Приглушать ли трек с дизлайком. В самом списке «Не нравится» — нет.
+    var fadesDisliked = true
     var onRemove: (() -> Void)?
     let action: () -> Void
 
@@ -258,7 +226,7 @@ struct TrackRow: View {
     @Environment(\.pickPlaylist) private var pickPlaylist
 
     private var dimmed: Bool {
-        (track.unavailable && !track.uncensored && !downloads.has(track.id)) || session.disliked.contains(track.id)
+        (track.unavailable && !track.uncensored && !downloads.has(track.id)) || (fadesDisliked && session.disliked.contains(track.id))
     }
 
     var body: some View {
@@ -441,7 +409,6 @@ struct HomeCard: View {
 
     @EnvironmentObject private var player: Player
     @Environment(\.navigate) private var navigate
-    @Environment(\.zoomSpace) private var zoomSpace
 
     var body: some View {
         Button {
@@ -464,7 +431,6 @@ struct HomeCard: View {
             }
         }
         .buttonStyle(.plain)
-        .zoomSource(item.id, in: zoomSpace)
     }
 }
 
@@ -604,6 +570,7 @@ struct SymbolCover: View {
     static let likes = [Color(red: 1, green: 0.3, blue: 0.42), Color(red: 0.56, green: 0.2, blue: 0.95)]
     static let downloads = [Color(red: 0.2, green: 0.62, blue: 1), Color(red: 0.12, green: 0.25, blue: 0.75)]
     static let history = [Color(red: 0.2, green: 0.75, blue: 0.6), Color(red: 0.08, green: 0.35, blue: 0.45)]
+    static let disliked = [Color(white: 0.42), Color(white: 0.2)]
 
     var body: some View {
         LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing)

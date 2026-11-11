@@ -278,9 +278,18 @@ final class API {
     }
 
     func playlistTracks(_ playlist: Playlist) async throws -> [Track] {
-        if Demo.on { return Demo.data.tracks }
+        try await self.playlist(playlist).tracks
+    }
+
+    func playlist(_ playlist: Playlist) async throws -> PlaylistPage {
+        if Demo.on {
+            return PlaylistPage(tracks: Demo.data.tracks, author: "Демо", about: "Музыка в дорогу: от спокойного к бодрому, чтобы не уснуть за рулём.")
+        }
         let value = result(try await get("users/\(playlist.owner)/playlists/\(playlist.kind)", [("rich-tracks", "true")]))
-        return value["tracks"].array.compactMap { Self.parseTrack($0["track"]) }
+        return PlaylistPage(
+            tracks: value["tracks"].array.compactMap { Self.parseTrack($0["track"]) },
+            author: value["owner"]["name"].string ?? "",
+            about: value["description"].string ?? "")
     }
 
     // MARK: - Альбомы, исполнители, поиск
@@ -502,10 +511,11 @@ final class API {
     }
 
     /// Плейлист меняют от его последней версии, поэтому она читается перед каждым изменением.
-    private func change(uid: String, kind: String, _ diff: (JSON) throws -> [String: Any]) async throws {
+    /// Правка плейлиста: Яндекс принимает список операций и номер версии, с которой они сняты.
+    private func change(uid: String, kind: String, _ diff: (JSON) throws -> [[String: Any]]) async throws {
         let state = result(try await get("users/\(uid)/playlists/\(kind)", [("rich-tracks", "true")]))
-        let operation = try diff(state)
-        let body = try JSONSerialization.data(withJSONObject: [operation])
+        let operations = try diff(state)
+        let body = try JSONSerialization.data(withJSONObject: operations)
         let text = String(data: body, encoding: .utf8) ?? "[]"
         _ = try await post("users/\(uid)/playlists/\(kind)/change-relative", form: "diff=\(Self.encode(text))&revision=\(state["revision"].int ?? 0)")
     }
@@ -516,18 +526,42 @@ final class API {
         return out
     }
 
-    func addToPlaylist(uid: String, kind: String, track: Track) async throws {
+    /// Положение трека в плейлисте, как его хранит Яндекс.
+    private static func position(of id: String, in state: JSON) -> Int? {
+        state["tracks"].array.firstIndex { ($0["track"]["id"].idText ?? $0["id"].idText) == id }
+    }
+
+    func addToPlaylist(uid: String, kind: String, tracks: [Track]) async throws {
         try await change(uid: uid, kind: kind) { _ in
-            ["op": "insert", "at": 0, "tracks": [Self.reference(track)]]
+            [["op": "insert", "at": 0, "tracks": tracks.map(Self.reference)]]
         }
     }
 
     func removeFromPlaylist(uid: String, kind: String, track: Track) async throws {
         try await change(uid: uid, kind: kind) { state in
-            guard let position = state["tracks"].array.firstIndex(where: { ($0["track"]["id"].idText ?? $0["id"].idText) == track.id }) else {
+            guard let position = Self.position(of: track.id, in: state) else {
                 throw APIError.server("Трека уже нет в плейлисте")
             }
-            return ["op": "delete", "from": position, "to": position + 1, "tracks": [Self.reference(track)]]
+            return [["op": "delete", "from": position, "to": position + 1, "tracks": [Self.reference(track)]]]
+        }
+    }
+
+    /// Переставляет трек: он встаёт перед треком `before`, а без него — в конец.
+    func moveInPlaylist(uid: String, kind: String, track: Track, before: String?) async throws {
+        try await change(uid: uid, kind: kind) { state in
+            guard let from = Self.position(of: track.id, in: state) else {
+                throw APIError.server("Трека уже нет в плейлисте")
+            }
+            var target = state["tracks"].array.count - 1
+            if let before, let next = Self.position(of: before, in: state) {
+                // После удаления трека всё, что стояло за ним, сдвигается на одну позицию.
+                target = next > from ? next - 1 : next
+            }
+            let reference = Self.reference(track)
+            return [
+                ["op": "delete", "from": from, "to": from + 1, "tracks": [reference]],
+                ["op": "insert", "at": target, "tracks": [reference]],
+            ]
         }
     }
 
