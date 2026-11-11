@@ -96,6 +96,8 @@ final class Player: NSObject, ObservableObject {
     static let shared = Player()
 
     let now = NowPlaying()
+    /// Последняя смена трека была назад по очереди: обложка выезжает с другой стороны.
+    private(set) var movedBack = false
     private var bag = Set<AnyCancellable>()
 
     @Published private(set) var queue: [Track] = []
@@ -249,6 +251,7 @@ final class Player: NSObject, ObservableObject {
 
     private func load(_ target: Int, autoplay: Bool, resume: Double? = nil, viaFile: Bool = false) {
         guard queue.indices.contains(target) else { return }
+        movedBack = target < index
         index = target
         generation += 1
         let turn = generation

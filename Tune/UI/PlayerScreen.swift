@@ -87,8 +87,8 @@ private struct PlayerCover: View {
                 .opacity(1 - min(Double(abs(swipe.x)) / 320.0, 0.5))
                 .id(player.current?.id)
                 .transition(.asymmetric(
-                    insertion: .move(edge: swipe.forward ? .trailing : .leading).combined(with: .opacity),
-                    removal: .move(edge: swipe.forward ? .leading : .trailing).combined(with: .opacity)))
+                    insertion: .move(edge: player.movedBack ? .leading : .trailing).combined(with: .opacity),
+                    removal: .move(edge: player.movedBack ? .trailing : .leading).combined(with: .opacity)))
         }
         // Анимируется только сама обложка: смена трека не тянет за собой анимацию всего экрана.
         .animation(.easeOut(duration: 0.26), value: player.current?.id)
