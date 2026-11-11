@@ -570,13 +570,52 @@ struct MiniPlayer: View {
     @EnvironmentObject private var session: Session
     @Environment(\.openPlayer) private var openPlayer
     @State private var tone = Theme.tone
+    /// Сдвиг названия под пальцем.
+    @State private var shift: CGFloat = 0
+    /// Направление жеста определяется в его начале и до конца не меняется.
+    @State private var axis: Axis?
+    @State private var forward = true
+
+    private var change: AnyTransition {
+        .asymmetric(
+            insertion: .move(edge: forward ? .trailing : .leading).combined(with: .opacity),
+            removal: .move(edge: forward ? .leading : .trailing).combined(with: .opacity))
+    }
+
+    private var swipe: some Gesture {
+        DragGesture(minimumDistance: 12)
+            .onChanged { value in
+                let move = value.translation
+                if axis == nil { axis = abs(move.width) > abs(move.height) ? .horizontal : .vertical }
+                guard axis == .horizontal else { return }
+                shift = move.width
+                let ahead = move.width < 0
+                if ahead != forward { forward = ahead }
+            }
+            .onEnded { value in
+                let locked = axis
+                axis = nil
+                if locked == .horizontal {
+                    let far = abs(value.translation.width) > 50 || abs(value.predictedEndTranslation.width) > 160
+                    withAnimation(.easeOut(duration: 0.24)) {
+                        shift = 0
+                        if far {
+                            if forward { player.next() } else { player.previous() }
+                        }
+                    }
+                } else if value.translation.height < -36 {
+                    // Плеер открывается только явным движением вверх.
+                    openPlayer()
+                }
+            }
+    }
 
     var body: some View {
         if let track = player.current {
             let liked = session.isLiked(track.id)
             let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
             HStack(spacing: 0) {
-                Button(action: openPlayer) {
+                ZStack {
                     HStack(spacing: 10) {
                         CoverView(uri: track.cover, size: 42, corner: 10)
                         VStack(alignment: .leading, spacing: 2) {
@@ -591,10 +630,16 @@ struct MiniPlayer: View {
                         }
                         Spacer(minLength: 0)
                     }
-                    .frame(maxHeight: .infinity)
-                    .contentShape(Rectangle())
+                    .offset(x: shift)
+                    .opacity(1 - min(Double(abs(shift)) / 180.0, 0.7))
+                    .id(track.id)
+                    .transition(change)
                 }
-                .buttonStyle(.plain)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()
+                .contentShape(Rectangle())
+                .onTapGesture(perform: openPlayer)
+                .gesture(swipe)
 
                 Button {
                     session.toggleLike(track)
@@ -640,20 +685,6 @@ struct MiniPlayer: View {
                 Color.clear.glass(in: shape, tint: tone.opacity(0.75))
             }
             .contentShape(shape)
-            .simultaneousGesture(
-                DragGesture(minimumDistance: 20)
-                    .onEnded { value in
-                        let x = value.translation.width
-                        let y = value.translation.height
-                        if abs(y) > abs(x) {
-                            if y < -24 { openPlayer() }
-                        } else if x < -50 {
-                            player.next()
-                        } else if x > 50 {
-                            player.previous()
-                        }
-                    }
-            )
             .padding(.horizontal, 10)
             .padding(.bottom, 6)
             .task(id: track.cover) {

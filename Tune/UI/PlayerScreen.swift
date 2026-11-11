@@ -20,6 +20,7 @@ struct PlayerScreen: View {
     @State private var drag: CGFloat = 0
     /// Сдвиг обложки, когда её смахивают в сторону, чтобы переключить трек.
     @State private var slide: CGFloat = 0
+    @State private var forward = true
 
     var body: some View {
         GeometryReader { geometry in
@@ -33,6 +34,10 @@ struct PlayerScreen: View {
                     .animation(.spring(response: 0.45, dampingFraction: 0.75), value: player.isPlaying)
                     .offset(x: slide * 0.7)
                     .opacity(1 - min(Double(abs(slide)) / 320.0, 0.5))
+                    .id(player.current?.id)
+                    .transition(.asymmetric(
+                        insertion: .move(edge: forward ? .trailing : .leading).combined(with: .opacity),
+                        removal: .move(edge: forward ? .leading : .trailing).combined(with: .opacity)))
                 Spacer(minLength: 10)
                 if let track = player.current {
                     titles(track)
@@ -69,15 +74,22 @@ struct PlayerScreen: View {
                     let move = value.translation
                     if drag == 0, slide != 0 || abs(move.width) > abs(move.height) {
                         slide = move.width
+                        let ahead = move.width < 0
+                        if ahead != forward { forward = ahead }
                     } else if move.height > 0 {
                         drag = move.height
                     }
                 }
                 .onEnded { value in
                     if slide != 0 {
-                        if slide < -70 { player.next() } else if slide > 70 { player.previous() }
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { slide = 0 }
-                    } else if value.translation.height > 140 {
+                        let far = abs(slide) > 70 || abs(value.predictedEndTranslation.width) > 220
+                        withAnimation(.easeOut(duration: 0.26)) {
+                            slide = 0
+                            if far {
+                                if forward { player.next() } else { player.previous() }
+                            }
+                        }
+                    } else if value.translation.height > 140 || value.predictedEndTranslation.height > 420 {
                         close()
                     } else {
                         withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { drag = 0 }

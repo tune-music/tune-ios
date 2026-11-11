@@ -107,7 +107,8 @@ struct RootView: View {
         }
     }
 
-    private static let slide = Animation.spring(response: 0.38, dampingFraction: 0.92)
+    private static let rise = Animation.spring(response: 0.36, dampingFraction: 1)
+    private static let fall = Animation.easeInOut(duration: 0.26)
 
     private var errorShown: Binding<Bool> {
         Binding(get: { player.errorText != nil }, set: { if !$0 { player.errorText = nil } })
@@ -127,7 +128,7 @@ struct RootView: View {
         }
         .tint(Theme.accent)
         .environmentObject(router)
-        .environment(\.openPlayer, { withAnimation(Self.slide) { showPlayer = true } })
+        .environment(\.openPlayer, { withAnimation(Self.rise) { showPlayer = true } })
         .environment(\.pickPlaylist, { picking = $0 })
         .overlay(alignment: .top) {
             ToastView()
@@ -137,9 +138,11 @@ struct RootView: View {
         }
         .overlay {
             if showPlayer {
-                PlayerScreen(close: { withAnimation(Self.slide) { showPlayer = false } })
+                PlayerScreen(close: { withAnimation(Self.fall) { showPlayer = false } })
                     .environmentObject(router)
-                    .transition(.move(edge: .bottom))
+                    // Сдвиг на всю высоту экрана: фон плеера выходит за безопасную область,
+                    // и при сдвиге только на высоту содержимого его край оставался на виду.
+                    .transition(.offset(y: UIScreen.main.bounds.height + 60))
             }
         }
     }
