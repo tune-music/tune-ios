@@ -9,11 +9,16 @@ struct SearchScreen: View {
     @State private var result = SearchResult()
     @State private var loading = false
     @State private var failed = false
+    @State private var recent = UserDefaults.standard.stringArray(forKey: "recentSearches") ?? []
 
     var body: some View {
         List {
             if query.trimmingCharacters(in: .whitespaces).isEmpty {
-                Placeholder(icon: "magnifyingglass", title: "Найдётся всё", text: "Треки, альбомы, исполнители и плейлисты")
+                if recent.isEmpty {
+                    Placeholder(icon: "magnifyingglass", title: "Найдётся всё", text: "Треки, альбомы, исполнители и плейлисты")
+                } else {
+                    history
+                }
             } else if failed && result.isEmpty {
                 Placeholder(icon: "wifi.slash", title: "Не удалось выполнить поиск")
             } else if result.isEmpty {
@@ -27,7 +32,7 @@ struct SearchScreen: View {
                     row {
                         Shelf("Исполнители") {
                             ForEach(result.artists) { card in
-                                HomeCard(item: .artist(card))
+                                HomeCard(item: .artist(card), size: 116)
                             }
                         }
                     }
@@ -36,6 +41,7 @@ struct SearchScreen: View {
                     title("Треки")
                     ForEach(Array(result.tracks.enumerated()), id: \.offset) { index, track in
                         TrackRow(track: track) {
+                            remember()
                             player.play(result.tracks, at: index, context: .various("Поиск"))
                         }
                     }
@@ -67,7 +73,58 @@ struct SearchScreen: View {
         .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Трек, альбом, исполнитель")
         .autocorrectionDisabled()
         .scrollDismissesKeyboard(.immediately)
+        .onSubmit(of: .search) { remember() }
         .task(id: query) { await search() }
+    }
+
+    /// Недавние запросы: показываются, пока строка поиска пуста.
+    @ViewBuilder private var history: some View {
+        HStack {
+            Text("Вы искали")
+                .font(.system(size: 22, weight: .bold))
+                .foregroundStyle(.white)
+            Spacer()
+            Button {
+                recent = []
+                UserDefaults.standard.removeObject(forKey: "recentSearches")
+            } label: {
+                Text("Очистить")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(Theme.dim)
+            }
+            .buttonStyle(.plain)
+        }
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+        .listRowInsets(EdgeInsets(top: 14, leading: 16, bottom: 6, trailing: 16))
+        ForEach(recent, id: \.self) { text in
+            Button {
+                query = text
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .foregroundStyle(Theme.dim)
+                    Text(text)
+                        .font(.system(size: 16))
+                        .foregroundStyle(.white)
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
+        }
+    }
+
+    private func remember() {
+        let text = query.trimmingCharacters(in: .whitespaces)
+        guard text.count > 1, !Demo.on else { return }
+        var list = recent.filter { $0.caseInsensitiveCompare(text) != .orderedSame }
+        list.insert(text, at: 0)
+        recent = Array(list.prefix(12))
+        UserDefaults.standard.set(recent, forKey: "recentSearches")
     }
 
     private func title(_ text: String) -> some View {
@@ -81,6 +138,7 @@ struct SearchScreen: View {
 
     private func row<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         content()
+            .simultaneousGesture(TapGesture().onEnded { remember() })
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
             .listRowInsets(EdgeInsets(top: 14, leading: 0, bottom: 8, trailing: 0))
@@ -116,6 +174,8 @@ struct LibraryScreen: View {
     @EnvironmentObject private var session: Session
     @EnvironmentObject private var downloads: Downloads
     @Environment(\.navigate) private var navigate
+    @State private var creating = false
+    @State private var name = ""
 
     var body: some View {
         ScrollView {
@@ -124,7 +184,7 @@ struct LibraryScreen: View {
                     navigate(.likes)
                 } label: {
                     HStack(spacing: 16) {
-                        SymbolCover(symbol: "heart.fill", colors: SymbolCover.likes, size: 92, corner: 16)
+                        SymbolCover(symbol: "heart.fill", colors: SymbolCover.likes, size: 92, corner: 18)
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Мне нравится")
                                 .font(.system(size: 24, weight: .bold))
@@ -146,39 +206,43 @@ struct LibraryScreen: View {
                 .padding(.bottom, 20)
 
                 entry("arrow.down.circle.fill", "Скачанные треки", downloads.entries.isEmpty ? "" : "\(downloads.entries.count)", .downloads)
-                entry("square.stack.fill", "Альбомы", "", .likedAlbums)
-                entry("music.mic", "Исполнители", "", .likedArtists)
+                entry("square.stack.fill", "Альбомы", session.likedAlbums.isEmpty ? "" : "\(session.likedAlbums.count)", .likedAlbums)
+                entry("music.mic", "Исполнители", session.likedArtists.isEmpty ? "" : "\(session.likedArtists.count)", .likedArtists)
+                entry("clock.arrow.circlepath", "История", "", .history)
 
-                if !session.playlists.isEmpty {
+                HStack {
                     Text("Плейлисты")
                         .font(.system(size: 22, weight: .bold))
                         .foregroundStyle(.white)
-                        .padding(.horizontal, 16)
-                        .padding(.top, 26)
-                        .padding(.bottom, 10)
-                    ForEach(session.playlists) { playlist in
-                        Button {
-                            navigate(.playlist(playlist))
-                        } label: {
-                            HStack(spacing: 12) {
-                                CoverView(uri: playlist.cover, size: 56, corner: 8)
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(playlist.title)
-                                        .font(.system(size: 16, weight: .medium))
-                                        .foregroundStyle(.white)
-                                        .lineLimit(1)
-                                    Text(plural(playlist.count, "трек", "трека", "треков"))
-                                        .font(.system(size: 14))
-                                        .foregroundStyle(Theme.dim)
-                                }
-                                Spacer(minLength: 0)
-                            }
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 6)
+                    Spacer()
+                    Button {
+                        name = ""
+                        creating = true
+                    } label: {
+                        Image(systemName: "plus")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 36, height: 36)
+                            .glass(in: Circle(), interactive: true)
                     }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 26)
+                .padding(.bottom, 10)
+
+                if session.playlists.isEmpty && session.likedPlaylists.isEmpty {
+                    Text("Создайте плейлист или добавьте чужой в коллекцию — он появится здесь.")
+                        .font(.system(size: 15))
+                        .foregroundStyle(Theme.dim)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 4)
+                }
+                ForEach(session.playlists) { playlist in
+                    playlistRow(playlist, own: true)
+                }
+                ForEach(session.likedPlaylists) { playlist in
+                    playlistRow(playlist, own: false)
                 }
             }
             .padding(.bottom, 24)
@@ -195,6 +259,41 @@ struct LibraryScreen: View {
                 }
             }
         }
+        .alert("Новый плейлист", isPresented: $creating) {
+            TextField("Название", text: $name)
+            Button("Создать") {
+                let title = name
+                Task {
+                    if let playlist = await session.createPlaylist(title) { navigate(.playlist(playlist)) }
+                }
+            }
+            Button("Отмена", role: .cancel) {}
+        }
+    }
+
+    private func playlistRow(_ playlist: Playlist, own: Bool) -> some View {
+        Button {
+            navigate(.playlist(playlist))
+        } label: {
+            HStack(spacing: 12) {
+                CoverView(uri: playlist.cover, size: 56, corner: 10)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(playlist.title)
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                    Text(own ? plural(playlist.count, "трек", "трека", "треков") : (playlist.count > 0 ? "Добавлен · \(plural(playlist.count, "трек", "трека", "треков"))" : "Добавлен в коллекцию"))
+                        .font(.system(size: 14))
+                        .foregroundStyle(Theme.dim)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
     }
 
     private func entry(_ icon: String, _ title: String, _ value: String, _ route: Route) -> some View {
@@ -206,7 +305,7 @@ struct LibraryScreen: View {
                     .font(.system(size: 20))
                     .foregroundStyle(.white)
                     .frame(width: 44, height: 44)
-                    .background(Theme.raised, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .background(Theme.raised, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
                 Text(title)
                     .font(.system(size: 17, weight: .medium))
                     .foregroundStyle(.white)
@@ -228,6 +327,91 @@ struct LibraryScreen: View {
     }
 }
 
+/// Выбор плейлиста, в который добавить трек.
+struct PlaylistPicker: View {
+    let track: Track
+
+    @EnvironmentObject private var session: Session
+    @Environment(\.dismiss) private var dismiss
+    @State private var creating = false
+    @State private var name = ""
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Button {
+                    name = ""
+                    creating = true
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundStyle(.black)
+                            .frame(width: 50, height: 50)
+                            .background(Theme.accent, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        Text("Новый плейлист")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundStyle(.white)
+                        Spacer(minLength: 0)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+                ForEach(session.playlists) { playlist in
+                    Button {
+                        Task { await session.add(track, to: playlist) }
+                        dismiss()
+                    } label: {
+                        HStack(spacing: 12) {
+                            CoverView(uri: playlist.cover, size: 50, corner: 10)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(playlist.title)
+                                    .font(.system(size: 16, weight: .medium))
+                                    .foregroundStyle(.white)
+                                    .lineLimit(1)
+                                Text(plural(playlist.count, "трек", "трека", "треков"))
+                                    .font(.system(size: 14))
+                                    .foregroundStyle(Theme.dim)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+                }
+            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .navigationTitle("Добавить в плейлист")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Отмена") { dismiss() }
+                }
+            }
+            .alert("Новый плейлист", isPresented: $creating) {
+                TextField("Название", text: $name)
+                Button("Создать") {
+                    let title = name
+                    Task {
+                        if let playlist = await session.createPlaylist(title) {
+                            await session.add(track, to: playlist)
+                        }
+                    }
+                    dismiss()
+                }
+                Button("Отмена", role: .cancel) {}
+            }
+        }
+        .tint(.white)
+        .presentationDetents([.medium, .large])
+    }
+}
+
 // MARK: - Альбомы и исполнители из коллекции
 
 struct CardGridScreen: View {
@@ -245,11 +429,11 @@ struct CardGridScreen: View {
         ScrollView {
             if let cards {
                 if cards.isEmpty {
-                    Placeholder(icon: kind == .albums ? "square.stack" : "music.mic", title: "Здесь пока пусто")
+                    Placeholder(icon: kind == .albums ? "square.stack" : "music.mic", title: "Здесь пока пусто", text: kind == .albums ? "Нажмите на сердечко на странице альбома, чтобы добавить его сюда." : "Нажмите на сердечко на странице исполнителя, чтобы добавить его сюда.")
                 } else {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 16, alignment: .top)], spacing: 20) {
                         ForEach(cards) { card in
-                            HomeCard(item: kind == .albums ? .album(card) : .artist(card))
+                            HomeCard(item: kind == .albums ? .album(card) : .artist(card), size: 160)
                         }
                     }
                     .padding(16)

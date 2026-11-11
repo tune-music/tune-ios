@@ -1,5 +1,6 @@
 import AVFoundation
 import MediaPlayer
+import SwiftUI
 import UIKit
 
 /// Позиция трека отдельно от плеера: она меняется дважды в секунду, и перерисовывать
@@ -82,7 +83,17 @@ final class Player: NSObject, ObservableObject {
     @Published private(set) var repeatMode: RepeatMode = .off
     @Published private(set) var contextName = ""
     @Published var errorText: String?
+    /// Таймер сна: когда музыка остановится сама.
+    @Published private(set) var sleepAt: Date?
+    @Published private(set) var sleepAfterTrack = false
     let progress = PlaybackProgress()
+    private var sleepTask: Task<Void, Never>?
+
+    /// Настройка «Моей волны»: характер, настроение и язык. Хранится между запусками.
+    static var waveSettings: [String] {
+        get { UserDefaults.standard.stringArray(forKey: "waveSettings") ?? [] }
+        set { UserDefaults.standard.set(newValue, forKey: "waveSettings") }
+    }
 
     var current: Track? { queue.indices.contains(index) ? queue[index] : nil }
     var isWave: Bool { wave != nil }
@@ -161,6 +172,7 @@ final class Player: NSObject, ObservableObject {
 
     func playWave(seeds: [String] = ["user:onyourwave"], name: String = "Моя волна") {
         isBuffering = true
+        let seeds = seeds == ["user:onyourwave"] ? seeds + Self.waveSettings : seeds
         Task { [weak self] in
             do {
                 let started = try await API.shared.waveNew(seeds: seeds)
@@ -468,6 +480,55 @@ final class Player: NSObject, ObservableObject {
         saveQueue()
     }
 
+    func removeFromQueue(_ offsets: IndexSet) {
+        for position in offsets.sorted(by: >) where position != index && queue.indices.contains(position) {
+            queue.remove(at: position)
+            if position < index { index -= 1 }
+        }
+        original = nil
+        preloadNext()
+        saveQueue()
+    }
+
+    func moveInQueue(from offsets: IndexSet, to target: Int) {
+        var marked = queue.enumerated().map { (current: $0.offset == index, track: $0.element) }
+        marked.move(fromOffsets: offsets, toOffset: target)
+        queue = marked.map(\.track)
+        index = marked.firstIndex { $0.current } ?? 0
+        original = nil
+        preloadNext()
+        saveQueue()
+    }
+
+    /// Дизлайк текущему треку: он пропускается и больше не попадётся в волне.
+    func dislikeCurrent() {
+        guard let track = current else { return }
+        if Session.shared.toggleDislike(track) { next() }
+    }
+
+    /// Остановить музыку через столько минут; nil — выключить таймер.
+    func setSleep(minutes: Int?) {
+        sleepTask?.cancel()
+        sleepAfterTrack = false
+        guard let minutes else {
+            sleepAt = nil
+            return
+        }
+        sleepAt = Date().addingTimeInterval(Double(minutes) * 60)
+        sleepTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(minutes) * 60_000_000_000)
+            guard !Task.isCancelled, let self else { return }
+            self.sleepAt = nil
+            self.pause()
+        }
+    }
+
+    func sleepAfterCurrentTrack() {
+        sleepTask?.cancel()
+        sleepAt = nil
+        sleepAfterTrack = true
+    }
+
     // MARK: - Конец трека и волна
 
     private func endCurrent(_ reason: EndReason) {
@@ -486,6 +547,11 @@ final class Player: NSObject, ObservableObject {
 
     private func trackEnded() {
         endCurrent(.finished)
+        if sleepAfterTrack {
+            sleepAfterTrack = false
+            finishQueue()
+            return
+        }
         if repeatMode == .one, let track = current {
             av.seek(to: .zero)
             av.play()

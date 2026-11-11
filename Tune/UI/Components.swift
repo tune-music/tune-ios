@@ -5,7 +5,7 @@ enum Theme {
     static let accent = Color("AccentColor")
     static let surface = Color(white: 0.11)
     static let raised = Color(white: 0.17)
-    static let dim = Color(white: 0.58)
+    static let dim = Color(white: 0.6)
     static let tone = Color(white: 0.16)
 }
 
@@ -19,18 +19,146 @@ extension Color {
     }
 }
 
+extension View {
+    /// Стеклянная подложка: Liquid Glass на iOS 26, размытие или цвет на более старых.
+    @ViewBuilder
+    func glass<S: Shape>(in shape: S, tint: Color? = nil, interactive: Bool = false) -> some View {
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) {
+            self.glassEffect(Glass.regular.tint(tint).interactive(interactive), in: shape)
+        } else {
+            self.legacyGlass(in: shape, tint: tint)
+        }
+        #else
+        self.legacyGlass(in: shape, tint: tint)
+        #endif
+    }
+
+    @ViewBuilder
+    private func legacyGlass<S: Shape>(in shape: S, tint: Color?) -> some View {
+        if let tint {
+            self.background(tint, in: shape)
+        } else {
+            self.background(.ultraThinMaterial, in: shape)
+        }
+    }
+}
+
+private struct PickPlaylistKey: EnvironmentKey {
+    static let defaultValue: (Track) -> Void = { _ in }
+}
+
+extension EnvironmentValues {
+    /// Открыть выбор плейлиста, в который добавить трек.
+    var pickPlaylist: (Track) -> Void {
+        get { self[PickPlaylistKey.self] }
+        set { self[PickPlaylistKey.self] = newValue }
+    }
+}
+
+/// Пункты меню трека: одни и те же в списках и в плеере.
+struct TrackMenu: View {
+    let track: Track
+    var inPlayer = false
+    var onRemove: (() -> Void)?
+    let navigate: (Route) -> Void
+    let pick: (Track) -> Void
+
+    @EnvironmentObject private var player: Player
+    @EnvironmentObject private var downloads: Downloads
+    @EnvironmentObject private var session: Session
+
+    var body: some View {
+        let liked = session.isLiked(track.id)
+        let disliked = session.disliked.contains(track.id)
+        Button {
+            session.toggleLike(track)
+        } label: {
+            Label(liked ? "Убрать из «Мне нравится»" : "Нравится", systemImage: liked ? "heart.slash" : "heart")
+        }
+        Button {
+            if inPlayer { player.dislikeCurrent() } else { session.toggleDislike(track) }
+        } label: {
+            Label(disliked ? "Снять дизлайк" : "Не нравится", systemImage: disliked ? "hand.thumbsup" : "hand.thumbsdown")
+        }
+        Button {
+            pick(track)
+        } label: {
+            Label("Добавить в плейлист", systemImage: "text.badge.plus")
+        }
+        if downloads.has(track.id) {
+            Button(role: .destructive) {
+                downloads.remove(track.id)
+            } label: {
+                Label("Удалить с устройства", systemImage: "trash")
+            }
+        } else if !downloads.isBusy(track.id) {
+            Button {
+                downloads.download(track)
+            } label: {
+                Label("Скачать", systemImage: "arrow.down.circle")
+            }
+        }
+        if !inPlayer {
+            Button {
+                player.playNext(track)
+            } label: {
+                Label("Играть следующим", systemImage: "text.insert")
+            }
+            Button {
+                player.addToQueue(track)
+            } label: {
+                Label("В конец очереди", systemImage: "text.append")
+            }
+        }
+        Divider()
+        if let album = track.albumId {
+            Button {
+                navigate(.album(album))
+            } label: {
+                Label("Перейти к альбому", systemImage: "square.stack")
+            }
+        }
+        ForEach(track.artistList.filter { !$0.id.isEmpty }.prefix(3), id: \.id) { artist in
+            Button {
+                navigate(.artist(artist.id, artist.name))
+            } label: {
+                Label(artist.name, systemImage: "music.mic")
+            }
+        }
+        Button {
+            player.playWave(seeds: ["track:\(track.id)"], name: "Волна по треку")
+        } label: {
+            Label("Волна по треку", systemImage: "dot.radiowaves.left.and.right")
+        }
+        if let url = track.shareURL {
+            ShareLink(item: url) {
+                Label("Поделиться", systemImage: "square.and.arrow.up")
+            }
+        }
+        if let onRemove {
+            Divider()
+            Button(role: .destructive, action: onRemove) {
+                Label("Убрать из плейлиста", systemImage: "minus.circle")
+            }
+        }
+    }
+}
+
 /// Строка трека: обложка, название, исполнители, значки и меню.
 struct TrackRow: View {
     let track: Track
+    var onRemove: (() -> Void)?
     let action: () -> Void
 
     @EnvironmentObject private var player: Player
     @EnvironmentObject private var downloads: Downloads
     @EnvironmentObject private var session: Session
     @Environment(\.navigate) private var navigate
+    @Environment(\.pickPlaylist) private var pickPlaylist
 
     private var dimmed: Bool {
-        track.unavailable && !track.uncensored && !downloads.has(track.id)
+        (track.unavailable && !track.uncensored && !downloads.has(track.id)) || session.disliked.contains(track.id)
     }
 
     var body: some View {
@@ -38,7 +166,7 @@ struct TrackRow: View {
         HStack(spacing: 4) {
             Button(action: action) {
                 HStack(spacing: 12) {
-                    CoverView(uri: track.cover, size: 50, corner: 6)
+                    CoverView(uri: track.cover, size: 50, corner: 8)
                         .overlay {
                             if playing {
                                 ZStack {
@@ -47,7 +175,7 @@ struct TrackRow: View {
                                         .font(.system(size: 17, weight: .semibold))
                                         .foregroundStyle(Theme.accent)
                                 }
-                                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                             }
                         }
                     VStack(alignment: .leading, spacing: 3) {
@@ -88,9 +216,14 @@ struct TrackRow: View {
                 ProgressRing(value: value)
                     .frame(width: 20, height: 20)
                     .padding(.horizontal, 6)
+            } else if session.isLiked(track.id) {
+                Image(systemName: "heart.fill")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.accent)
+                    .padding(.horizontal, 4)
             }
             Menu {
-                menu
+                TrackMenu(track: track, onRemove: onRemove, navigate: navigate, pick: pickPlaylist)
             } label: {
                 Image(systemName: "ellipsis")
                     .font(.system(size: 17, weight: .semibold))
@@ -128,53 +261,6 @@ struct TrackRow: View {
             .tint(.indigo)
         }
     }
-
-    @ViewBuilder private var menu: some View {
-        let liked = session.isLiked(track.id)
-        Button {
-            session.toggleLike(track)
-        } label: {
-            Label(liked ? "Убрать из «Мне нравится»" : "Нравится", systemImage: liked ? "heart.slash" : "heart")
-        }
-        if downloads.has(track.id) {
-            Button(role: .destructive) {
-                downloads.remove(track.id)
-            } label: {
-                Label("Удалить с устройства", systemImage: "trash")
-            }
-        } else if !downloads.isBusy(track.id) {
-            Button {
-                downloads.download(track)
-            } label: {
-                Label("Скачать", systemImage: "arrow.down.circle")
-            }
-        }
-        Button {
-            player.playNext(track)
-        } label: {
-            Label("Играть следующим", systemImage: "text.insert")
-        }
-        Button {
-            player.addToQueue(track)
-        } label: {
-            Label("В конец очереди", systemImage: "text.append")
-        }
-        Divider()
-        if let album = track.albumId {
-            Button {
-                navigate(.album(album))
-            } label: {
-                Label("Перейти к альбому", systemImage: "square.stack")
-            }
-        }
-        ForEach(track.artistList.filter { !$0.id.isEmpty }.prefix(3), id: \.id) { artist in
-            Button {
-                navigate(.artist(artist.id, artist.name))
-            } label: {
-                Label(artist.name, systemImage: "music.mic")
-            }
-        }
-    }
 }
 
 /// Кольцо хода загрузки.
@@ -203,7 +289,7 @@ struct CardView: View {
 
     var body: some View {
         VStack(alignment: round ? .center : .leading, spacing: 4) {
-            CoverView(uri: cover, size: size, corner: 12, round: round)
+            CoverView(uri: cover, size: size, corner: 14, round: round)
                 .padding(.bottom, 4)
             Text(title)
                 .font(.system(size: 15, weight: .medium))
@@ -223,6 +309,7 @@ struct CardView: View {
 /// Карточка полки главной: ведёт на страницу или запускает волну.
 struct HomeCard: View {
     let item: HomeItem
+    var size: CGFloat = 148
 
     @EnvironmentObject private var player: Player
     @Environment(\.navigate) private var navigate
@@ -238,13 +325,13 @@ struct HomeCard: View {
         } label: {
             switch item {
             case .album(let card):
-                CardView(title: card.title, subtitle: card.subtitle, cover: card.cover)
+                CardView(title: card.title, subtitle: card.subtitle, cover: card.cover, size: size)
             case .artist(let card):
-                CardView(title: card.title, subtitle: "", cover: card.cover, round: true)
+                CardView(title: card.title, subtitle: "", cover: card.cover, round: true, size: size)
             case .playlist(let playlist):
-                CardView(title: playlist.title, subtitle: playlist.count > 0 ? plural(playlist.count, "трек", "трека", "треков") : "", cover: playlist.cover)
+                CardView(title: playlist.title, subtitle: playlist.count > 0 ? plural(playlist.count, "трек", "трека", "треков") : "", cover: playlist.cover, size: size)
             case .wave(let wave):
-                WaveTile(wave: wave)
+                WaveTile(wave: wave, size: size)
             }
         }
         .buttonStyle(.plain)
@@ -261,7 +348,7 @@ struct WaveTile: View {
         VStack(spacing: 8) {
             ZStack {
                 Circle()
-                    .fill(RadialGradient(colors: [color, color.opacity(0.35)], center: .center, startRadius: 4, endRadius: size * 0.55))
+                    .fill(RadialGradient(colors: [color, color.opacity(0.3)], center: .center, startRadius: 4, endRadius: size * 0.55))
                 Image(systemName: "play.fill")
                     .font(.system(size: 26))
                     .foregroundStyle(.white)
@@ -331,7 +418,7 @@ struct Placeholder: View {
                         .foregroundStyle(.white)
                         .padding(.horizontal, 20)
                         .padding(.vertical, 10)
-                        .background(Theme.raised, in: Capsule())
+                        .glass(in: Capsule(), interactive: true)
                 }
                 .buttonStyle(.plain)
                 .padding(.top, 6)
@@ -358,7 +445,7 @@ struct Spinner: View {
     }
 }
 
-/// Плитка вместо обложки у «Мне нравится» и «Скачанного».
+/// Плитка вместо обложки у «Мне нравится», «Скачанного» и «Истории».
 struct SymbolCover: View {
     let symbol: String
     let colors: [Color]
@@ -367,6 +454,7 @@ struct SymbolCover: View {
 
     static let likes = [Color(red: 1, green: 0.3, blue: 0.42), Color(red: 0.56, green: 0.2, blue: 0.95)]
     static let downloads = [Color(red: 0.2, green: 0.62, blue: 1), Color(red: 0.12, green: 0.25, blue: 0.75)]
+    static let history = [Color(red: 0.2, green: 0.75, blue: 0.6), Color(red: 0.08, green: 0.35, blue: 0.45)]
 
     var body: some View {
         LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing)
@@ -380,7 +468,7 @@ struct SymbolCover: View {
     }
 }
 
-/// Круглая кнопка со значком: скачать, перемешать.
+/// Круглая стеклянная кнопка со значком: скачать, перемешать.
 struct RoundButton: View {
     let symbol: String
     var active = false
@@ -392,9 +480,52 @@ struct RoundButton: View {
                 .font(.system(size: 19, weight: .semibold))
                 .foregroundStyle(active ? Theme.accent : Color.white)
                 .frame(width: 50, height: 50)
-                .background(Color.white.opacity(0.12), in: Circle())
+                .glass(in: Circle(), interactive: true)
         }
         .buttonStyle(.plain)
+    }
+}
+
+/// Главная кнопка страницы: жёлтая «Слушать».
+struct PlayButton: View {
+    var title = "Слушать"
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: "play.fill")
+                Text(title)
+            }
+            .font(.system(size: 17, weight: .semibold))
+            .foregroundStyle(.black)
+            .frame(maxWidth: .infinity)
+            .frame(height: 50)
+            .background(Theme.accent, in: Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// Короткое сообщение сверху экрана.
+struct ToastView: View {
+    @EnvironmentObject private var session: Session
+
+    var body: some View {
+        ZStack {
+            if let text = session.toast {
+                Text(text)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 11)
+                    .glass(in: Capsule())
+                    .padding(.top, 6)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(.spring(response: 0.35, dampingFraction: 0.8), value: session.toast)
+        .allowsHitTesting(false)
     }
 }
 
@@ -408,10 +539,11 @@ struct MiniPlayer: View {
     var body: some View {
         if let track = player.current {
             let liked = session.isLiked(track.id)
+            let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
             HStack(spacing: 2) {
                 Button(action: openPlayer) {
                     HStack(spacing: 10) {
-                        CoverView(uri: track.cover, size: 42, corner: 8)
+                        CoverView(uri: track.cover, size: 42, corner: 10)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(track.fullTitle)
                                 .font(.system(size: 15, weight: .semibold))
@@ -453,14 +585,14 @@ struct MiniPlayer: View {
                 .buttonStyle(.plain)
             }
             .padding(.leading, 8)
-            .padding(.trailing, 4)
-            .padding(.vertical, 7)
-            .background(tone)
+            .padding(.trailing, 6)
+            .padding(.vertical, 8)
             .overlay(alignment: .bottom) {
                 MiniProgress(progress: player.progress)
+                    .padding(.horizontal, 18)
             }
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .padding(.horizontal, 8)
+            .glass(in: shape, tint: tone.opacity(0.75))
+            .padding(.horizontal, 10)
             .padding(.bottom, 6)
             .task(id: track.cover) {
                 let color = await ImageLoader.shared.tone(track.cover)
@@ -476,11 +608,11 @@ private struct MiniProgress: View {
     var body: some View {
         GeometryReader { geometry in
             let share = progress.duration > 0 ? min(max(progress.position / progress.duration, 0), 1) : 0
-            Rectangle()
+            Capsule()
                 .fill(Color.white)
                 .frame(width: geometry.size.width * share)
         }
         .frame(height: 2)
-        .background(Color.white.opacity(0.18))
+        .background(Color.white.opacity(0.18), in: Capsule())
     }
 }

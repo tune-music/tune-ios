@@ -70,6 +70,10 @@ struct Track: Codable, Hashable, Identifiable {
         albumId.map { "\(id):\($0)" } ?? id
     }
 
+    var shareURL: URL? {
+        URL(string: albumId.map { "https://music.yandex.ru/album/\($0)/track/\(id)" } ?? "https://music.yandex.ru/track/\(id)")
+    }
+
     var fullTitle: String {
         guard let version, !version.isEmpty else { return title }
         return "\(title) (\(version))"
@@ -84,6 +88,10 @@ struct Playlist: Codable, Hashable, Identifiable {
     var cover: String?
 
     var id: String { "\(owner):\(kind)" }
+
+    var shareURL: URL? {
+        URL(string: "https://music.yandex.ru/users/\(owner)/playlists/\(kind)")
+    }
 }
 
 /// Карточка альбома или исполнителя.
@@ -152,6 +160,9 @@ struct ArtistPage {
     var cover: String?
     var popular: [Track]
     var albums: [Card]
+    /// Сборники и альбомы с участием исполнителя.
+    var also: [Card] = []
+    var similar: [Card] = []
 }
 
 struct SearchResult {

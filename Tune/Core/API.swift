@@ -319,7 +319,7 @@ final class API {
     func artist(id: String) async throws -> ArtistPage {
         if Demo.on {
             guard let card = Demo.data.artists.first(where: { $0.id == id }) ?? Demo.data.artists.first else { throw APIError.server("Нет демо-данных") }
-            return ArtistPage(id: card.id, name: card.title, cover: card.cover, popular: Demo.data.tracks, albums: Demo.data.albums)
+            return ArtistPage(id: card.id, name: card.title, cover: card.cover, popular: Demo.data.tracks, albums: Demo.data.albums, similar: Demo.data.artists)
         }
         let value = result(try await get("artists/\(id)/brief-info"))
         let artist = value["artist"]
@@ -334,7 +334,9 @@ final class API {
         if let extra = try? await self.albums(ids: inserts.albums) {
             albums.insert(contentsOf: extra.filter { card in !albums.contains { $0.id == card.id } }, at: 0)
         }
-        return ArtistPage(id: id, name: name, cover: artist["cover"]["uri"].string ?? artist["ogImage"].string, popular: popular, albums: albums)
+        return ArtistPage(
+            id: id, name: name, cover: artist["cover"]["uri"].string ?? artist["ogImage"].string, popular: popular, albums: albums,
+            also: value["alsoAlbums"].array.compactMap(Self.albumCard), similar: value["similarArtists"].array.compactMap(Self.artistCard))
     }
 
     func artistTracks(id: String) async throws -> [Track] {
@@ -379,6 +381,121 @@ final class API {
         let value = result(try await get("users/\(uid)/likes/artists", [("with-timestamps", "false")]))
         // Исполнитель приходит то сам по себе, то внутри artist.
         return value.array.compactMap { Self.artistCard($0) ?? Self.artistCard($0["artist"]) }
+    }
+
+    func likedPlaylists(uid: String) async throws -> [Playlist] {
+        if Demo.on { return Demo.data.personal }
+        let value = result(try await get("users/\(uid)/likes/playlists"))
+        return value.array.compactMap { item -> Playlist? in
+            let playlist = item["playlist"].isObject ? item["playlist"] : item
+            guard let owner = playlist["uid"].idText ?? playlist["owner"]["uid"].idText else { return nil }
+            return Self.parsePlaylist(playlist, owner: owner)
+        }
+    }
+
+    /// Номера альбомов и исполнителей из коллекции и треков с дизлайком: по ним рисуются сердечки.
+    func likedAlbumIds(uid: String) async throws -> [String] {
+        if Demo.on { return [] }
+        let value = result(try await get("users/\(uid)/likes/albums"))
+        return value.array.compactMap { $0["id"].idText ?? $0["album"]["id"].idText }
+    }
+
+    func likedArtistIds(uid: String) async throws -> [String] {
+        if Demo.on { return [] }
+        let value = result(try await get("users/\(uid)/likes/artists", [("with-timestamps", "false")]))
+        return value.array.compactMap { $0["id"].idText ?? $0["artist"]["id"].idText }
+    }
+
+    func dislikedIds(uid: String) async throws -> [String] {
+        if Demo.on { return [] }
+        let value = result(try await get("users/\(uid)/dislikes/tracks"))
+        return value["library"]["tracks"].array.compactMap { $0["id"].idText }
+    }
+
+    /// Дизлайк: Яндекс больше не предложит этот трек.
+    func setDisliked(uid: String, track: String, disliked: Bool) async throws {
+        _ = try await post(disliked ? "users/\(uid)/dislikes/tracks/add?track-id=\(track)" : "users/\(uid)/dislikes/tracks/\(track)/remove")
+    }
+
+    /// kind — albums или artists, param — album-id или artist-id.
+    func setLiked(uid: String, kind: String, param: String, id: String, liked: Bool) async throws {
+        _ = try await post(liked ? "users/\(uid)/likes/\(kind)/add?\(param)=\(id)" : "users/\(uid)/likes/\(kind)/\(id)/remove")
+    }
+
+    func setLiked(uid: String, playlist: Playlist, liked: Bool) async throws {
+        _ = try await post(liked ? "users/\(uid)/likes/playlists/add?owner-uid=\(playlist.owner)&kind=\(playlist.kind)" : "users/\(uid)/likes/playlists/\(playlist.owner)-\(playlist.kind)/remove")
+    }
+
+    // MARK: - Свои плейлисты
+
+    private static func encode(_ text: String) -> String {
+        var allowed = CharacterSet.alphanumerics
+        allowed.insert(charactersIn: "-_.~")
+        return text.addingPercentEncoding(withAllowedCharacters: allowed) ?? text
+    }
+
+    func createPlaylist(uid: String, title: String) async throws -> Playlist {
+        let value = result(try await post("users/\(uid)/playlists/create?visibility=private&title=\(Self.encode(title))"))
+        guard let playlist = Self.parsePlaylist(value, owner: uid) else { throw APIError.server("Яндекс не создал плейлист") }
+        return playlist
+    }
+
+    func renamePlaylist(uid: String, kind: String, title: String) async throws {
+        _ = try await post("users/\(uid)/playlists/\(kind)/name?value=\(Self.encode(title))")
+    }
+
+    func deletePlaylist(uid: String, kind: String) async throws {
+        _ = try await post("users/\(uid)/playlists/\(kind)/delete")
+    }
+
+    /// Плейлист меняют от его последней версии, поэтому она читается перед каждым изменением.
+    private func change(uid: String, kind: String, _ diff: (JSON) throws -> [String: Any]) async throws {
+        let state = result(try await get("users/\(uid)/playlists/\(kind)", [("rich-tracks", "true")]))
+        let operation = try diff(state)
+        let body = try JSONSerialization.data(withJSONObject: [operation])
+        let text = String(data: body, encoding: .utf8) ?? "[]"
+        _ = try await post("users/\(uid)/playlists/\(kind)/change-relative", form: "diff=\(Self.encode(text))&revision=\(state["revision"].int ?? 0)")
+    }
+
+    private static func reference(_ track: Track) -> [String: Any] {
+        var out: [String: Any] = ["id": track.id]
+        if let album = track.albumId { out["albumId"] = album }
+        return out
+    }
+
+    func addToPlaylist(uid: String, kind: String, track: Track) async throws {
+        try await change(uid: uid, kind: kind) { _ in
+            ["op": "insert", "at": 0, "tracks": [Self.reference(track)]]
+        }
+    }
+
+    func removeFromPlaylist(uid: String, kind: String, track: Track) async throws {
+        try await change(uid: uid, kind: kind) { state in
+            guard let position = state["tracks"].array.firstIndex(where: { ($0["track"]["id"].idText ?? $0["id"].idText) == track.id }) else {
+                throw APIError.server("Трека уже нет в плейлисте")
+            }
+            return ["op": "delete", "from": position, "to": position + 1, "tracks": [Self.reference(track)]]
+        }
+    }
+
+    /// Последние прослушанные треки, новые сначала и без повторов.
+    func history(limit: Int = 200) async throws -> [Track] {
+        if Demo.on { return Demo.data.tracks.reversed() }
+        let value = result(try await get("music-history", [("fullModelsCount", "0")]))
+        var ids: [String] = []
+        var seen = Set<String>()
+        for tab in value["historyTabs"].array {
+            for item in tab["items"].array {
+                for track in item["tracks"].array {
+                    if let id = track["data"]["itemId"]["trackId"].idText, seen.insert(id).inserted { ids.append(id) }
+                }
+            }
+        }
+        var out: [Track] = []
+        for chunk in Array(ids.prefix(limit)).chunked(150) {
+            out += try await tracks(ids: chunk)
+        }
+        return out
     }
 
     // MARK: - Главная

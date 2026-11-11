@@ -20,6 +20,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Liquid Glass есть только в SDK iOS 26: берём самый новый Xcode 26 на машине.
+      - name: Xcode 26
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | grep -vi beta | sort -V | tail -n 1)
+          if [ -n "$XCODE" ]; then sudo xcode-select -s "$XCODE"; fi
+          xcodebuild -version
+
       - name: Проект Xcode
         run: |
           brew install xcodegen
@@ -115,6 +122,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Liquid Glass есть только в SDK iOS 26: берём самый новый Xcode 26 на машине.
+      - name: Xcode 26
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | grep -vi beta | sort -V | tail -n 1)
+          if [ -n "$XCODE" ]; then sudo xcode-select -s "$XCODE"; fi
+          xcodebuild -version
+
       - name: Проект Xcode
         run: |
           brew install xcodegen
@@ -140,13 +154,14 @@ jobs:
 
       - name: Снимки
         run: |
-          UDID=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for r in sorted(d, reverse=True) if 'iOS' in r for x in d[r] if x['name'].startswith('iPhone 16')))")
+          UDID=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; v=lambda r: [int(n) for n in r.split('iOS-')[-1].split('-')]; c=[x for r in sorted((r for r in d if 'iOS-' in r), key=v, reverse=True) for x in d[r] if x['name'].startswith('iPhone')]; print(next((x for x in c if x['name'] in ('iPhone 17', 'iPhone 16')), c[0])['udid'])")
+          xcrun simctl list devices available | grep -B 30 "$UDID" | grep -E "^--|$UDID"
           xcrun simctl boot "$UDID"
           xcrun simctl bootstatus "$UDID" -b
           xcrun simctl status_bar "$UDID" override --time "9:41" --batteryState charged --batteryLevel 100 || true
           xcrun simctl install "$UDID" sim/Build/Products/Debug-iphonesimulator/Tune.app
           mkdir screens
-          for screen in home search library likes album artist player settings; do
+          for screen in home search library likes album albumscroll artist playlist history player queue lyrics wave picker settings; do
             xcrun simctl launch "$UDID" dev.tune.music -demo -screen "$screen"
             sleep 10
             xcrun simctl io "$UDID" screenshot "screens/$screen.png"

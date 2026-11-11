@@ -11,8 +11,10 @@ struct PlayerScreen: View {
     @EnvironmentObject private var player: Player
     @EnvironmentObject private var session: Session
     @EnvironmentObject private var downloads: Downloads
+    @EnvironmentObject private var router: Router
     @Environment(\.dismiss) private var dismiss
-    @State private var panel: Panel?
+    @State private var panel: Panel? = Demo.screen == "queue" ? .queue : Demo.screen == "lyrics" ? .lyrics : nil
+    @State private var picking: Track?
     @State private var tone = Theme.tone
     @State private var drag: CGFloat = 0
 
@@ -22,7 +24,7 @@ struct PlayerScreen: View {
             VStack(spacing: 0) {
                 top
                 Spacer(minLength: 10)
-                CoverView(uri: player.current?.cover, size: side, corner: 18)
+                CoverView(uri: player.current?.cover, size: side, corner: 22)
                     .shadow(color: .black.opacity(0.45), radius: 28, y: 16)
                     .scaleEffect(player.isPlaying ? 1 : 0.9)
                     .animation(.spring(response: 0.45, dampingFraction: 0.75), value: player.isPlaying)
@@ -45,6 +47,9 @@ struct PlayerScreen: View {
         .background {
             LinearGradient(colors: [tone, Color(white: 0.05)], startPoint: .top, endPoint: .bottom)
                 .ignoresSafeArea()
+        }
+        .overlay(alignment: .top) {
+            ToastView()
         }
         .offset(y: drag)
         .gesture(
@@ -75,6 +80,9 @@ struct PlayerScreen: View {
                 }
             }
         }
+        .sheet(item: $picking) { track in
+            PlaylistPicker(track: track)
+        }
         .onChange(of: player.current == nil) { empty in
             if empty { dismiss() }
         }
@@ -86,9 +94,11 @@ struct PlayerScreen: View {
                 dismiss()
             } label: {
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 20, weight: .semibold))
+                    .font(.system(size: 18, weight: .semibold))
                     .frame(width: 44, height: 44)
+                    .glass(in: Circle(), interactive: true)
             }
+            .buttonStyle(.plain)
             Spacer()
             VStack(spacing: 2) {
                 Text(player.isWave ? "ИГРАЕТ ВОЛНА" : "ИГРАЕТ")
@@ -100,14 +110,28 @@ struct PlayerScreen: View {
                     .lineLimit(1)
             }
             Spacer()
-            RoutePicker()
-                .frame(width: 44, height: 44)
+            Menu {
+                if let track = player.current {
+                    TrackMenu(
+                        track: track, inPlayer: true,
+                        navigate: { route in
+                            dismiss()
+                            router.push(route)
+                        },
+                        pick: { picking = $0 })
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 18, weight: .semibold))
+                    .frame(width: 44, height: 44)
+                    .glass(in: Circle(), interactive: true)
+            }
         }
         .foregroundStyle(.white)
     }
 
     private func titles(_ track: Track) -> some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 4) {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
                     Text(track.fullTitle)
@@ -125,7 +149,15 @@ struct PlayerScreen: View {
                     .foregroundStyle(.white.opacity(0.65))
                     .lineLimit(1)
             }
-            Spacer(minLength: 0)
+            Spacer(minLength: 8)
+            let disliked = session.disliked.contains(track.id)
+            Button(action: player.dislikeCurrent) {
+                Image(systemName: disliked ? "hand.thumbsdown.fill" : "hand.thumbsdown")
+                    .font(.system(size: 22))
+                    .foregroundStyle(disliked ? Theme.accent : Color.white.opacity(0.8))
+                    .frame(width: 44, height: 48)
+            }
+            .buttonStyle(.plain)
             let liked = session.isLiked(track.id)
             Button {
                 session.toggleLike(track)
@@ -133,8 +165,9 @@ struct PlayerScreen: View {
                 Image(systemName: liked ? "heart.fill" : "heart")
                     .font(.system(size: 26))
                     .foregroundStyle(liked ? Theme.accent : Color.white)
-                    .frame(width: 48, height: 48)
+                    .frame(width: 44, height: 48)
             }
+            .buttonStyle(.plain)
         }
     }
 
@@ -146,6 +179,8 @@ struct PlayerScreen: View {
                     .foregroundStyle(player.shuffle ? Theme.accent : Color.white.opacity(0.6))
                     .frame(width: 44, height: 44)
             }
+            .disabled(player.isWave)
+            .opacity(player.isWave ? 0.35 : 1)
             Spacer()
             Button(action: player.previous) {
                 Image(systemName: "backward.fill")
@@ -182,7 +217,12 @@ struct PlayerScreen: View {
                     .frame(width: 44, height: 44)
             }
         }
+        .buttonStyle(.plain)
         .foregroundStyle(.white)
+    }
+
+    private var sleeping: Bool {
+        player.sleepAt != nil || player.sleepAfterTrack
     }
 
     private func bottom(_ track: Track) -> some View {
@@ -195,6 +235,28 @@ struct PlayerScreen: View {
             }
             .disabled(!track.hasLyrics)
             .opacity(track.hasLyrics ? 1 : 0.35)
+            Spacer()
+            RoutePicker()
+                .frame(width: 48, height: 44)
+            Spacer()
+            Menu {
+                if let date = player.sleepAt {
+                    Text("Остановится в \(date.formatted(date: .omitted, time: .shortened))")
+                } else if player.sleepAfterTrack {
+                    Text("Остановится после этого трека")
+                }
+                ForEach([15, 30, 45, 60], id: \.self) { minutes in
+                    Button("Через \(minutes) минут") { player.setSleep(minutes: minutes) }
+                }
+                Button("После этого трека") { player.sleepAfterCurrentTrack() }
+                if sleeping {
+                    Button("Выключить таймер", role: .destructive) { player.setSleep(minutes: nil) }
+                }
+            } label: {
+                Image(systemName: sleeping ? "moon.zzz.fill" : "moon.zzz")
+                    .foregroundStyle(sleeping ? Theme.accent : Color.white.opacity(0.85))
+                    .frame(width: 48, height: 44)
+            }
             Spacer()
             if let value = downloads.active[track.id] {
                 ProgressRing(value: value)
@@ -224,6 +286,7 @@ struct PlayerScreen: View {
                     .frame(width: 48, height: 44)
             }
         }
+        .buttonStyle(.plain)
         .font(.system(size: 21, weight: .medium))
         .foregroundStyle(.white.opacity(0.85))
     }
@@ -248,7 +311,7 @@ private struct SeekBar: View {
                         .fill(Color.white)
                         .frame(width: max(0, width * value / length))
                 }
-                .frame(height: drag == nil ? 4 : 8)
+                .frame(height: drag == nil ? 5 : 10)
                 .frame(maxHeight: .infinity)
                 .contentShape(Rectangle())
                 .gesture(
@@ -279,7 +342,7 @@ private struct SeekBar: View {
 private struct RoutePicker: UIViewRepresentable {
     func makeUIView(context: Context) -> AVRoutePickerView {
         let view = AVRoutePickerView()
-        view.tintColor = .white
+        view.tintColor = UIColor(white: 1, alpha: 0.85)
         view.activeTintColor = UIColor(named: "AccentColor")
         view.prioritizesVideoDevices = false
         return view
@@ -288,9 +351,11 @@ private struct RoutePicker: UIViewRepresentable {
     func updateUIView(_ view: AVRoutePickerView, context: Context) {}
 }
 
+/// Очередь: нажатие переключает трек, «Изменить» даёт переставлять и убирать треки.
 private struct QueueSheet: View {
     @EnvironmentObject private var player: Player
     @Environment(\.dismiss) private var dismiss
+    @State private var mode = EditMode.inactive
 
     var body: some View {
         NavigationStack {
@@ -301,7 +366,7 @@ private struct QueueSheet: View {
                             player.jump(to: index)
                         } label: {
                             HStack(spacing: 12) {
-                                CoverView(uri: track.cover, size: 46, corner: 6)
+                                CoverView(uri: track.cover, size: 46, corner: 8)
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(track.fullTitle)
                                         .font(.system(size: 16, weight: .medium))
@@ -321,21 +386,31 @@ private struct QueueSheet: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .opacity(index < player.index ? 0.5 : 1)
                         .listRowBackground(Color.clear)
                         .listRowSeparator(.hidden)
+                        .deleteDisabled(index == player.index)
                         .id(index)
                     }
+                    .onMove { player.moveInQueue(from: $0, to: $1) }
+                    .onDelete { player.removeFromQueue($0) }
                 }
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
                 .background(Color(white: 0.07))
+                .environment(\.editMode, $mode)
                 .onAppear { proxy.scrollTo(player.index, anchor: .center) }
             }
-            .navigationTitle("Очередь")
+            .navigationTitle(player.contextName.isEmpty ? "Очередь" : player.contextName)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(mode == .active ? "Готово" : "Изменить") {
+                        withAnimation { mode = mode == .active ? .inactive : .active }
+                    }
+                }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Готово") { dismiss() }
+                    Button("Закрыть") { dismiss() }
                 }
             }
         }
@@ -378,7 +453,7 @@ private struct LyricsSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Готово") { dismiss() }
+                    Button("Закрыть") { dismiss() }
                 }
             }
         }

@@ -8,13 +8,27 @@ struct TuneApp: App {
 
     init() {
         Uncensor.shared.start()
-        let bar = UITabBarAppearance()
-        bar.configureWithOpaqueBackground()
-        bar.backgroundColor = .black
-        bar.shadowColor = .clear
-        UITabBar.appearance().standardAppearance = bar
-        UITabBar.appearance().scrollEdgeAppearance = bar
-        UITabBar.appearance().unselectedItemTintColor = UIColor(white: 0.55, alpha: 1)
+        // На iOS 26 панели стеклянные сами по себе; на старых системах делаем их тёмными
+        // и полупрозрачными, чтобы кнопки читались поверх прокрученного списка.
+        if #unavailable(iOS 26.0) {
+            let tabs = UITabBarAppearance()
+            tabs.configureWithOpaqueBackground()
+            tabs.backgroundColor = .black
+            tabs.shadowColor = .clear
+            UITabBar.appearance().standardAppearance = tabs
+            UITabBar.appearance().scrollEdgeAppearance = tabs
+            UITabBar.appearance().unselectedItemTintColor = UIColor(white: 0.55, alpha: 1)
+
+            let scrolled = UINavigationBarAppearance()
+            scrolled.configureWithTransparentBackground()
+            scrolled.backgroundEffect = UIBlurEffect(style: .systemChromeMaterialDark)
+            scrolled.shadowColor = .clear
+            let top = UINavigationBarAppearance()
+            top.configureWithTransparentBackground()
+            UINavigationBar.appearance().standardAppearance = scrolled
+            UINavigationBar.appearance().compactAppearance = scrolled
+            UINavigationBar.appearance().scrollEdgeAppearance = top
+        }
     }
 
     var body: some Scene {
@@ -38,6 +52,7 @@ struct TuneApp: App {
 enum Route: Hashable {
     case likes
     case downloads
+    case history
     case playlist(Playlist)
     case album(String)
     case artist(String, String)
@@ -72,28 +87,9 @@ extension EnvironmentValues {
 struct RootView: View {
     @EnvironmentObject private var session: Session
     @EnvironmentObject private var player: Player
-    @State private var showPlayer = Demo.screen == "player"
-    @State private var tab = RootView.startTab
-
-    /// Экран, с которого начинает демо-режим; обычный запуск открывает главную.
-    private static var startTab: Int {
-        switch Demo.screen {
-        case "search": return 1
-        case "library", "likes", "settings": return 2
-        default: return 0
-        }
-    }
-
-    private func startPath(_ index: Int) -> [Route] {
-        guard index == tab else { return [] }
-        switch Demo.screen {
-        case "likes": return [.likes]
-        case "settings": return [.settings]
-        case "album": return Demo.data.albums.first.map { [.album($0.id)] } ?? []
-        case "artist": return Demo.data.artists.first.map { [.artist($0.id, $0.title)] } ?? []
-        default: return []
-        }
-    }
+    @StateObject private var router = Router.shared
+    @State private var showPlayer = ["player", "queue", "lyrics"].contains(Demo.screen)
+    @State private var picking: Track? = Demo.screen == "picker" ? Demo.data.tracks.first : nil
 
     var body: some View {
         Group {
@@ -115,45 +111,54 @@ struct RootView: View {
     }
 
     private var tabs: some View {
-        TabView(selection: $tab) {
-            TabRoot(path: startPath(0)) { HomeScreen() }
+        TabView(selection: $router.tab) {
+            TabRoot(index: 0) { HomeScreen() }
                 .tabItem { Label("Главная", systemImage: "house.fill") }
                 .tag(0)
-            TabRoot(path: startPath(1)) { SearchScreen() }
+            TabRoot(index: 1) { SearchScreen() }
                 .tabItem { Label("Поиск", systemImage: "magnifyingglass") }
                 .tag(1)
-            TabRoot(path: startPath(2)) { LibraryScreen() }
+            TabRoot(index: 2) { LibraryScreen() }
                 .tabItem { Label("Коллекция", systemImage: "heart.fill") }
                 .tag(2)
         }
         .tint(Theme.accent)
+        .environmentObject(router)
         .environment(\.openPlayer, { showPlayer = true })
+        .environment(\.pickPlaylist, { picking = $0 })
+        .overlay(alignment: .top) {
+            ToastView()
+        }
+        .sheet(item: $picking) { track in
+            PlaylistPicker(track: track)
+        }
         .fullScreenCover(isPresented: $showPlayer) {
             PlayerScreen()
+                .environmentObject(router)
         }
     }
 }
 
 /// Вкладка со своей историей переходов и мини-плеером над панелью вкладок.
 struct TabRoot<Content: View>: View {
-    @State private var path: [Route]
+    let index: Int
     private let content: Content
+    @EnvironmentObject private var router: Router
 
-    init(path: [Route] = [], @ViewBuilder content: () -> Content) {
-        _path = State(initialValue: path)
+    init(index: Int, @ViewBuilder content: () -> Content) {
+        self.index = index
         self.content = content()
     }
 
     var body: some View {
-        NavigationStack(path: $path) {
+        NavigationStack(path: $router.paths[index]) {
             content
                 .navigationDestination(for: Route.self) { route in
                     destination(route)
-                        .toolbarBackground(.hidden, for: .navigationBar)
                 }
         }
         .tint(.white)
-        .environment(\.navigate, { path.append($0) })
+        .environment(\.navigate, { router.paths[index].append($0) })
         .safeAreaInset(edge: .bottom, spacing: 0) {
             MiniPlayer()
         }
@@ -163,6 +168,7 @@ struct TabRoot<Content: View>: View {
         switch route {
         case .likes: TrackListScreen(kind: .likes)
         case .downloads: TrackListScreen(kind: .downloads)
+        case .history: TrackListScreen(kind: .history)
         case .playlist(let playlist): TrackListScreen(kind: .playlist(playlist))
         case .album(let id): TrackListScreen(kind: .album(id))
         case .artistTracks(let id, let name): TrackListScreen(kind: .artist(id, name))

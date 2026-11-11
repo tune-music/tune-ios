@@ -3,6 +3,7 @@ import SwiftUI
 enum ListKind: Hashable {
     case likes
     case downloads
+    case history
     case playlist(Playlist)
     case album(String)
     case artist(String, String)
@@ -29,8 +30,10 @@ final class TrackListModel: ObservableObject {
                 break
             case .likes:
                 try await loadLikes()
+            case .history:
+                tracks = try await API.shared.history()
             case .playlist(let playlist):
-                title = playlist.title
+                if title.isEmpty { title = playlist.title }
                 cover = playlist.cover
                 tracks = try await API.shared.playlistTracks(playlist)
             case .album(let id):
@@ -82,15 +85,22 @@ final class TrackListModel: ObservableObject {
     }
 }
 
-/// Страница плейлиста, альбома, лайков или скачанного: шапка с обложкой и список треков.
+/// Страница плейлиста, альбома, лайков, истории или скачанного: шапка с обложкой и список треков.
 struct TrackListScreen: View {
     let kind: ListKind
 
     @StateObject private var model = TrackListModel()
     @EnvironmentObject private var player: Player
     @EnvironmentObject private var downloads: Downloads
+    @EnvironmentObject private var session: Session
+    @Environment(\.dismiss) private var dismiss
     @State private var filter = ""
+    @State private var searching = false
+    @FocusState private var focused: Bool
     @State private var confirmRemove = false
+    @State private var confirmDelete = false
+    @State private var renaming = false
+    @State private var name = ""
     @State private var tone = Theme.tone
 
     private var all: [Track] {
@@ -103,11 +113,21 @@ struct TrackListScreen: View {
         return all.filter { $0.title.localizedCaseInsensitiveContains(text) || $0.artists.localizedCaseInsensitiveContains(text) }
     }
 
+    private var playlist: Playlist? {
+        if case .playlist(let playlist) = kind { return playlist }
+        return nil
+    }
+
+    private var own: Bool {
+        playlist.map(session.isOwn) ?? false
+    }
+
     private var context: PlayContext {
         switch kind {
         case .likes: return .various("Мне нравится")
         case .downloads: return .various("Скачанные треки")
-        case .playlist(let playlist): return PlayContext(kind: "playlist", item: playlist.id, name: playlist.title)
+        case .history: return .various("История")
+        case .playlist(let playlist): return PlayContext(kind: "playlist", item: playlist.id, name: title)
         case .album(let id): return PlayContext(kind: "album", item: id, name: model.title)
         case .artist(let id, let name): return PlayContext(kind: "artist", item: id, name: name)
         }
@@ -117,6 +137,7 @@ struct TrackListScreen: View {
         switch kind {
         case .likes: return "Мне нравится"
         case .downloads: return "Скачанные треки"
+        case .history: return "История"
         case .playlist(let playlist): return model.title.isEmpty ? playlist.title : model.title
         case .artist(_, let name): return name
         case .album: return model.title
@@ -127,33 +148,66 @@ struct TrackListScreen: View {
         switch kind {
         case .album: return "Альбом"
         case .artist: return "Все треки"
+        case .history: return "Вы слушали"
         default: return "Плейлист"
         }
     }
 
     private var cover: String? {
-        if case .playlist(let playlist) = kind { return model.cover ?? playlist.cover }
-        return model.cover
+        model.cover ?? playlist?.cover
+    }
+
+    private var shareURL: URL? {
+        switch kind {
+        case .album(let id): return URL(string: "https://music.yandex.ru/album/\(id)")
+        case .playlist(let playlist): return playlist.shareURL
+        default: return nil
+        }
+    }
+
+    /// Сердечко есть у альбома и чужого плейлиста: оно добавляет их в коллекцию.
+    private var liked: Bool? {
+        switch kind {
+        case .album(let id): return session.likedAlbums.contains(id)
+        case .playlist(let playlist): return own ? nil : session.isLiked(playlist)
+        default: return nil
+        }
+    }
+
+    private func toggleLike() {
+        switch kind {
+        case .album(let id): session.toggleAlbum(id)
+        case .playlist(let playlist): session.togglePlaylist(playlist)
+        default: break
+        }
     }
 
     var body: some View {
         let tracks = shown
-        List {
-            header(count: all.count)
-                .listRowBackground(Color.clear)
-                .listRowSeparator(.hidden)
-                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 14, trailing: 16))
-            if tracks.isEmpty {
-                empty
-            }
-            ForEach(Array(tracks.enumerated()), id: \.offset) { index, track in
-                TrackRow(track: track) {
-                    player.play(tracks, at: index, context: context)
+        ScrollViewReader { proxy in
+            List {
+                header(count: all.count)
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+                    .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 14, trailing: 16))
+                if tracks.isEmpty {
+                    empty
+                }
+                ForEach(Array(tracks.enumerated()), id: \.offset) { index, track in
+                    TrackRow(track: track, onRemove: own ? { remove(track) } : nil) {
+                        player.play(tracks, at: index, context: context)
+                    }
+                    .id(index)
                 }
             }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .scrollDismissesKeyboard(.immediately)
+            .onChange(of: model.tracks.count) { _ in
+                // Снимок прокрученной страницы: по нему проверяется читаемость шапки.
+                if Demo.screen == "albumscroll" { proxy.scrollTo(7, anchor: .top) }
+            }
         }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
         .background(alignment: .top) {
             ZStack(alignment: .top) {
                 Theme.background
@@ -162,14 +216,19 @@ struct TrackListScreen: View {
             }
             .ignoresSafeArea()
         }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if searching {
+                searchBar
+            }
+        }
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
-        .searchable(text: $filter, prompt: "Поиск в списке")
         .task { await model.load(kind) }
         .task(id: cover) {
             switch kind {
             case .likes: tone = Color(red: 0.42, green: 0.16, blue: 0.5)
             case .downloads: tone = Color(red: 0.1, green: 0.25, blue: 0.52)
+            case .history: tone = Color(red: 0.08, green: 0.36, blue: 0.34)
             default:
                 let color = await ImageLoader.shared.tone(cover)
                 withAnimation(.easeInOut(duration: 0.3)) { tone = color ?? Theme.tone }
@@ -177,28 +236,21 @@ struct TrackListScreen: View {
         }
         .refreshable { await model.load(kind, force: true) }
         .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
+            ToolbarItemGroup(placement: .navigationBarTrailing) {
+                if let liked {
+                    Button(action: toggleLike) {
+                        Image(systemName: liked ? "heart.fill" : "heart")
+                            .foregroundStyle(liked ? Theme.accent : Color.white)
+                    }
+                }
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) { searching = true }
+                    focused = true
+                } label: {
+                    Image(systemName: "magnifyingglass")
+                }
                 Menu {
-                    if kind == .downloads {
-                        Button(role: .destructive) {
-                            confirmRemove = true
-                        } label: {
-                            Label("Удалить всё скачанное", systemImage: "trash")
-                        }
-                    } else {
-                        Button {
-                            downloads.download(all)
-                        } label: {
-                            Label("Скачать всё", systemImage: "arrow.down.circle")
-                        }
-                    }
-                    if !downloads.active.isEmpty {
-                        Button {
-                            downloads.cancelAll()
-                        } label: {
-                            Label("Остановить загрузки", systemImage: "xmark.circle")
-                        }
-                    }
+                    menu
                 } label: {
                     Image(systemName: "ellipsis")
                 }
@@ -206,6 +258,116 @@ struct TrackListScreen: View {
         }
         .confirmationDialog("Удалить всю скачанную музыку?", isPresented: $confirmRemove, titleVisibility: .visible) {
             Button("Удалить", role: .destructive) { downloads.removeAll() }
+        }
+        .confirmationDialog("Удалить плейлист «\(title)»?", isPresented: $confirmDelete, titleVisibility: .visible) {
+            Button("Удалить", role: .destructive) {
+                guard let playlist else { return }
+                Task {
+                    if await session.delete(playlist) { dismiss() }
+                }
+            }
+        }
+        .alert("Название плейлиста", isPresented: $renaming) {
+            TextField("Название", text: $name)
+            Button("Сохранить") {
+                guard let playlist else { return }
+                let title = name
+                Task {
+                    if await session.rename(playlist, to: title) { model.title = title.trimmingCharacters(in: .whitespaces) }
+                }
+            }
+            Button("Отмена", role: .cancel) {}
+        }
+    }
+
+    /// Поиск по списку открывается кнопкой: постоянная строка поиска мелькала при переходах.
+    private var searchBar: some View {
+        HStack(spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(Theme.dim)
+                TextField("Поиск в списке", text: $filter)
+                    .focused($focused)
+                    .autocorrectionDisabled()
+                    .submitLabel(.search)
+                    .foregroundStyle(.white)
+                if !filter.isEmpty {
+                    Button {
+                        filter = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(Theme.dim)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 40)
+            .glass(in: Capsule())
+            Button {
+                filter = ""
+                focused = false
+                withAnimation(.easeInOut(duration: 0.2)) { searching = false }
+            } label: {
+                Text("Отмена")
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(.white)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .transition(.move(edge: .top).combined(with: .opacity))
+    }
+
+    @ViewBuilder private var menu: some View {
+        if kind == .downloads {
+            Button(role: .destructive) {
+                confirmRemove = true
+            } label: {
+                Label("Удалить всё скачанное", systemImage: "trash")
+            }
+        } else {
+            Button {
+                downloads.download(all)
+            } label: {
+                Label("Скачать всё", systemImage: "arrow.down.circle")
+            }
+        }
+        if !downloads.active.isEmpty {
+            Button {
+                downloads.cancelAll()
+            } label: {
+                Label("Остановить загрузки", systemImage: "xmark.circle")
+            }
+        }
+        if let shareURL {
+            ShareLink(item: shareURL) {
+                Label("Поделиться", systemImage: "square.and.arrow.up")
+            }
+        }
+        if own {
+            Divider()
+            Button {
+                name = title
+                renaming = true
+            } label: {
+                Label("Переименовать", systemImage: "pencil")
+            }
+            Button(role: .destructive) {
+                confirmDelete = true
+            } label: {
+                Label("Удалить плейлист", systemImage: "trash")
+            }
+        }
+    }
+
+    private func remove(_ track: Track) {
+        guard let playlist else { return }
+        Task {
+            if await session.remove(track, from: playlist), let index = model.tracks.firstIndex(where: { $0.id == track.id }) {
+                model.tracks.remove(at: index)
+            }
         }
     }
 
@@ -220,6 +382,8 @@ struct TrackListScreen: View {
             Placeholder(icon: "magnifyingglass", title: "Ничего не найдено")
         } else if kind == .downloads {
             Placeholder(icon: "arrow.down.circle", title: "Пока ничего не скачано", text: "Смахните трек влево или выберите «Скачать» в его меню — он будет играть без интернета.")
+        } else if own {
+            Placeholder(icon: "music.note.list", title: "В плейлисте пока пусто", text: "Добавляйте треки через их меню: «Добавить в плейлист».")
         } else {
             Placeholder(icon: "music.note.list", title: "Здесь пока пусто")
         }
@@ -228,11 +392,13 @@ struct TrackListScreen: View {
     @ViewBuilder private var artwork: some View {
         switch kind {
         case .likes:
-            SymbolCover(symbol: "heart.fill", colors: SymbolCover.likes, size: 200, corner: 18)
+            SymbolCover(symbol: "heart.fill", colors: SymbolCover.likes, size: 200, corner: 22)
         case .downloads:
-            SymbolCover(symbol: "arrow.down", colors: SymbolCover.downloads, size: 200, corner: 18)
+            SymbolCover(symbol: "arrow.down", colors: SymbolCover.downloads, size: 200, corner: 22)
+        case .history:
+            SymbolCover(symbol: "clock.arrow.circlepath", colors: SymbolCover.history, size: 200, corner: 22)
         default:
-            CoverView(uri: cover, size: 220, corner: 14)
+            CoverView(uri: cover, size: 220, corner: 18)
         }
     }
 
@@ -267,22 +433,12 @@ struct TrackListScreen: View {
                         confirmRemove = true
                     } else {
                         downloads.download(all)
+                        session.show("Скачиваем: \(plural(all.count, "трек", "трека", "треков"))")
                     }
                 }
-                Button {
+                PlayButton {
                     player.play(all, context: context)
-                } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: "play.fill")
-                        Text("Слушать")
-                    }
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(.black)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 50)
-                    .background(Theme.accent, in: Capsule())
                 }
-                .buttonStyle(.plain)
                 RoundButton(symbol: "shuffle") {
                     player.play(all, context: context, shuffled: true)
                 }
@@ -301,6 +457,7 @@ struct ArtistScreen: View {
     let name: String
 
     @EnvironmentObject private var player: Player
+    @EnvironmentObject private var session: Session
     @Environment(\.navigate) private var navigate
     @State private var page: ArtistPage?
     @State private var error: String?
@@ -322,20 +479,12 @@ struct ArtistScreen: View {
                         .foregroundStyle(.white)
                         .multilineTextAlignment(.center)
                     HStack(spacing: 14) {
-                        Button {
-                            player.play(page.popular, context: PlayContext(kind: "artist", item: id, name: page.name))
-                        } label: {
-                            HStack(spacing: 8) {
-                                Image(systemName: "play.fill")
-                                Text("Слушать")
-                            }
-                            .font(.system(size: 17, weight: .semibold))
-                            .foregroundStyle(.black)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 50)
-                            .background(Theme.accent, in: Capsule())
+                        RoundButton(symbol: session.likedArtists.contains(id) ? "heart.fill" : "heart", active: session.likedArtists.contains(id)) {
+                            session.toggleArtist(id)
                         }
-                        .buttonStyle(.plain)
+                        PlayButton {
+                            player.play(page.popular, context: PlayContext(kind: "artist", item: id, name: page.name))
+                        }
                         RoundButton(symbol: "dot.radiowaves.left.and.right") {
                             player.playWave(seeds: ["artist:\(id)"], name: page.name)
                         }
@@ -357,14 +506,13 @@ struct ArtistScreen: View {
                     }
                 }
                 if !page.albums.isEmpty {
-                    Shelf("Альбомы") {
-                        ForEach(page.albums) { card in
-                            HomeCard(item: .album(card))
-                        }
-                    }
-                    .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
-                    .listRowInsets(EdgeInsets(top: 20, leading: 0, bottom: 12, trailing: 0))
+                    shelf("Альбомы", page.albums.map { .album($0) })
+                }
+                if !page.also.isEmpty {
+                    shelf("Сборники и участие", page.also.map { .album($0) })
+                }
+                if !page.similar.isEmpty {
+                    shelf("Похожие исполнители", page.similar.map { .artist($0) })
                 }
             } else if let error {
                 Placeholder(icon: "wifi.slash", title: "Не удалось загрузить", text: error) {
@@ -386,11 +534,31 @@ struct ArtistScreen: View {
         }
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                if let url = URL(string: "https://music.yandex.ru/artist/\(id)") {
+                    ShareLink(item: url) {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+                }
+            }
+        }
         .task { if page == nil { await load() } }
         .task(id: page?.cover) {
             let color = await ImageLoader.shared.tone(page?.cover)
             withAnimation(.easeInOut(duration: 0.3)) { tone = color ?? Theme.tone }
         }
+    }
+
+    private func shelf(_ title: String, _ items: [HomeItem]) -> some View {
+        Shelf(title) {
+            ForEach(items) { item in
+                HomeCard(item: item)
+            }
+        }
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+        .listRowInsets(EdgeInsets(top: 20, leading: 0, bottom: 12, trailing: 0))
     }
 
     private func heading(_ text: String, more: Route) -> some View {
