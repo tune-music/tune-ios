@@ -85,6 +85,14 @@ struct SearchScreen: View {
         .onSubmit(of: .search) { remember() }
         .task(id: query + "|" + tab.rawValue) { await search() }
         .task(id: query) { await suggest() }
+        .onChange(of: query) { value in
+            // В поиск вставили ссылку на Яндекс Музыку: открываем то, на что она ведёт.
+            guard let url = Links.url(in: value) else { return }
+            query = ""
+            Task {
+                if let route = await Links.route(for: url) { navigate(route) }
+            }
+        }
     }
 
     // MARK: - Подсказки

@@ -98,6 +98,8 @@ final class TrackListModel: ObservableObject {
                 let page = try await API.shared.playlist(playlist)
                 tracks = page.tracks
                 info = page
+                if title.isEmpty { title = page.title }
+                if cover == nil { cover = page.cover }
             case .album(let id):
                 let page = try await API.shared.album(id: id)
                 title = page.card.title

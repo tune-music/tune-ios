@@ -173,6 +173,9 @@ struct RootView: View {
         .onChange(of: phase) { now in
             if now == .active { Task { await Updater.shared.check() } }
         }
+        .onOpenURL { url in
+            if session.token != nil { Links.open(url) }
+        }
         .alert("Tune", isPresented: errorShown) {
             Button("Понятно", role: .cancel) {}
         } message: {

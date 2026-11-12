@@ -99,6 +99,9 @@ struct PlaylistPage {
     var tracks: [Track] = []
     var author = ""
     var about = ""
+    /// Название и обложка: нужны, когда плейлист открыт по ссылке и о нём ничего не известно.
+    var title = ""
+    var cover: String?
 }
 
 /// «58 мин», «2 ч 5 мин»: общая длительность списка.

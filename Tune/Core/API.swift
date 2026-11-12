@@ -289,7 +289,9 @@ final class API {
         return PlaylistPage(
             tracks: value["tracks"].array.compactMap { Self.parseTrack($0["track"]) },
             author: value["owner"]["name"].string ?? "",
-            about: value["description"].string ?? "")
+            about: value["description"].string ?? "",
+            title: value["title"].string ?? "",
+            cover: Self.parsePlaylist(value, owner: playlist.owner)?.cover)
     }
 
     // MARK: - Альбомы, исполнители, поиск

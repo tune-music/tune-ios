@@ -683,6 +683,16 @@ private struct QueueSheet: View {
                         Button {
                             player.jump(to: index)
                         } label: {
+                          VStack(alignment: .leading, spacing: 10) {
+                            if index == player.index + 1 {
+                                // С этого места начинается то, что ещё не играло.
+                                Text(player.isWave ? "Далее в волне" : "Далее")
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .kerning(0.6)
+                                    .textCase(.uppercase)
+                                    .foregroundStyle(Theme.dim)
+                                    .padding(.top, 8)
+                            }
                             HStack(spacing: 12) {
                                 CoverView(uri: track.cover, size: 46, corner: 8)
                                 VStack(alignment: .leading, spacing: 3) {
@@ -701,6 +711,7 @@ private struct QueueSheet: View {
                                         .foregroundStyle(Theme.accent)
                                 }
                             }
+                          }
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
