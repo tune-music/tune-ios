@@ -26,6 +26,7 @@ final class Session: ObservableObject {
     @Published private(set) var likedAlbums: Set<String> = []
     @Published private(set) var likedArtists: Set<String> = []
     @Published private(set) var disliked: Set<String> = []
+    @Published private(set) var blockedArtists = Set(UserDefaults.standard.stringArray(forKey: "blockedArtists") ?? [])
     @Published private(set) var offline = false
     /// Короткое сообщение поверх экрана: «Добавлено в плейлист».
     @Published var toast: String?
@@ -238,6 +239,28 @@ final class Session: ObservableObject {
         }
     }
 
+    /// Исполнитель, которого попросили не рекомендовать. Список хранится на устройстве.
+    func isBlocked(_ artist: String) -> Bool {
+        blockedArtists.contains(artist)
+    }
+
+    func toggleBlocked(_ artist: ArtistRef) {
+        guard let uid = profile?.uid, !artist.id.isEmpty else { return }
+        let blocked = !blockedArtists.contains(artist.id)
+        if blocked { blockedArtists.insert(artist.id) } else { blockedArtists.remove(artist.id) }
+        UserDefaults.standard.set(Array(blockedArtists), forKey: "blockedArtists")
+        show(blocked ? "\(artist.name) больше не будет в рекомендациях" : "\(artist.name) снова в рекомендациях")
+        Task {
+            do {
+                try await API.shared.setBlocked(uid: uid, artist: artist.id, blocked: blocked)
+            } catch {
+                if blocked { blockedArtists.remove(artist.id) } else { blockedArtists.insert(artist.id) }
+                UserDefaults.standard.set(Array(blockedArtists), forKey: "blockedArtists")
+                fail("Не удалось сохранить")
+            }
+        }
+    }
+
     func togglePlaylist(_ playlist: Playlist) {
         guard let uid = profile?.uid else { return }
         let liked = !isLiked(playlist)
@@ -367,6 +390,7 @@ final class Router: ObservableObject {
         case "history": tab = 2; paths[2] = [.history]
         case "downloads": tab = 2; paths[2] = [.downloads]
         case "stats": tab = 2; paths[2] = [.stats]
+        case "stations": paths[0] = [.stations]
         case "settings": tab = 2; paths[2] = [.settings]
         case "shelf": paths[0] = Demo.home.first.map { [.block($0)] } ?? []
         case "playlist", "select": tab = 2; paths[2] = data.playlists.first.map { [.playlist($0)] } ?? []

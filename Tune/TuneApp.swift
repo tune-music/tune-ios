@@ -122,6 +122,7 @@ enum Route: Hashable {
     case log
     case stats
     case storage
+    case stations
 }
 
 private struct NavigateKey: EnvironmentKey {
@@ -269,6 +270,7 @@ struct TabRoot<Content: View>: View {
         case .log: LogScreen()
         case .stats: StatsScreen()
         case .storage: StorageScreen()
+        case .stations: StationsScreen()
         }
     }
 }

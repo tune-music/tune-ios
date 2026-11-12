@@ -132,6 +132,22 @@ struct HomeScreen: View {
     private var stations: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
+                Button {
+                    navigate(.stations)
+                } label: {
+                    HStack(spacing: 7) {
+                        Image(systemName: "square.grid.2x2.fill")
+                            .font(.system(size: 12, weight: .bold))
+                        Text("Все волны")
+                            .font(.system(size: 15, weight: .semibold))
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 15)
+                    .frame(height: 40)
+                    .overlay(Capsule().strokeBorder(.white.opacity(0.22)))
+                    .contentShape(Capsule())
+                }
+                .buttonStyle(PressStyle())
                 ForEach(model.page.waves) { wave in
                     let active = now.from("radio", wave.id)
                     Button {

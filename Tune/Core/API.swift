@@ -642,6 +642,33 @@ final class API {
 
     // MARK: - Волна
 
+    /// Полный список волн Яндекса по группам: жанры, настроение, занятие, эпоха.
+    func stations() async throws -> [StationGroup] {
+        if Demo.on {
+            let genres = [("pop", "Поп"), ("rock", "Рок"), ("rap", "Рэп и хип-хоп"), ("electronics", "Электроника"), ("indie", "Инди"), ("metal", "Метал"), ("jazz", "Джаз"), ("classical", "Классика")]
+            return [
+                StationGroup(id: "genre", title: "Жанры", waves: genres.map { WaveCard(title: $0.1, seeds: ["genre:" + $0.0], cover: nil, color: nil) }),
+                StationGroup(id: "mood", title: "Настроение", waves: Demo.data.waves),
+            ]
+        }
+        let value = result(try await get("rotor/stations/list", [("language", "ru")]))
+        var found: [String: [WaveCard]] = [:]
+        for item in value.array {
+            let station = item["station"]
+            guard let type = station["id"]["type"].string, let tag = station["id"]["tag"].string, let name = station["name"].string else { continue }
+            found[type, default: []].append(WaveCard(title: name, seeds: ["\(type):\(tag)"], cover: nil, color: station["icon"]["backgroundColor"].string))
+        }
+        return StationGroup.known.compactMap { group in
+            guard let waves = found[group.id], !waves.isEmpty else { return nil }
+            return StationGroup(id: group.id, title: group.title, waves: waves)
+        }
+    }
+
+    /// «Не рекомендовать исполнителя»: его треки перестают попадаться в волнах.
+    func setBlocked(uid: String, artist: String, blocked: Bool) async throws {
+        _ = try await post("users/\(uid)/dislikes/artists/" + (blocked ? "add-multiple" : "remove"), form: "artist-ids=" + artist)
+    }
+
     func waveNew(seeds: [String]) async throws -> Wave {
         let value = result(try await post("rotor/session/new", json: ["seeds": seeds, "includeTracksInResponse": true, "allowExplicit": true]))
         guard let session = value["radioSessionId"].string else { throw APIError.server("Яндекс не запустил волну") }

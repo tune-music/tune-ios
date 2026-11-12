@@ -39,6 +39,8 @@ struct SearchScreen: View {
     @State private var loading = false
     @State private var failed = false
     @State private var suggestions: [String] = []
+    /// Волны по жанрам: показаны, пока в поиске ничего не набрано.
+    @State private var genres: [WaveCard] = []
     @State private var recent = UserDefaults.standard.stringArray(forKey: "recentSearches") ?? []
 
     private var text: String { query.trimmingCharacters(in: .whitespaces) }
@@ -46,10 +48,17 @@ struct SearchScreen: View {
     var body: some View {
         List {
             if text.isEmpty {
-                if recent.isEmpty {
-                    Placeholder(icon: "magnifyingglass", title: "Найдётся всё", text: "Треки, альбомы, исполнители и плейлисты")
-                } else {
+                if !recent.isEmpty {
                     history
+                }
+                if !genres.isEmpty {
+                    title("Жанры")
+                    WaveGrid(waves: genres)
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                        .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 20, trailing: 16))
+                } else if recent.isEmpty {
+                    Placeholder(icon: "magnifyingglass", title: "Найдётся всё", text: "Треки, альбомы, исполнители и плейлисты")
                 }
             } else {
                 if !suggestions.isEmpty {
@@ -85,6 +94,10 @@ struct SearchScreen: View {
         .onSubmit(of: .search) { remember() }
         .task(id: query + "|" + tab.rawValue) { await search() }
         .task(id: query) { await suggest() }
+        .task {
+            guard genres.isEmpty, Demo.screen != "search" else { return }
+            genres = (try? await API.shared.stations())?.first { $0.id == "genre" }?.waves ?? []
+        }
         .onChange(of: query) { value in
             // В поиск вставили ссылку на Яндекс Музыку: открываем то, на что она ведёт.
             guard let url = Links.url(in: value) else { return }

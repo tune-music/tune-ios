@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import UIKit.UIGestureRecognizerSubclass
 
 /// Страница ленты: обложка трека (полноэкранный плеер) или обложка с названием (мини-плеер).
 final class TrackPage: UIView {
@@ -108,6 +109,56 @@ final class TrackPagerView: UIView {
     private var run = 0
 
     var trackId: String? { front.track?.id }
+
+    /// Нажатие и смахивание вверх: открыть плеер. Задаётся у ленты, которая сама ловит касания.
+    private var onOpen: (() -> Void)?
+    /// Направление жеста: true — в сторону, false — вверх или вниз, nil — ещё не ясно.
+    private var sideways: Bool?
+    private let own = TrackDrag()
+
+    /// Лента сама ловит касания. Палец она забирает в момент касания, не дожидаясь, пока
+    /// системные жесты (например, «назад» по всей странице) решат, не их ли это движение:
+    /// поэтому она трогается с места сразу, без «примагничивания».
+    func enableTouch(_ open: @escaping () -> Void) {
+        onOpen = open
+        guard gestureRecognizers?.isEmpty ?? true else { return }
+        isUserInteractionEnabled = true
+        own.view = self
+        addGestureRecognizer(InstantPan(target: self, action: #selector(pan(_:))))
+    }
+
+    @objc private func pan(_ pan: InstantPan) {
+        let move = pan.translation
+        switch pan.state {
+        case .began:
+            sideways = nil
+        case .changed:
+            if sideways == nil, max(abs(move.x), abs(move.y)) > 8 {
+                sideways = abs(move.x) >= abs(move.y)
+                if sideways == false { settle() }
+            }
+            if sideways != false { own.move(move.x) }
+        case .ended:
+            let side = sideways
+            sideways = nil
+            guard side == true else {
+                settle()
+                // Короткое касание или движение вверх открывает плеер.
+                if side == nil || move.y < -36 { onOpen?() }
+                return
+            }
+            let far = abs(move.x) > 50 || abs(pan.velocity.x) > 600
+            own.release {
+                guard far else { return }
+                if move.x < 0 { Player.shared.next() } else { Player.shared.previous() }
+            }
+        case .cancelled, .failed:
+            sideways = nil
+            settle()
+        default:
+            break
+        }
+    }
 
     init(style: TrackPage.Style) {
         self.style = style
@@ -225,6 +276,46 @@ final class TrackPagerView: UIView {
     }
 }
 
+/// Жест, который начинается в момент касания и сразу сообщает сдвиг пальца.
+final class InstantPan: UIGestureRecognizer {
+    private(set) var translation: CGPoint = .zero
+    private(set) var velocity: CGPoint = .zero
+    private var start: CGPoint = .zero
+    private var last: CGPoint = .zero
+    private var stamp: TimeInterval = 0
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+        guard state == .possible, let touch = touches.first else { return }
+        start = touch.location(in: nil)
+        last = start
+        stamp = touch.timestamp
+        translation = .zero
+        velocity = .zero
+        state = .began
+    }
+
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
+        guard let touch = touches.first else { return }
+        let point = touch.location(in: nil)
+        let passed = touch.timestamp - stamp
+        if passed > 0 {
+            velocity = CGPoint(x: (point.x - last.x) / passed, y: (point.y - last.y) / passed)
+        }
+        last = point
+        stamp = touch.timestamp
+        translation = CGPoint(x: point.x - start.x, y: point.y - start.y)
+        state = .changed
+    }
+
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
+        state = .ended
+    }
+
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) {
+        state = .cancelled
+    }
+}
+
 /// Связь жеста с лентой: жест живёт в SwiftUI, а двигается UIKit-слой напрямую, минуя
 /// перерисовку экрана на каждое движение пальца.
 @MainActor
@@ -256,16 +347,20 @@ struct TrackPager: UIViewRepresentable {
     let style: TrackPage.Style
     let track: Track?
     let drag: TrackDrag
+    /// Если задано, лента сама ловит касания: нажатие и смахивание вверх открывают плеер.
+    var onOpen: (() -> Void)?
 
     func makeUIView(context: Context) -> TrackPagerView {
         let view = TrackPagerView(style: style)
         view.set(track)
         drag.view = view
+        if let onOpen { view.enableTouch(onOpen) }
         return view
     }
 
     func updateUIView(_ view: TrackPagerView, context: Context) {
         drag.view = view
+        if let onOpen { view.enableTouch(onOpen) }
         guard let track else { return }
         if view.trackId == nil {
             view.set(track)

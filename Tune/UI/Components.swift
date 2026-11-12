@@ -188,6 +188,15 @@ struct TrackMenu: View {
                 Label(artist.name, systemImage: "music.mic")
             }
         }
+        if let artist = track.artistList.first(where: { !$0.id.isEmpty }) {
+            let blocked = session.isBlocked(artist.id)
+            Button {
+                session.toggleBlocked(artist)
+                done()
+            } label: {
+                Label(blocked ? "Снова рекомендовать исполнителя" : "Не рекомендовать исполнителя", systemImage: blocked ? "person.crop.circle.badge.checkmark" : "person.crop.circle.badge.xmark")
+            }
+        }
         Button {
             player.playWave(seeds: ["track:\(track.id)"], name: "Волна по треку «\(track.title)»")
             done()
@@ -771,52 +780,13 @@ struct MiniPlayer: View {
     /// Направление жеста определяется в его начале и до конца не меняется.
     @State private var axis: Axis?
 
-    private var swipe: some Gesture {
-        // Порог минимальный: лента трогается с места почти сразу, а нажатие остаётся нажатием.
-        DragGesture(minimumDistance: 3)
-            .onChanged { value in
-                let move = value.translation
-                if axis == nil {
-                    axis = abs(move.width) > abs(move.height) ? .horizontal : .vertical
-                    // Жест распознаётся не сразу: лента стартует с нуля, а не с уже пройденного пути.
-                    origin = move.width
-                }
-                guard axis == .horizontal else { return }
-                drag.move(move.width - origin)
-            }
-            .onEnded { value in
-                let locked = axis
-                axis = nil
-                if locked == .horizontal {
-                    let far = abs(value.translation.width) > 50 || abs(value.predictedEndTranslation.width) > 160
-                    // Трек переключается без общей анимации: иначе вместе с названием
-                    // анимировались все строки списка под мини-плеером.
-                    let ahead = value.translation.width < 0
-                    drag.release {
-                        guard far else { return }
-                        if ahead { player.next() } else { player.previous() }
-                    }
-                } else if value.translation.height < -36 {
-                    // Плеер открывается только явным движением вверх.
-                    openPlayer()
-                }
-            }
-    }
-
     var body: some View {
         if let track = player.current {
             let liked = session.isLiked(track.id)
             let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
             HStack(spacing: 0) {
-                TrackPager(style: .row, track: track, drag: drag)
+                TrackPager(style: .row, track: track, drag: drag, onOpen: openPlayer)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .overlay {
-                        // Жесты ловит прозрачный слой поверх ленты: сама она нажатий не принимает.
-                        Color.clear
-                            .contentShape(Rectangle())
-                            .onTapGesture(perform: openPlayer)
-                            .gesture(swipe)
-                    }
 
                 Button {
                     session.toggleLike(track)
