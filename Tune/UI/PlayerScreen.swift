@@ -30,7 +30,7 @@ struct PlayerScreen: View {
                         if axis == .vertical {
                             PlayerWindow.shared.drag(move.height)
                         } else {
-                            swipe.x = move.width
+                            swipe.move(move.width)
                         }
                     }
                     .onEnded { value in
@@ -76,20 +76,10 @@ private struct PlayerCover: View {
     @EnvironmentObject private var swipe: CoverSwipe
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: 22, style: .continuous)
-        // Обложки едут внутри неподвижной рамки: тень рисуется один раз, а не на каждом кадре.
-        TrackPager(width: side + 20, drag: swipe) { track in
-            CoverView(uri: track.cover, size: side, corner: 0)
-        }
-        .frame(width: side, height: side)
-        .clipShape(shape)
-        .background {
-            shape
-                .fill(Color.black)
-                .shadow(color: .black.opacity(0.4), radius: 22, y: 14)
-        }
-        .scaleEffect(player.isPlaying ? 1 : 0.9)
-        .animation(.spring(response: 0.45, dampingFraction: 0.75), value: player.isPlaying)
+        TrackPager(style: .cover, track: player.current, drag: swipe)
+            .frame(width: side, height: side)
+            .scaleEffect(player.isPlaying ? 1 : 0.9)
+            .animation(.spring(response: 0.45, dampingFraction: 0.75), value: player.isPlaying)
     }
 }
 

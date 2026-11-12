@@ -26,6 +26,33 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
+	<key>UIApplicationShortcutItems</key>
+	<array>
+		<dict>
+			<key>UIApplicationShortcutItemType</key>
+			<string>wave</string>
+			<key>UIApplicationShortcutItemTitle</key>
+			<string>Моя волна</string>
+			<key>UIApplicationShortcutItemIconSymbolName</key>
+			<string>dot.radiowaves.left.and.right</string>
+		</dict>
+		<dict>
+			<key>UIApplicationShortcutItemType</key>
+			<string>search</string>
+			<key>UIApplicationShortcutItemTitle</key>
+			<string>Поиск</string>
+			<key>UIApplicationShortcutItemIconSymbolName</key>
+			<string>magnifyingglass</string>
+		</dict>
+		<dict>
+			<key>UIApplicationShortcutItemType</key>
+			<string>likes</string>
+			<key>UIApplicationShortcutItemTitle</key>
+			<string>Мне нравится</string>
+			<key>UIApplicationShortcutItemIconSymbolName</key>
+			<string>heart.fill</string>
+		</dict>
+	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>ITSAppUsesNonExemptEncryption</key>

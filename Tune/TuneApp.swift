@@ -1,7 +1,47 @@
 import SwiftUI
 
+/// Быстрые действия: меню по долгому нажатию на значок приложения.
+@MainActor
+enum QuickAction {
+    /// Действие, с которым приложение запустили: выполняется, когда всё готово.
+    static var pending: String?
+
+    static func run(_ type: String) {
+        switch type {
+        case "wave":
+            Player.shared.playWave()
+        case "search":
+            PlayerWindow.shared.hide()
+            Router.shared.tab = 1
+        case "likes":
+            PlayerWindow.shared.hide()
+            Router.shared.tab = 2
+            Router.shared.paths[2] = [.likes]
+        default:
+            break
+        }
+    }
+}
+
+final class AppDelegate: NSObject, UIApplicationDelegate {
+    func application(_ application: UIApplication, configurationForConnecting session: UISceneSession, options: UIScene.ConnectionOptions) -> UISceneConfiguration {
+        if let item = options.shortcutItem { QuickAction.pending = item.type }
+        let config = UISceneConfiguration(name: nil, sessionRole: session.role)
+        config.delegateClass = SceneDelegate.self
+        return config
+    }
+}
+
+final class SceneDelegate: NSObject, UIWindowSceneDelegate {
+    func windowScene(_ windowScene: UIWindowScene, performActionFor item: UIApplicationShortcutItem, completionHandler: @escaping (Bool) -> Void) {
+        QuickAction.run(item.type)
+        completionHandler(true)
+    }
+}
+
 @main
 struct TuneApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @StateObject private var session = Session.shared
     @StateObject private var player = Player.shared
     @StateObject private var downloads = Downloads.shared
@@ -43,6 +83,10 @@ struct TuneApp: App {
                 .task { await Updater.shared.check() }
                 .task {
                     await session.refresh()
+                    if let action = QuickAction.pending {
+                        QuickAction.pending = nil
+                        QuickAction.run(action)
+                    }
                     if Demo.on {
                         player.showDemo(Demo.data.tracks, name: "Мне нравится")
                         if ["player", "queue", "lyrics", "actions"].contains(Demo.screen) {
