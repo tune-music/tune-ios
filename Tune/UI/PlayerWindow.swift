@@ -119,6 +119,8 @@ final class PlayerWindow: ObservableObject {
             self.offset = 0
             self.closing = false
             self.visible = false
+            // Плеер закрыт: экран снова гаснет как обычно.
+            UIApplication.shared.isIdleTimerDisabled = false
         }
     }
 }

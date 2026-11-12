@@ -134,6 +134,10 @@ private struct PlayerBody: View {
             .padding(.bottom, 12)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        // Пока открыт текст песни, экран не гаснет: его читают, не трогая телефон.
+        .onAppear { UIApplication.shared.isIdleTimerDisabled = lyrics }
+        .onChange(of: lyrics) { UIApplication.shared.isIdleTimerDisabled = $0 }
+        .onDisappear { UIApplication.shared.isIdleTimerDisabled = false }
         .sheet(isPresented: $queue) {
             QueueSheet()
         }
