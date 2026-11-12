@@ -538,7 +538,9 @@ struct WaveTile: View {
         VStack(spacing: 8) {
             ZStack {
                 Circle()
-                    .fill(RadialGradient(colors: [color, color.opacity(0.3)], center: .center, startRadius: 4, endRadius: size * 0.55))
+                    .fill(Theme.surface)
+                Circle()
+                    .strokeBorder(color.opacity(0.75), lineWidth: 2)
                 if let playing {
                     Circle()
                         .strokeBorder(Theme.accent, lineWidth: 3)
@@ -667,10 +669,12 @@ struct SymbolCover: View {
     let size: CGFloat
     var corner: CGFloat = 12
 
-    static let likes = [Color(red: 1, green: 0.3, blue: 0.42), Color(red: 0.56, green: 0.2, blue: 0.95)]
-    static let downloads = [Color(red: 0.2, green: 0.62, blue: 1), Color(red: 0.12, green: 0.25, blue: 0.75)]
-    static let history = [Color(red: 0.2, green: 0.75, blue: 0.6), Color(red: 0.08, green: 0.35, blue: 0.45)]
-    static let disliked = [Color(white: 0.42), Color(white: 0.2)]
+    /// «Мне нравится» — единственная цветная обложка: это главный раздел коллекции.
+    static let likes = [Color(red: 1, green: 0.83, blue: 0.25), Color(red: 0.97, green: 0.66, blue: 0.1)]
+    static let plain = [Color(white: 0.25), Color(white: 0.15)]
+    static let downloads = plain
+    static let history = plain
+    static let disliked = plain
 
     var body: some View {
         LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing)
@@ -678,7 +682,7 @@ struct SymbolCover: View {
             .overlay {
                 Image(systemName: symbol)
                     .font(.system(size: size * 0.42, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(colors == Self.likes ? Color.black : Color.white)
             }
             .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
     }

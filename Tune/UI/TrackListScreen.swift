@@ -402,10 +402,7 @@ struct TrackListScreen: View {
         .task { await model.load(kind) }
         .task(id: cover) {
             switch kind {
-            case .disliked: tone = Color(white: 0.24)
-            case .likes: tone = Color(red: 0.42, green: 0.16, blue: 0.5)
-            case .downloads: tone = Color(red: 0.1, green: 0.25, blue: 0.52)
-            case .history: tone = Color(red: 0.08, green: 0.36, blue: 0.34)
+            case .disliked, .likes, .downloads, .history: tone = Color(white: 0.2)
             default:
                 let color = await ImageLoader.shared.tone(cover)
                 withAnimation(.easeInOut(duration: 0.3)) { tone = color ?? Theme.tone }

@@ -69,24 +69,10 @@ struct HomeScreen: View {
             .padding(.bottom, 24)
         }
         .background(Theme.background)
-        .ignoresSafeArea(edges: .top)
-        .toolbar(.hidden, for: .navigationBar)
-        .overlay(alignment: .top) {
-            // Размытие под часами и островком: прокрученные полки уходят в него плавно.
-            // Оно есть всегда: поверх волны его не видно, потому что она сама размыта.
-            ZStack {
-                Rectangle().fill(.ultraThinMaterial)
-                Color.black.opacity(0.35)
-            }
-            .mask {
-                LinearGradient(
-                    stops: [.init(color: .black, location: 0), .init(color: .black, location: 0.5), .init(color: .clear, location: 1)],
-                    startPoint: .top, endPoint: .bottom)
-            }
-            .frame(height: 112)
-            .ignoresSafeArea(edges: .top)
-            .allowsHitTesting(false)
-        }
+        // Панель навигации пустая, но она есть: под ней прокрученные полки размываются
+        // так же, как в поиске и коллекции.
+        .navigationTitle("")
+        .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $tuning) {
             WaveSettingsSheet()
         }
@@ -147,7 +133,6 @@ struct HomeScreen: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 ForEach(model.page.waves) { wave in
-                    let color = Color(hex: wave.color) ?? Theme.raised
                     let active = now.from("radio", wave.id)
                     Button {
                         player.tapWave(seeds: wave.seeds, name: wave.title)
@@ -163,13 +148,7 @@ struct HomeScreen: View {
                         .padding(.horizontal, 15)
                         .frame(height: 40)
                         .background {
-                            if active {
-                                Capsule().fill(Theme.accent)
-                            } else {
-                                Capsule()
-                                    .fill(LinearGradient(colors: [color, color.opacity(0.6)], startPoint: .topLeading, endPoint: .bottomTrailing))
-                                    .overlay(Capsule().fill(Color.black.opacity(0.22)))
-                            }
+                            Capsule().fill(active ? Theme.accent : Theme.raised)
                         }
                     }
                     .buttonStyle(PressStyle())
@@ -282,36 +261,42 @@ private struct WaveHero: View {
                     }
                     .padding(.horizontal, 24)
                 }
-                Button {
-                    player.tapWave()
-                } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: playing ? "pause.fill" : "play.fill")
-                            .font(.system(size: 30))
-                        Text("Моя волна")
-                            .font(.system(size: 36, weight: .bold))
-                    }
+                Text("Моя волна")
+                    .font(.system(size: 36, weight: .bold))
                     .foregroundStyle(.white)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                Button(action: tune) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "slider.horizontal.3")
-                        Text(Player.waveSettings.isEmpty ? "Настроить" : "Настроено")
+                HStack(spacing: 12) {
+                    Button {
+                        player.tapWave()
+                    } label: {
+                        HStack(spacing: 8) {
+                            PlayGlyph(playing: playing, size: 18)
+                            Text(playing ? "Пауза" : "Слушать")
+                                .font(.system(size: 17, weight: .semibold))
+                        }
+                        .foregroundStyle(.black)
+                        .padding(.horizontal, 26)
+                        .frame(height: 48)
+                        .background(Theme.accent, in: Capsule())
+                        .contentShape(Capsule())
                     }
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 10)
-                    .glass(in: Capsule(), interactive: true)
+                    .buttonStyle(PressStyle())
+                    Button(action: tune) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "slider.horizontal.3")
+                            Text(Player.waveSettings.isEmpty ? "Настроить" : "Настроено")
+                        }
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 20)
+                        .frame(height: 48)
+                        .glass(in: Capsule(), interactive: true)
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             }
-            .padding(.top, 50)
         }
         .frame(maxWidth: .infinity)
-        .frame(height: 420)
+        .frame(height: 300)
         .onAppear { animate(playing) }
         .onChange(of: playing) { animate($0) }
     }
@@ -328,22 +313,19 @@ private struct WaveHero: View {
     private var blob: some View {
         ZStack {
             Circle()
-                .fill(Color(red: 1, green: 0.32, blue: 0.2))
-                .frame(width: 250, height: 250)
+                .fill(Color(red: 1, green: 0.78, blue: 0.18))
+                .frame(width: 240, height: 240)
                 .offset(x: moving ? -70 : 30, y: moving ? -10 : 40)
             Circle()
-                .fill(Color(red: 0.98, green: 0.78, blue: 0.1))
-                .frame(width: 220, height: 220)
+                .fill(Color(red: 1, green: 0.52, blue: 0.1))
+                .frame(width: 210, height: 210)
                 .offset(x: moving ? 70 : -40, y: moving ? 50 : -20)
             Circle()
-                .fill(Color(red: 0.8, green: 0.18, blue: 0.6))
-                .frame(width: 200, height: 200)
+                .fill(Color(red: 0.86, green: 0.34, blue: 0.08))
+                .frame(width: 180, height: 180)
                 .offset(x: moving ? 10 : -80, y: moving ? -70 : 60)
-            Circle()
-                .fill(Color(red: 0.25, green: 0.3, blue: 0.95))
-                .frame(width: 170, height: 170)
-                .offset(x: moving ? -40 : 90, y: moving ? 80 : -50)
         }
+        .opacity(0.7)
         .scaleEffect(moving ? 1.1 : 0.95)
         .blur(radius: 56)
         .frame(maxWidth: .infinity, maxHeight: .infinity)

@@ -229,6 +229,7 @@ struct TabRoot<Content: View>: View {
     var body: some View {
         NavigationStack(path: $router.paths[index]) {
             content
+                .opacity(shown ? 1 : 0)
                 .safeAreaInset(edge: .bottom, spacing: 0) { MiniPlayerSpace() }
                 .navigationDestination(for: Route.self) { route in
                     destination(route)
@@ -237,7 +238,6 @@ struct TabRoot<Content: View>: View {
         }
         .tint(.white)
         .environment(\.navigate, { router.paths[index].append($0) })
-        .opacity(shown ? 1 : 0)
         .onChange(of: router.tab) { tab in
             guard tab == index else { return }
             shown = false
