@@ -66,6 +66,7 @@ struct LibraryScreen: View {
                 entry("square.stack.fill", "Альбомы", session.likedAlbums.isEmpty ? "" : "\(session.likedAlbums.count)", .likedAlbums)
                 entry("music.mic", "Исполнители", session.likedArtists.isEmpty ? "" : "\(session.likedArtists.count)", .likedArtists)
                 entry("clock.arrow.circlepath", "История", "", .history)
+                entry("chart.bar.fill", "Статистика", "", .stats)
                 if !session.disliked.isEmpty {
                     entry("hand.thumbsdown.fill", "Не нравится", "\(session.disliked.count)", .disliked)
                 }

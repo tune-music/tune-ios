@@ -114,6 +114,7 @@ enum Route: Hashable {
     case likedArtists
     case settings
     case log
+    case stats
 }
 
 private struct NavigateKey: EnvironmentKey {
@@ -256,6 +257,7 @@ struct TabRoot<Content: View>: View {
         case .likedArtists: CardGridScreen(kind: .artists)
         case .settings: SettingsScreen()
         case .log: LogScreen()
+        case .stats: StatsScreen()
         }
     }
 }

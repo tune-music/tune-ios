@@ -430,7 +430,7 @@ struct PlayingBadge: View {
     @ViewBuilder private var mark: some View {
         let image = Image(systemName: playing ? "waveform" : "pause.fill")
         if #available(iOS 17.0, *) {
-            image.symbolEffect(.variableColor.iterative, isActive: playing)
+            image.symbolEffect(.variableColor.iterative, isActive: playing && !ProcessInfo.processInfo.isLowPowerModeEnabled)
         } else {
             image
         }

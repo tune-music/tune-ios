@@ -596,6 +596,7 @@ final class Player: NSObject, ObservableObject {
     private func endCurrent(_ reason: EndReason) {
         guard let finished = listen else { return }
         listen = nil
+        Stats.shared.add(finished.track, seconds: finished.played)
         let position = reason == .finished ? finished.track.duration : progress.position
         let report = finished.report(position: position, first: false)
         let kind = reason == .finished ? "trackFinished" : "skip"

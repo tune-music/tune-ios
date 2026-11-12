@@ -318,7 +318,7 @@ private struct WaveHero: View {
 
     /// Пятно движется, только пока волна играет: в покое оно не тратит заряд.
     private func animate(_ on: Bool) {
-        if on {
+        if on && !ProcessInfo.processInfo.isLowPowerModeEnabled {
             withAnimation(.easeInOut(duration: 3.2).repeatForever(autoreverses: true)) { moving = true }
         } else {
             withAnimation(.easeOut(duration: 0.8)) { moving = false }

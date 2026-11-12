@@ -161,7 +161,7 @@ jobs:
           xcrun simctl status_bar "$UDID" override --time "9:41" --batteryState charged --batteryLevel 100 || true
           xcrun simctl install "$UDID" sim/Build/Products/Debug-iphonesimulator/Tune.app
           mkdir screens
-          for screen in home shelf search library likes filter album albumscroll artist playlist select downloads history player actions queue lyrics wave picker settings; do
+          for screen in home shelf search library likes filter album albumscroll artist playlist select downloads stats history player actions queue lyrics wave picker settings; do
             xcrun simctl launch "$UDID" dev.tune.music -demo -screen "$screen"
             sleep 10
             xcrun simctl io "$UDID" screenshot "screens/$screen.png"

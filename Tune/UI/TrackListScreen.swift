@@ -614,6 +614,12 @@ struct TrackListScreen: View {
         .transition(.move(edge: .top).combined(with: .opacity))
     }
 
+    /// Список треков текстом: «Исполнитель — Название», по строке на трек.
+    private var exportText: String {
+        let lines = all.map { $0.artists.isEmpty ? $0.fullTitle : "\($0.artists) — \($0.fullTitle)" }
+        return ([title, ""] + lines).joined(separator: "\n")
+    }
+
     @ViewBuilder private var menu: some View {
         if kind == .downloads {
             Button(role: .destructive) {
@@ -659,6 +665,11 @@ struct TrackListScreen: View {
         if let shareURL {
             ShareLink(item: shareURL) {
                 Label("Поделиться", systemImage: "square.and.arrow.up")
+            }
+        }
+        if !all.isEmpty {
+            ShareLink(item: exportText) {
+                Label("Экспортировать списком", systemImage: "doc.plaintext")
             }
         }
         if own {

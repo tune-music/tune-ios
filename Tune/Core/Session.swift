@@ -366,6 +366,7 @@ final class Router: ObservableObject {
         case "likes", "filter": tab = 2; paths[2] = [.likes]
         case "history": tab = 2; paths[2] = [.history]
         case "downloads": tab = 2; paths[2] = [.downloads]
+        case "stats": tab = 2; paths[2] = [.stats]
         case "settings": tab = 2; paths[2] = [.settings]
         case "shelf": paths[0] = Demo.home.first.map { [.block($0)] } ?? []
         case "playlist", "select": tab = 2; paths[2] = data.playlists.first.map { [.playlist($0)] } ?? []
