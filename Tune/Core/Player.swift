@@ -142,6 +142,8 @@ final class Player: NSObject, ObservableObject {
     private var itemObservation: NSKeyValueObservation?
     private var statusObservation: NSKeyValueObservation?
     private var pendingSeek: Double?
+    /// Счётчик незавершённых перемоток: пока он не ноль, время от плеера не принимается.
+    private var seeks = 0
     private var failures = 0
     private var listen: Listen?
     private var artwork: (id: String, art: MPMediaItemArtwork)?
@@ -457,8 +459,16 @@ final class Player: NSObject, ObservableObject {
             pendingSeek = seconds
             return
         }
+        // Пока перемотка не завершилась, плеер ещё сообщает старое время: его пропускаем,
+        // иначе полоска на миг прыгает назад.
+        seeks += 1
+        let mine = seeks
         av.seek(to: CMTime(seconds: seconds, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.refreshNowPlaying() }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if self.seeks == mine { self.seeks = 0 }
+                self.refreshNowPlaying()
+            }
         }
     }
 
@@ -721,7 +731,7 @@ final class Player: NSObject, ObservableObject {
     }
 
     private func tick(_ seconds: Double) {
-        guard av.currentItem != nil, seconds.isFinite else { return }
+        guard av.currentItem != nil, seconds.isFinite, seeks == 0 else { return }
         progress.position = seconds
         if av.rate > 0 {
             listen?.played += 0.5
