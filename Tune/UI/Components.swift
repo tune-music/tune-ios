@@ -762,10 +762,9 @@ struct MiniPlayer: View {
     @Environment(\.openPlayer) private var openPlayer
     @State private var tone = Theme.tone
     /// Сдвиг названия под пальцем.
-    @State private var shift: CGFloat = 0
+    @StateObject private var drag = TrackDrag()
     /// Направление жеста определяется в его начале и до конца не меняется.
     @State private var axis: Axis?
-    @State private var forward = true
 
     private var swipe: some Gesture {
         DragGesture(minimumDistance: 12)
@@ -773,9 +772,7 @@ struct MiniPlayer: View {
                 let move = value.translation
                 if axis == nil { axis = abs(move.width) > abs(move.height) ? .horizontal : .vertical }
                 guard axis == .horizontal else { return }
-                shift = move.width
-                let ahead = move.width < 0
-                if ahead != forward { forward = ahead }
+                drag.x = move.width
             }
             .onEnded { value in
                 let locked = axis
@@ -784,10 +781,11 @@ struct MiniPlayer: View {
                     let far = abs(value.translation.width) > 50 || abs(value.predictedEndTranslation.width) > 160
                     // Трек переключается без общей анимации: иначе вместе с названием
                     // анимировались все строки списка под мини-плеером.
-                    if far {
-                        if forward { player.next() } else { player.previous() }
+                    let ahead = value.translation.width < 0
+                    drag.release {
+                        guard far else { return }
+                        if ahead { player.next() } else { player.previous() }
                     }
-                    withAnimation(.spring(response: 0.36, dampingFraction: 1)) { shift = 0 }
                 } else if value.translation.height < -36 {
                     // Плеер открывается только явным движением вверх.
                     openPlayer()
@@ -801,7 +799,7 @@ struct MiniPlayer: View {
             let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
             HStack(spacing: 0) {
                 GeometryReader { geometry in
-                    TrackPager(width: geometry.size.width + 16, drag: shift) { item in
+                    TrackPager(width: geometry.size.width + 16, drag: drag) { item in
                         HStack(spacing: 10) {
                             CoverView(uri: item.cover, size: 42, corner: 10)
                             VStack(alignment: .leading, spacing: 2) {
@@ -887,29 +885,52 @@ private struct MiniProgress: View {
     }
 }
 
+/// Сдвиг ленты треков под пальцем.
+@MainActor
+final class TrackDrag: ObservableObject {
+    @Published var x: CGFloat = 0
+    /// Где ленту отпустили перед сменой трека: оттуда она и доезжает до места.
+    var carry: CGFloat = 0
+
+    /// Палец отпущен. `turn` переключает трек, если жест был достаточно длинным.
+    /// Трек сменился — ленту доводит TrackPager; нет — она возвращается на место.
+    func release(_ turn: () -> Void) {
+        let before = Player.shared.current?.id
+        turn()
+        if Player.shared.current?.id != before {
+            carry = x
+            var still = Transaction()
+            still.disablesAnimations = true
+            withTransaction(still) { x = 0 }
+        } else {
+            withAnimation(TrackPager<EmptyView>.motion) { x = 0 }
+        }
+    }
+}
+
 /// Лента из играющего трека и его соседа. Под пальцем она едет вместе с соседним треком,
-/// а при смене трека доезжает до места из того положения, где её отпустили: без пауз
-/// и без подмены картинки на ходу.
+/// а при смене трека доезжает до места из того положения, где её отпустили. Обе страницы
+/// остаются на экране всё время движения: ничего не появляется и не пропадает на ходу.
 struct TrackPager<Content: View>: View {
+    /// Одна пружина на все движения ленты, без перелёта.
+    static var motion: Animation { .spring(response: 0.34, dampingFraction: 1) }
+
     /// Шаг ленты: ширина страницы вместе с зазором.
     let width: CGFloat
-    /// Сдвиг под пальцем.
-    let drag: CGFloat
+    @ObservedObject var drag: TrackDrag
     private let content: (Track) -> Content
 
     @EnvironmentObject private var player: Player
-    /// Трек, который сейчас стоит по центру. Меняется вместе со сдвигом, одним шагом.
+    /// Трек, который стоит по центру.
     @State private var shown: Track?
-    /// Трек, который уезжает после переключения, и с какой он стороны.
-    @State private var ghost: Track?
-    @State private var ghostAhead = false
+    /// Соседняя страница: трек и с какой он стороны (true — справа).
+    @State private var side: Side?
     @State private var slide: CGFloat = 0
     @State private var turn = 0
 
-    init(width: CGFloat, drag: CGFloat, @ViewBuilder content: @escaping (Track) -> Content) {
-        self.width = width
-        self.drag = drag
-        self.content = content
+    private struct Side {
+        let track: Track
+        let ahead: Bool
     }
 
     private struct Page: Identifiable {
@@ -918,21 +939,32 @@ struct TrackPager<Content: View>: View {
         var id: String { track.id }
     }
 
-    private var pages: [Page] {
-        guard let current = shown ?? player.current else { return [] }
-        let total = drag + slide
-        var list = [Page(track: current, x: total)]
-        if total != 0, let near = neighbor(of: current, ahead: total < 0), near.id != current.id {
-            list.append(Page(track: near, x: total + (total < 0 ? width : -width)))
-        }
-        return list
+    init(width: CGFloat, drag: TrackDrag, @ViewBuilder content: @escaping (Track) -> Content) {
+        self.width = width
+        self.drag = drag
+        self.content = content
     }
 
-    private func neighbor(of current: Track, ahead: Bool) -> Track? {
-        if let ghost, ghostAhead == ahead { return ghost }
-        guard player.current?.id == current.id else { return nil }
-        let index = player.index + (ahead ? 1 : -1)
-        return player.queue.indices.contains(index) ? player.queue[index] : nil
+    /// Откуда начинает движение новый трек: сосед стоял на шаг в стороне от отпущенной ленты.
+    private func entry(back: Bool) -> CGFloat {
+        slide + drag.carry + (back ? -width : width)
+    }
+
+    private var pages: [Page] {
+        guard let now = player.current else { return [] }
+        if let old = shown, old.id != now.id {
+            // Трек уже сменился, а состояние ленты ещё нет: рисуем сразу так, как будет
+            // после смены, чтобы не было кадра со старой расстановкой.
+            let back = player.movedBack
+            let x = entry(back: back)
+            return [Page(track: now, x: x), Page(track: old, x: x + (back ? width : -width))]
+        }
+        let total = drag.x + slide
+        var list = [Page(track: now, x: total)]
+        if let side, side.track.id != now.id {
+            list.append(Page(track: side.track, x: total + (side.ahead ? width : -width)))
+        }
+        return list
     }
 
     var body: some View {
@@ -940,10 +972,42 @@ struct TrackPager<Content: View>: View {
             ForEach(pages) { page in
                 content(page.track)
                     .offset(x: page.x)
+                    .transition(.identity)
             }
         }
         .onAppear { shown = player.current }
         .onChange(of: player.current?.id) { _ in change() }
+        .onChange(of: drag.x) { peek($0) }
+    }
+
+    private func quietly(_ work: () -> Void) {
+        var still = Transaction()
+        still.disablesAnimations = true
+        withTransaction(still, work)
+    }
+
+    /// Убирает соседа, когда лента уже встала на место.
+    private func settle() {
+        turn += 1
+        let mine = turn
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+            guard turn == mine, drag.x == 0 else { return }
+            quietly { side = nil }
+        }
+    }
+
+    /// Под пальцем показывается сосед из очереди: следующий или предыдущий.
+    private func peek(_ x: CGFloat) {
+        guard x != 0 else {
+            settle()
+            return
+        }
+        turn += 1
+        let ahead = x < 0
+        if let side, side.ahead == ahead { return }
+        let index = player.index + (ahead ? 1 : -1)
+        let near = player.queue.indices.contains(index) ? player.queue[index] : nil
+        quietly { side = near.map { Side(track: $0, ahead: ahead) } }
     }
 
     private func change() {
@@ -953,23 +1017,17 @@ struct TrackPager<Content: View>: View {
             return
         }
         let back = player.movedBack
-        turn += 1
-        let mine = turn
-        // Новый трек встаёт туда, где только что стоял сосед, а прежний становится соседом:
-        // на экране в этот миг ничего не сдвигается.
-        var still = Transaction()
-        still.disablesAnimations = true
-        withTransaction(still) {
-            ghost = old
-            ghostAhead = back
+        let from = entry(back: back)
+        drag.carry = 0
+        quietly {
+            side = Side(track: old, ahead: back)
             shown = now
-            slide += back ? -width : width
+            slide = from
         }
+        // Следующим шагом: иначе перестановка и движение сольются в одну анимацию.
         DispatchQueue.main.async {
-            withAnimation(.spring(response: 0.36, dampingFraction: 1)) { slide = 0 }
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-            if turn == mine { ghost = nil }
+            withAnimation(Self.motion) { slide = 0 }
+            settle()
         }
     }
 }

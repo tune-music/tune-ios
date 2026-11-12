@@ -3,11 +3,7 @@ import SwiftUI
 
 /// Сдвиг обложки под пальцем. Отдельный объект, чтобы жест жил на всём экране плеера,
 /// а перерисовывалась от него только обложка.
-@MainActor
-final class CoverSwipe: ObservableObject {
-    @Published var x: CGFloat = 0
-    @Published var forward = true
-}
+typealias CoverSwipe = TrackDrag
 
 /// Полноэкранный плеер. Показывается в собственном окне (PlayerWindow), которое и двигается
 /// под пальцем: здесь только жесты, содержимое при перетаскивании не пересчитывается.
@@ -35,8 +31,6 @@ struct PlayerScreen: View {
                             PlayerWindow.shared.drag(move.height)
                         } else {
                             swipe.x = move.width
-                            let ahead = move.width < 0
-                            if ahead != swipe.forward { swipe.forward = ahead }
                         }
                     }
                     .onEnded { value in
@@ -44,10 +38,11 @@ struct PlayerScreen: View {
                         axis = nil
                         if locked == .horizontal {
                             let far = abs(value.translation.width) > 70 || abs(value.predictedEndTranslation.width) > 220
-                            if far {
-                                if swipe.forward { Player.shared.next() } else { Player.shared.previous() }
+                            let ahead = value.translation.width < 0
+                            swipe.release {
+                                guard far else { return }
+                                if ahead { Player.shared.next() } else { Player.shared.previous() }
                             }
-                            withAnimation(.spring(response: 0.36, dampingFraction: 1)) { swipe.x = 0 }
                         } else {
                             PlayerWindow.shared.release(predicted: value.predictedEndTranslation.height)
                         }
@@ -83,7 +78,7 @@ private struct PlayerCover: View {
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: 22, style: .continuous)
         // Обложки едут внутри неподвижной рамки: тень рисуется один раз, а не на каждом кадре.
-        TrackPager(width: side + 20, drag: swipe.x) { track in
+        TrackPager(width: side + 20, drag: swipe) { track in
             CoverView(uri: track.cover, size: side, corner: 0)
         }
         .frame(width: side, height: side)

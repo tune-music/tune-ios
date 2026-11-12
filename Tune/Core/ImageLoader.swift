@@ -171,6 +171,10 @@ struct CoverView: View {
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: round ? size / 2 : corner, style: .continuous))
         .task(id: uri) {
+            if let ready = ImageLoader.shared.cached(uri, side: side) {
+                image = ready
+                return
+            }
             image = nil
             image = await ImageLoader.shared.load(uri, side: side)
         }
