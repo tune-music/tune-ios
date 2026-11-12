@@ -63,6 +63,7 @@ final class Downloads: ObservableObject {
             failed = pending.failed.filter { files[$0.id] == nil }
             for track in queue { active[track.id] = 0 }
         }
+        BackgroundFetcher.shared.start()
         monitor.pathUpdateHandler = { path in
             let expensive = path.isExpensive
             Task { @MainActor in
@@ -112,6 +113,22 @@ final class Downloads: ObservableObject {
     func auto(_ list: [Track]) {
         guard Settings.autoLikes, !Demo.on else { return }
         download(list)
+    }
+
+    /// Плейлист помечен «скачивать автоматически»: всё новое в нём скачивается само.
+    func autoPlaylist(_ playlist: Playlist, _ tracks: [Track]) {
+        guard !Demo.on, Settings.autoPlaylists.contains(playlist.id) else { return }
+        download(tracks)
+    }
+
+    /// После запуска: проверяет помеченные плейлисты и докачивает то, чего ещё нет.
+    func syncPlaylists() async {
+        let wanted = Set(Settings.autoPlaylists)
+        guard !Demo.on, !wanted.isEmpty else { return }
+        let session = Session.shared
+        for playlist in session.playlists + session.likedPlaylists where wanted.contains(playlist.id) {
+            if let tracks = try? await API.shared.playlistTracks(playlist) { download(tracks) }
+        }
     }
 
     /// Настройки загрузок поменялись: пересчитать, можно ли качать.
@@ -181,6 +198,8 @@ final class Downloads: ObservableObject {
                 }
             }
             await ImageLoader.shared.pin(track.cover)
+            // Текст песни скачивается вместе с треком: он пригодится без сети.
+            if track.hasLyrics { _ = try? await API.shared.lyrics(track: track.id) }
             let bytes = Int64((try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
             entries.removeAll { $0.track.id == track.id }
             entries.insert(Entry(track: track, file: file.lastPathComponent, bytes: bytes, date: Date()), at: 0)

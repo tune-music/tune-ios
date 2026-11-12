@@ -30,6 +30,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         config.delegateClass = SceneDelegate.self
         return config
     }
+
+    /// Система разбудила приложение: фоновые загрузки завершились.
+    func application(_ application: UIApplication, handleEventsForBackgroundURLSession identifier: String, completionHandler: @escaping () -> Void) {
+        BackgroundFetcher.shared.setWake(completionHandler)
+    }
 }
 
 final class SceneDelegate: NSObject, UIWindowSceneDelegate {
@@ -83,6 +88,7 @@ struct TuneApp: App {
                 .task { await Updater.shared.check() }
                 .task {
                     await session.refresh()
+                    Task { await downloads.syncPlaylists() }
                     if let action = QuickAction.pending {
                         QuickAction.pending = nil
                         QuickAction.run(action)
@@ -115,6 +121,7 @@ enum Route: Hashable {
     case settings
     case log
     case stats
+    case storage
 }
 
 private struct NavigateKey: EnvironmentKey {
@@ -258,6 +265,7 @@ struct TabRoot<Content: View>: View {
         case .settings: SettingsScreen()
         case .log: LogScreen()
         case .stats: StatsScreen()
+        case .storage: StorageScreen()
         }
     }
 }

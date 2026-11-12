@@ -10,6 +10,7 @@ typealias CoverSwipe = TrackDrag
 struct PlayerScreen: View {
     @StateObject private var swipe = CoverSwipe()
     @State private var axis: Axis?
+    @State private var origin: CGFloat = 0
 
     var body: some View {
         PlayerBody()
@@ -26,11 +27,14 @@ struct PlayerScreen: View {
                 DragGesture(minimumDistance: 16)
                     .onChanged { value in
                         let move = value.translation
-                        if axis == nil { axis = abs(move.width) > abs(move.height) ? .horizontal : .vertical }
+                        if axis == nil {
+                            axis = abs(move.width) > abs(move.height) ? .horizontal : .vertical
+                            origin = move.width
+                        }
                         if axis == .vertical {
                             PlayerWindow.shared.drag(move.height)
                         } else {
-                            swipe.move(move.width)
+                            swipe.move(move.width - origin)
                         }
                     }
                     .onEnded { value in

@@ -402,6 +402,7 @@ struct SettingsScreen: View {
     @State private var downloadQuality = Settings.downloadQuality
     @State private var wifiOnly = Settings.wifiOnly
     @State private var autoLikes = Settings.autoLikes
+    @State private var offlineMode = Settings.offlineMode
     @State private var cacheBytes: Int64 = 0
     @State private var confirmLogout = false
     @State private var confirmRemove = false
@@ -442,14 +443,27 @@ struct SettingsScreen: View {
             Section {
                 Toggle("Только по Wi-Fi", isOn: $wifiOnly)
                 Toggle("Скачивать «Мне нравится»", isOn: $autoLikes)
+                Toggle("Офлайн-режим", isOn: $offlineMode)
             } header: {
                 Text("Загрузки")
             } footer: {
-                Text("С включённым «Только по Wi-Fi» загрузки в сотовой сети ждут в очереди. Лайкнутые треки скачиваются сами: новые — сразу, остальные — когда откроете «Мне нравится».")
+                Text("С включённым «Только по Wi-Fi» загрузки в сотовой сети ждут в очереди. Лайкнутые треки скачиваются сами: новые — сразу, остальные — когда откроете «Мне нравится». В офлайн-режиме в списках сразу показано только скачанное. Отдельный плейлист можно скачивать автоматически — в его меню.")
             }
             .tint(Theme.accent)
             Section {
-                LabeledContent("Скачанная музыка", value: Storage.sizeText(downloads.totalBytes))
+                Button {
+                    navigate(.storage)
+                } label: {
+                    HStack {
+                        Text("Скачанная музыка")
+                        Spacer()
+                        Text(Storage.sizeText(downloads.totalBytes))
+                            .foregroundStyle(Theme.dim)
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Theme.dim)
+                    }
+                }
                 LabeledContent("Кэш", value: Storage.sizeText(cacheBytes))
                 Button("Очистить кэш") {
                     Storage.clear(Storage.stream)
@@ -489,6 +503,7 @@ struct SettingsScreen: View {
         }
         .onChange(of: streamQuality) { Settings.streamQuality = $0 }
         .onChange(of: downloadQuality) { Settings.downloadQuality = $0 }
+        .onChange(of: offlineMode) { Settings.offlineMode = $0 }
         .onChange(of: wifiOnly) { value in
             Settings.wifiOnly = value
             downloads.settingsChanged()

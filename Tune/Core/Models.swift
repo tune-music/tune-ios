@@ -228,7 +228,7 @@ struct FileInfo {
     var codec: String
 }
 
-struct LyricLine: Identifiable {
+struct LyricLine: Identifiable, Codable {
     let id: Int
     let time: Double?
     let text: String

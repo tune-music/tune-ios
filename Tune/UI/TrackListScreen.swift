@@ -41,10 +41,41 @@ final class TrackListModel: ObservableObject {
     @Published var info: PlaylistPage?
     private var loaded = false
 
+    /// Сохранённая копия списка: с неё страница открывается мгновенно и без сети.
+    private struct Cached: Codable {
+        var title: String
+        var subtitle: String
+        var cover: String?
+        var tracks: [Track]
+    }
+
+    private static func cacheName(_ kind: ListKind) -> String? {
+        let key: String
+        switch kind {
+        case .playlist(let playlist): key = "playlist:" + playlist.id
+        case .album(let id): key = "album:" + id
+        case .artist(let id, _): key = "artist:" + id
+        case .history: key = "history"
+        default: return nil
+        }
+        _ = Storage.lists
+        return "Lists/" + Storage.hash(key) + ".json"
+    }
+
     func load(_ kind: ListKind, force: Bool = false) async {
         if loaded && !force { return }
         loading = tracks.isEmpty
         error = nil
+        if tracks.isEmpty, !Demo.on, let name = Self.cacheName(kind) {
+            let saved = await Task.detached(priority: .userInitiated) { Storage.load(name, as: Cached.self) }.value
+            if let saved, tracks.isEmpty {
+                tracks = saved.tracks
+                if title.isEmpty { title = saved.title }
+                if subtitle.isEmpty { subtitle = saved.subtitle }
+                if cover == nil { cover = saved.cover }
+                loading = false
+            }
+        }
         defer { loading = false }
         do {
             switch kind {
@@ -85,6 +116,11 @@ final class TrackListModel: ObservableObject {
                 tracks = try await API.shared.artistTracks(id: id)
             }
             loaded = true
+            if !Demo.on, !tracks.isEmpty, let name = Self.cacheName(kind) {
+                let snapshot = Cached(title: title, subtitle: subtitle, cover: cover, tracks: tracks)
+                Task.detached(priority: .utility) { Storage.save(snapshot, name) }
+            }
+            if case .playlist(let playlist) = kind { Downloads.shared.autoPlaylist(playlist, tracks) }
         } catch {
             if Task.isCancelled { return }
             if tracks.isEmpty {
@@ -152,6 +188,9 @@ struct TrackListScreen: View {
     @State private var pickingMany = false
     /// Шапка ушла за край: название страницы показывается в панели навигации.
     @State private var compact = false
+    /// Плейлист скачивается сам.
+    @State private var auto = false
+    @State private var prepared = false
 
     private var all: [Track] {
         switch kind {
@@ -351,6 +390,13 @@ struct TrackListScreen: View {
         }
         .navigationTitle(compact && !searching ? title : "")
         .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            guard !prepared else { return }
+            prepared = true
+            if let playlist { auto = Settings.autoPlaylists.contains(playlist.id) }
+            // Без сети и в офлайн-режиме сразу показано то, что можно слушать.
+            if kind != .downloads, Settings.offlineMode || session.offline { onlyDownloaded = true }
+        }
         .task { await model.load(kind) }
         .task(id: cover) {
             switch kind {
@@ -614,6 +660,17 @@ struct TrackListScreen: View {
         .transition(.move(edge: .top).combined(with: .opacity))
     }
 
+    private func setAuto(_ playlist: Playlist, _ on: Bool) {
+        auto = on
+        var list = Settings.autoPlaylists.filter { $0 != playlist.id }
+        if on { list.append(playlist.id) }
+        Settings.autoPlaylists = list
+        if on {
+            downloads.download(all)
+            session.show("Плейлист будет скачиваться сам")
+        }
+    }
+
     /// Список треков текстом: «Исполнитель — Название», по строке на трек.
     private var exportText: String {
         let lines = all.map { $0.artists.isEmpty ? $0.fullTitle : "\($0.artists) — \($0.fullTitle)" }
@@ -660,6 +717,11 @@ struct TrackListScreen: View {
         if kind != .downloads {
             Toggle(isOn: $onlyDownloaded) {
                 Label("Только скачанные", systemImage: "arrow.down.circle")
+            }
+        }
+        if let playlist {
+            Toggle(isOn: Binding(get: { auto }, set: { setAuto(playlist, $0) })) {
+                Label("Скачивать автоматически", systemImage: "arrow.triangle.2.circlepath")
             }
         }
         if let shareURL {

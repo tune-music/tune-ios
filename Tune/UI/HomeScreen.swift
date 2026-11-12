@@ -48,7 +48,7 @@ struct HomeScreen: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 28) {
                 WaveHero(tune: { tuning = true })
-                if session.offline || model.failed {
+                if session.offline || model.failed || Settings.offlineMode {
                     offline
                 }
                 if !model.page.waves.isEmpty {

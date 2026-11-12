@@ -52,8 +52,11 @@ enum TrackFiles {
             do {
                 var request = URLRequest(url: url)
                 request.timeoutInterval = 60
-                let watcher = ProgressWatcher(progress)
-                let (temp, response) = try await URLSession.shared.download(for: request, delegate: watcher)
+                // Скачивание «насовсем» идёт через фоновую сессию: оно продолжается и при
+                // свёрнутом приложении. Файлы для немедленной игры качаются как раньше.
+                let keeps = directory == Storage.tracks
+                if keeps { request.allowsCellularAccess = !Settings.wifiOnly }
+                let (temp, response) = try await fetch(request, background: keeps, progress: progress)
                 let status = (response as? HTTPURLResponse)?.statusCode ?? 0
                 guard (200..<300).contains(status) else {
                     try? FileManager.default.removeItem(at: temp)
@@ -80,6 +83,19 @@ enum TrackFiles {
             }
         }
         throw last
+    }
+
+    private static func fetch(_ request: URLRequest, background: Bool, progress: @escaping (Double) -> Void) async throws -> (URL, URLResponse) {
+        if background {
+            do {
+                return try await BackgroundFetcher.shared.download(request, progress: progress)
+            } catch {
+                // Фоновая сессия не справилась — пробуем обычную, как раньше.
+                if Task.isCancelled { throw error }
+            }
+        }
+        let watcher = ProgressWatcher(progress)
+        return try await URLSession.shared.download(for: request, delegate: watcher)
     }
 
     /// Уже скачанный файл трека в папке.

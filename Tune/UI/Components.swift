@@ -763,6 +763,7 @@ struct MiniPlayer: View {
     @State private var tone = Theme.tone
     /// Сдвиг названия под пальцем.
     @StateObject private var drag = TrackDrag()
+    @State private var origin: CGFloat = 0
     /// Направление жеста определяется в его начале и до конца не меняется.
     @State private var axis: Axis?
 
@@ -770,9 +771,13 @@ struct MiniPlayer: View {
         DragGesture(minimumDistance: 12)
             .onChanged { value in
                 let move = value.translation
-                if axis == nil { axis = abs(move.width) > abs(move.height) ? .horizontal : .vertical }
+                if axis == nil {
+                    axis = abs(move.width) > abs(move.height) ? .horizontal : .vertical
+                    // Жест распознаётся не сразу: лента стартует с нуля, а не с уже пройденного пути.
+                    origin = move.width
+                }
                 guard axis == .horizontal else { return }
-                drag.move(move.width)
+                drag.move(move.width - origin)
             }
             .onEnded { value in
                 let locked = axis

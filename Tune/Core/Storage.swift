@@ -11,6 +11,9 @@ enum Storage {
     static let covers: URL = sub(support, "Covers")
     static let stream: URL = sub(caches, "Stream")
     static let images: URL = sub(caches, "Covers")
+    /// Сохранённые списки треков и тексты песен: открываются без сети.
+    static let lists: URL = sub(support, "Lists")
+    static let lyrics: URL = sub(support, "Lyrics")
 
     private static func make(_ directory: FileManager.SearchPathDirectory, keep: Bool) -> URL {
         var url = FileManager.default.urls(for: directory, in: .userDomainMask)[0].appendingPathComponent("Tune", isDirectory: true)
@@ -87,6 +90,18 @@ enum Settings {
     static var wifiOnly: Bool {
         get { defaults.bool(forKey: "wifiOnly") }
         set { defaults.set(newValue, forKey: "wifiOnly") }
+    }
+
+    /// Офлайн-режим: в списках сразу показано только скачанное.
+    static var offlineMode: Bool {
+        get { defaults.bool(forKey: "offlineMode") }
+        set { defaults.set(newValue, forKey: "offlineMode") }
+    }
+
+    /// Плейлисты, которые скачиваются сами: их номера.
+    static var autoPlaylists: [String] {
+        get { defaults.stringArray(forKey: "autoPlaylists") ?? [] }
+        set { defaults.set(newValue, forKey: "autoPlaylists") }
     }
 
     /// Скачивать всё, что попало в «Мне нравится».

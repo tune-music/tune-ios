@@ -709,6 +709,16 @@ final class API {
     /// Сначала синхронный текст, потом обычный.
     func lyrics(track id: String) async throws -> [LyricLine] {
         if Demo.on { return Demo.lyrics }
+        // Однажды полученный текст лежит на устройстве: он есть и без сети.
+        _ = Storage.lyrics
+        let name = "Lyrics/\(Storage.hash(id)).json"
+        if let saved = Storage.load(name, as: [LyricLine].self) { return saved }
+        let lines = try await fetchLyrics(track: id)
+        if !lines.isEmpty { Storage.save(lines, name) }
+        return lines
+    }
+
+    private func fetchLyrics(track id: String) async throws -> [LyricLine] {
         for format in ["LRC", "TEXT"] {
             let stamp = String(Int(Date().timeIntervalSince1970))
             let value: JSON
