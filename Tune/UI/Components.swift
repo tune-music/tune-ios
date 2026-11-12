@@ -772,7 +772,8 @@ struct MiniPlayer: View {
     @State private var axis: Axis?
 
     private var swipe: some Gesture {
-        DragGesture(minimumDistance: 12)
+        // Порог минимальный: лента трогается с места почти сразу, а нажатие остаётся нажатием.
+        DragGesture(minimumDistance: 3)
             .onChanged { value in
                 let move = value.translation
                 if axis == nil {

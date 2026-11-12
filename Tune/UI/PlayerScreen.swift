@@ -24,7 +24,7 @@ struct PlayerScreen: View {
             .gesture(
                 // Вниз — закрыть плеер, в стороны — переключить трек. Направление жеста
                 // определяется в его начале и до конца не меняется.
-                DragGesture(minimumDistance: 16)
+                DragGesture(minimumDistance: 8)
                     .onChanged { value in
                         let move = value.translation
                         if axis == nil {
