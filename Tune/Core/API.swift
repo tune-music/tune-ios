@@ -783,10 +783,23 @@ final class API {
         // Однажды полученный текст лежит на устройстве: он есть и без сети.
         _ = Storage.lyrics
         let name = "Lyrics/\(Storage.hash(id)).json"
-        if let saved = Storage.load(name, as: [LyricLine].self) { return saved }
+        if let saved = Storage.load(name, as: [LyricLine].self), !Self.isStub(saved) { return saved }
         let lines = try await fetchLyrics(track: id)
+        // Аккаунту без Плюса Яндекс вместо текста отдаёт просьбу подключить подписку.
+        // Её нельзя сохранять: иначе она останется и после входа в аккаунт с Плюсом.
+        if Self.isStub(lines) {
+            Storage.remove(name)
+            return []
+        }
         if !lines.isEmpty { Storage.save(lines, name) }
         return lines
+    }
+
+    /// Вместо текста пришла заглушка про подписку: пара строк со словом «подписка».
+    private static func isStub(_ lines: [LyricLine]) -> Bool {
+        let words = lines.map(\.text).filter { !$0.isEmpty }
+        guard !words.isEmpty, words.count <= 4 else { return false }
+        return words.joined(separator: " ").lowercased().contains("подписк")
     }
 
     private func fetchLyrics(track id: String) async throws -> [LyricLine] {
