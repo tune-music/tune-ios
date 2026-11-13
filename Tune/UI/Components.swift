@@ -951,6 +951,9 @@ struct MiniPlayerSpace: View {
 /// Плашка с текущим треком над панелью вкладок. Смахивание вверх открывает плеер,
 /// в стороны — переключает трек.
 struct MiniPlayer: View {
+    /// Страница под плашкой светлая: стеклу нужна тёмная подложка, иначе белый текст не читается.
+    var light = false
+
     @EnvironmentObject private var player: Player
     @EnvironmentObject private var session: Session
     @Environment(\.openPlayer) private var openPlayer
@@ -1003,6 +1006,9 @@ struct MiniPlayer: View {
             }
             // Стекло лежит подложкой под кнопками и не перехватывает их нажатия.
             .background {
+                if light {
+                    shape.fill(Color(white: 0.1).opacity(0.8))
+                }
                 Color.clear.glass(in: shape, tint: tone.opacity(0.75))
             }
             .contentShape(shape)

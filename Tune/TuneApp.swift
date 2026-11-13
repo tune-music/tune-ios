@@ -224,6 +224,7 @@ struct TabRoot<Content: View>: View {
     let index: Int
     private let content: Content
     @EnvironmentObject private var router: Router
+    @Environment(\.colorScheme) private var scheme
     /// Вкладка проявляется, когда на неё переключились.
     @State private var shown = true
 
@@ -242,7 +243,7 @@ struct TabRoot<Content: View>: View {
                         .safeAreaInset(edge: .bottom, spacing: 0) { MiniPlayerSpace() }
                 }
         }
-        .tint(.white)
+        .tint(Theme.text)
         .environment(\.navigate, { router.paths[index].append($0) })
         .onChange(of: router.tab) { tab in
             guard tab == index else { return }
@@ -255,7 +256,7 @@ struct TabRoot<Content: View>: View {
         // так список докручивается до конца и последние строки не прячутся.
         .overlay(alignment: .bottom) {
             // Мини-плеер окрашен под обложку, поэтому в любой теме тёмный.
-            MiniPlayer()
+            MiniPlayer(light: scheme == .light)
                 .environment(\.colorScheme, .dark)
         }
     }
