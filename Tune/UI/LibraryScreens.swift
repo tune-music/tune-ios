@@ -375,27 +375,34 @@ struct CardGridScreen: View {
                 }
             }
         }
-        .task { if cards == nil { await load() } }
+        .task { await load() }
     }
 
     private func load() async {
         error = nil
+        let file = kind == .albums ? "liked-albums.json" : "liked-artists.json"
+        if cards == nil, !Demo.on {
+            let saved = await Task.detached(priority: .userInitiated) { Storage.load(file, as: [Card].self) }.value
+            if cards == nil { cards = saved }
+        }
         if session.profile == nil {
             await session.refresh()
         }
         guard let uid = session.profile?.uid else {
-            error = "Нет связи с Яндексом"
+            if cards == nil { error = "Нет связи с Яндексом" }
             return
         }
         do {
-            if kind == .albums {
-                cards = try await API.shared.likedAlbums(uid: uid)
-            } else {
-                cards = try await API.shared.likedArtists(uid: uid)
+            let fresh = kind == .albums ? try await API.shared.likedAlbums(uid: uid) : try await API.shared.likedArtists(uid: uid)
+            cards = fresh
+            if !Demo.on {
+                Task.detached(priority: .utility) { Storage.save(fresh, file) }
             }
         } catch {
             if Task.isCancelled { return }
-            self.error = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            if cards == nil {
+                self.error = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            }
         }
     }
 }

@@ -181,7 +181,7 @@ struct AlbumPage {
     var versions: [Card] = []
 }
 
-struct ArtistPage {
+struct ArtistPage: Codable {
     var id: String
     var name: String
     var cover: String?

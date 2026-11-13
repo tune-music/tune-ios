@@ -43,8 +43,12 @@ struct HomeScreen: View {
     @StateObject private var model = HomeModel()
     @ObservedObject private var now = Player.shared.now
     @State private var tuning = Demo.screen == "wave"
+    /// Страница прокручена: под часами нужна дымка, иначе полки сливаются с ними.
+    @State private var scrolled = false
+    @State private var origin: CGFloat?
 
     var body: some View {
+        ScrollViewReader { proxy in
         ScrollView {
             VStack(alignment: .leading, spacing: 28) {
                 WaveHero(tune: { tuning = true })
@@ -55,6 +59,7 @@ struct HomeScreen: View {
                     stations
                 }
                 quick
+                    .id("quick")
                 ForEach(model.page.blocks) { block in
                     Shelf(block.title, more: block.items.count > 3 ? { navigate(.block(block)) } : nil) {
                         ForEach(block.items) { item in
@@ -67,6 +72,30 @@ struct HomeScreen: View {
                 }
             }
             .padding(.bottom, 24)
+            .background(alignment: .top) {
+                GeometryReader { geometry in
+                    let top = geometry.frame(in: .global).minY
+                    Color.clear
+                        .onAppear { if origin == nil { origin = top } }
+                        .onChange(of: top) { value in
+                            let moved = value < (origin ?? value) - 16
+                            if moved != scrolled { scrolled = moved }
+                        }
+                }
+            }
+        }
+        .onAppear {
+            // Снимок прокрученной главной: по нему проверяется читаемость верха.
+            guard Demo.screen == "homescroll" else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { proxy.scrollTo("quick", anchor: .top) }
+        }
+        }
+        .overlay {
+            Color.clear
+                .topScrim(Theme.background)
+                .opacity(scrolled ? 1 : 0)
+                .animation(.easeInOut(duration: 0.2), value: scrolled)
+                .allowsHitTesting(false)
         }
         .background(Theme.background)
         // Панель навигации пустая, но она есть: под ней прокрученные полки размываются

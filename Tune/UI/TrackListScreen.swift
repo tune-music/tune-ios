@@ -399,13 +399,15 @@ struct TrackListScreen: View {
         .navigationBarTitleDisplayMode(.inline)
         .background(BarFade(title: compact && !searching ? title : ""))
         .onDisappear {
-            // Пустой поиск закрывается при уходе со страницы: иначе при возврате строка выскакивала рывком.
-            if filter.isEmpty {
-                searching = false
-                focused = false
-            }
+            // Строка поиска убирается при уходе со страницы: открытая, она при возврате
+            // выскакивала рывком. Сам фильтр остаётся, строка вернётся вместе со страницей.
+            searching = false
+            focused = false
         }
         .onAppear {
+            if !filter.isEmpty, !searching {
+                withAnimation(.easeInOut(duration: 0.25)) { searching = true }
+            }
             guard !prepared else { return }
             prepared = true
             if let playlist { auto = Settings.autoPlaylists.contains(playlist.id) }
@@ -811,7 +813,7 @@ struct TrackListScreen: View {
 
     @ViewBuilder private var empty: some View {
         if model.loading {
-            Spinner()
+            RowsSkeleton()
         } else if let error = model.error {
             Placeholder(icon: "wifi.slash", title: "Не удалось загрузить", text: error) {
                 Task { await model.load(kind, force: true) }
@@ -1162,7 +1164,8 @@ struct ArtistScreen: View {
                     Task { await load() }
                 }
             } else {
-                Spinner()
+                RowsSkeleton(count: 9)
+                    .padding(.top, 12)
             }
         }
         .listStyle(.plain)
@@ -1254,11 +1257,24 @@ struct ArtistScreen: View {
 
     private func load() async {
         error = nil
+        let file = "Lists/" + Storage.hash("artist:" + id) + ".json"
+        if page == nil, !Demo.on {
+            _ = Storage.lists
+            let saved = await Task.detached(priority: .userInitiated) { Storage.load(file, as: ArtistPage.self) }.value
+            if page == nil { page = saved }
+        }
         do {
-            page = try await API.shared.artist(id: id)
+            let fresh = try await API.shared.artist(id: id)
+            page = fresh
+            if !Demo.on {
+                Task.detached(priority: .utility) { Storage.save(fresh, file) }
+            }
         } catch {
             if Task.isCancelled { return }
-            self.error = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            // Сохранённая страница остаётся на экране, даже если обновить её не вышло.
+            if page == nil {
+                self.error = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            }
         }
     }
 }

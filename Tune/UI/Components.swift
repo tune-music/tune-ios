@@ -723,6 +723,42 @@ struct Spinner: View {
     }
 }
 
+/// Заглушка списка треков, пока он грузится: очертания строк вместо крутилки.
+struct RowsSkeleton: View {
+    var count = 7
+    @State private var dim = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ForEach(0..<count, id: \.self) { index in
+                HStack(spacing: 12) {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Theme.surface)
+                        .frame(width: 46, height: 46)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Capsule()
+                            .fill(Theme.surface)
+                            .frame(width: index % 2 == 0 ? 170 : 120, height: 12)
+                        Capsule()
+                            .fill(Theme.surface)
+                            .frame(width: index % 3 == 0 ? 90 : 130, height: 10)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .frame(height: 60)
+            }
+        }
+        .padding(.horizontal, 16)
+        .opacity(dim ? 0.45 : 1)
+        .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: dim)
+        .onAppear { dim = true }
+        .accessibilityHidden(true)
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+        .listRowInsets(EdgeInsets())
+    }
+}
+
 /// Плитка вместо обложки у «Мне нравится», «Скачанного» и «Истории».
 struct SymbolCover: View {
     let symbol: String
