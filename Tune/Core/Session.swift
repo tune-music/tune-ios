@@ -30,13 +30,26 @@ final class Session: ObservableObject {
     @Published private(set) var offline = false
     /// Короткое сообщение поверх экрана: «Добавлено в плейлист».
     @Published var toast: String?
+    /// Все аккаунты, в которые входили на этом устройстве.
+    @Published private(set) var accounts: [Account] = []
+    /// Открыт вход для ещё одного аккаунта.
+    @Published var adding = false
+    /// Растёт при смене аккаунта: по нему страницы строятся заново.
+    @Published private(set) var epoch = 0
     private var likedSet: Set<String> = []
     private var refreshTask: Task<Void, Never>?
     private var toastTask: Task<Void, Never>?
 
     private init() {
         token = Demo.on ? "demo" : TokenStore.token
-        if Demo.on { return }
+        if Demo.on {
+            accounts = [
+                Account(uid: "demo", name: "Демо", login: "demo", token: ""),
+                Account(uid: "demo2", name: "Второй аккаунт", login: "second", token: ""),
+            ]
+            return
+        }
+        accounts = AccountStore.load()
         if let saved: Saved = Storage.load("session.json") {
             profile = saved.profile
             likedIds = saved.liked
@@ -79,15 +92,53 @@ final class Session: ObservableObject {
     // MARK: - Вход
 
     func login(token: String) {
+        // Вход вторым аккаунтом: данные прежнего убираются с экрана.
+        let switching = self.token != nil
+        if switching { reset() }
         TokenStore.set(token)
         self.token = token
+        adding = false
+        if switching { epoch += 1 }
         Task { await refresh() }
     }
 
+    /// Вход ещё одним аккаунтом. Страница Яндекса помнит прежний вход, поэтому её данные стираются.
+    func addAccount() {
+        WKWebsiteDataStore.default().removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) {}
+        adding = true
+    }
+
+    func switchTo(_ account: Account) {
+        guard account.token != token, !account.token.isEmpty else { return }
+        reset()
+        TokenStore.set(account.token)
+        token = account.token
+        epoch += 1
+        show("Аккаунт: " + (account.name.isEmpty ? account.login : account.name))
+        Task { await refresh() }
+    }
+
+    /// Выход из текущего аккаунта. Если есть другие — открывается следующий.
     func logout() {
+        let gone = token
+        reset()
+        WKWebsiteDataStore.default().removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) {}
+        accounts.removeAll { $0.token == gone }
+        AccountStore.save(accounts)
+        if let next = accounts.first {
+            TokenStore.set(next.token)
+            token = next.token
+            epoch += 1
+            Task { await refresh() }
+        } else {
+            TokenStore.set(nil)
+            token = nil
+        }
+    }
+
+    /// Убирает всё, что относится к текущему аккаунту. Скачанная музыка остаётся.
+    private func reset() {
         Player.shared.stop()
-        TokenStore.set(nil)
-        token = nil
         profile = nil
         likedIds = []
         likedSet = []
@@ -96,10 +147,26 @@ final class Session: ObservableObject {
         likedAlbums = []
         likedArtists = []
         disliked = []
-        Storage.remove("session.json")
-        Storage.remove("likes-tracks.json")
-        Storage.remove("home.json")
-        WKWebsiteDataStore.default().removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) {}
+        for name in ["session.json", "likes-tracks.json", "home.json", "liked-albums.json", "liked-artists.json"] {
+            Storage.remove(name)
+        }
+        Storage.clear(Storage.lists)
+        Router.shared.paths = [[], [], []]
+    }
+
+    /// Запоминает аккаунт с его токеном, когда Яндекс подтвердил вход.
+    private func remember(_ profile: Profile) {
+        guard !Demo.on, let token else { return }
+        let account = Account(uid: profile.uid, name: profile.name, login: profile.login, token: token)
+        var list = accounts
+        if let index = list.firstIndex(where: { $0.uid == account.uid }) {
+            list[index] = account
+        } else {
+            list.append(account)
+        }
+        guard list != accounts else { return }
+        accounts = list
+        AccountStore.save(list)
     }
 
     /// Профиль, лайки и плейлисты с сервера. Без сети остаётся то, что было.
@@ -119,6 +186,7 @@ final class Session: ObservableObject {
         do {
             let profile = try await API.shared.profile()
             self.profile = profile
+            remember(profile)
             offline = false
             let uid = profile.uid
             async let likedTask = API.shared.likedIds(uid: uid)
@@ -392,6 +460,7 @@ final class Router: ObservableObject {
         case "stats": tab = 2; paths[2] = [.stats]
         case "stations": paths[0] = [.stations]
         case "settings": tab = 2; paths[2] = [.settings]
+        case "changes": tab = 2; paths[2] = [.changes]
         case "shelf": paths[0] = Demo.home.first.map { [.block($0)] } ?? []
         case "playlist", "select": tab = 2; paths[2] = data.playlists.first.map { [.playlist($0)] } ?? []
         case "album", "albumscroll": paths[0] = data.albums.first.map { [.album($0.id)] } ?? []

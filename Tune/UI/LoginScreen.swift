@@ -20,6 +20,11 @@ struct LoginScreen: View {
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
             Spacer()
+            if session.adding {
+                Text("Вход ещё одним аккаунтом")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
             if failed {
                 Text("Войти не получилось. Попробуйте ещё раз.")
                     .font(.footnote)
@@ -37,7 +42,12 @@ struct LoginScreen: View {
             }
             .buttonStyle(.borderedProminent)
             .padding(.horizontal, 24)
-            .padding(.bottom, 32)
+            .padding(.bottom, session.adding ? 4 : 32)
+            if session.adding {
+                Button("Отмена") { session.adding = false }
+                    .foregroundStyle(.white)
+                    .padding(.bottom, 24)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black.ignoresSafeArea())

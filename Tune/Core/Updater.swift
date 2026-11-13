@@ -9,6 +9,8 @@ final class Updater: ObservableObject {
 
     /// Номер версии новее установленной; nil, если обновляться не на что.
     @Published private(set) var latest: String?
+    /// Что изменилось в новой версии: из источника обновлений.
+    @Published private(set) var notes = ""
 
     private static let source = "https://github.com/tune-music/tune-ios/releases/latest/download/altstore.json"
     static let file = "https://github.com/tune-music/tune-ios/releases/latest/download/Tune.ipa"
@@ -18,7 +20,10 @@ final class Updater: ObservableObject {
     }
 
     private init() {
-        if Demo.on, Demo.screen == "settings" { latest = "0.1.99" }
+        if Demo.on, Demo.screen == "settings" {
+            latest = "0.1.99"
+            notes = Change.all.first.map { $0.items.map { "• " + $0 }.joined(separator: "\n") } ?? ""
+        }
     }
 
     func check() async {
@@ -33,6 +38,7 @@ final class Updater: ObservableObject {
         else { return }
         // Сравнение по числам: 0.1.10 новее, чем 0.1.9.
         latest = version.compare(Self.current, options: .numeric) == .orderedDescending ? version : nil
+        notes = versions.first?["localizedDescription"] as? String ?? ""
     }
 
     /// Открывает AltStore или SideStore сразу на установке свежего файла поверх текущего.

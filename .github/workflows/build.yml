@@ -65,6 +65,9 @@ jobs:
           import json, os, datetime
           number = os.environ["GITHUB_RUN_NUMBER"]
           repo = "https://github.com/tune-music/tune-ios"
+          changes = json.load(open("Tune/changes.json", encoding="utf-8"))
+          notes = "\n".join("• " + item for item in changes[0]["items"]) if changes else "Сборка " + os.environ["GITHUB_SHA"][:7]
+          shots = [repo + "/releases/download/latest/shot-" + name + ".png" for name in ("home", "player", "search", "library", "album")]
           source = {
               "name": "Tune",
               "identifier": "dev.tune.music.source",
@@ -81,12 +84,12 @@ jobs:
                   "iconURL": "https://raw.githubusercontent.com/tune-music/tune-ios/main/Tune/Assets.xcassets/AppIcon.appiconset/icon.png",
                   "tintColor": "#facc15",
                   "category": "entertainment",
-                  "screenshots": [],
+                  "screenshots": shots,
                   "versions": [{
                       "version": "0.1." + number,
                       "buildVersion": number,
                       "date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                      "localizedDescription": "Сборка " + os.environ["GITHUB_SHA"][:7],
+                      "localizedDescription": notes,
                       "downloadURL": repo + "/releases/download/latest/Tune.ipa",
                       "size": os.path.getsize("Tune.ipa"),
                       "minOSVersion": "16.0",
@@ -161,7 +164,7 @@ jobs:
           xcrun simctl status_bar "$UDID" override --time "9:41" --batteryState charged --batteryLevel 100 || true
           xcrun simctl install "$UDID" sim/Build/Products/Debug-iphonesimulator/Tune.app
           mkdir screens
-          for screen in home homescroll toast find shelf search library likes filter album albumscroll artist playlist select downloads stats stations history player actions queue lyrics wave picker settings; do
+          for screen in home homescroll toast find changes shelf search library likes filter album albumscroll artist playlist select downloads stats stations history player actions queue lyrics wave picker settings; do
             xcrun simctl launch "$UDID" dev.tune.music -demo -screen "$screen"
             sleep 10
             xcrun simctl io "$UDID" screenshot "screens/$screen.png"
@@ -173,3 +176,25 @@ jobs:
         with:
           name: screens
           path: screens
+
+  # Снимки экранов для страницы приложения в AltStore и SideStore.
+  shots:
+    if: github.ref == 'refs/heads/main'
+    needs: [build, screens]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: screens
+          path: screens
+
+      - name: Снимки в релиз
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          for name in home player search library album; do
+            cp "screens/$name.png" "shot-$name.png"
+          done
+          gh release upload latest shot-*.png --clobber

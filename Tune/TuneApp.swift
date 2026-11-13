@@ -123,6 +123,7 @@ enum Route: Hashable {
     case stats
     case storage
     case stations
+    case changes
 }
 
 private struct NavigateKey: EnvironmentKey {
@@ -165,10 +166,11 @@ struct RootView: View {
 
     var body: some View {
         Group {
-            if session.token == nil {
+            if session.token == nil || session.adding {
                 LoginScreen()
             } else {
-                tabs
+                // Другой аккаунт — другие страницы: всё строится заново.
+                tabs.id(session.epoch)
             }
         }
         .onChange(of: phase) { now in
@@ -271,6 +273,7 @@ struct TabRoot<Content: View>: View {
         case .stats: StatsScreen()
         case .storage: StorageScreen()
         case .stations: StationsScreen()
+        case .changes: ChangesScreen()
         }
     }
 }

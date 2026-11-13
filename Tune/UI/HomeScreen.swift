@@ -102,6 +102,16 @@ struct HomeScreen: View {
         // так же, как в поиске и коллекции.
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button {
+                    navigate(.settings)
+                } label: {
+                    Image(systemName: "person.crop.circle")
+                }
+                .accessibilityLabel("Настройки и аккаунт")
+            }
+        }
         .sheet(isPresented: $tuning) {
             WaveSettingsSheet()
         }

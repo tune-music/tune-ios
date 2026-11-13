@@ -111,6 +111,35 @@ enum Settings {
     }
 }
 
+/// Аккаунт, в который входили на этом устройстве.
+struct Account: Codable, Identifiable, Hashable {
+    var uid: String
+    var name: String
+    var login: String
+    var token: String
+
+    var id: String { uid }
+}
+
+/// Список аккаунтов с их токенами: между ними можно переключаться без нового входа.
+enum AccountStore {
+    private static let file = Storage.support.appendingPathComponent("accounts")
+
+    static func load() -> [Account] {
+        guard let data = try? Data(contentsOf: file) else { return [] }
+        return (try? JSONDecoder().decode([Account].self, from: data)) ?? []
+    }
+
+    static func save(_ accounts: [Account]) {
+        guard !accounts.isEmpty, let data = try? JSONEncoder().encode(accounts) else {
+            try? FileManager.default.removeItem(at: file)
+            return
+        }
+        try? data.write(to: file, options: .atomic)
+        try? FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: file.path)
+    }
+}
+
 /// Токен входа. Читается из любых потоков.
 enum TokenStore {
     private static let lock = NSLock()

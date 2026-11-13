@@ -67,6 +67,7 @@ struct LibraryScreen: View {
                 entry("music.mic", "Исполнители", session.likedArtists.isEmpty ? "" : "\(session.likedArtists.count)", .likedArtists)
                 entry("clock.arrow.circlepath", "История", "", .history)
                 entry("chart.bar.fill", "Статистика", "", .stats)
+                entry("gearshape.fill", "Настройки и аккаунт", session.profile?.name ?? "", .settings)
                 if !session.disliked.isEmpty {
                     entry("hand.thumbsdown.fill", "Не нравится", "\(session.disliked.count)", .disliked)
                 }
@@ -455,13 +456,64 @@ struct SettingsScreen: View {
                 } header: {
                     Text("Доступна версия \(version)")
                 } footer: {
-                    Text("Установка идёт поверх: вход, настройки и скачанная музыка сохраняются.")
+                    Text((updater.notes.isEmpty ? "" : updater.notes + "\n\n") + "Установка идёт поверх: вход, настройки и скачанная музыка сохраняются.")
                 }
                 .tint(Theme.accent)
             }
-            Section("Аккаунт") {
-                LabeledContent("Имя", value: session.profile?.name ?? "—")
-                LabeledContent("Плюс", value: session.profile?.plus == true ? "Активен" : "Нет")
+            Section {
+                HStack(spacing: 14) {
+                    Text(String((session.profile?.name ?? "?").prefix(1)).uppercased())
+                        .font(.system(size: 20, weight: .bold))
+                        .foregroundStyle(.black)
+                        .frame(width: 46, height: 46)
+                        .background(Theme.accent, in: Circle())
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(session.profile?.name ?? "Аккаунт")
+                            .font(.system(size: 17, weight: .semibold))
+                        if let login = session.profile?.login, !login.isEmpty {
+                            Text(login)
+                                .font(.system(size: 14))
+                                .foregroundStyle(Theme.dim)
+                        }
+                    }
+                    Spacer(minLength: 8)
+                    if let profile = session.profile {
+                        Text(profile.plus ? "Плюс активен" : "Без Плюса")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(profile.plus ? Color.black : Color.white)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(profile.plus ? Theme.accent : Theme.raised, in: Capsule())
+                    }
+                }
+                .padding(.vertical, 4)
+                ForEach(session.accounts.filter { $0.uid != session.profile?.uid }) { account in
+                    Button {
+                        session.switchTo(account)
+                    } label: {
+                        HStack(spacing: 14) {
+                            Image(systemName: "person.crop.circle")
+                                .font(.system(size: 26))
+                                .foregroundStyle(Theme.dim)
+                                .frame(width: 46)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(account.name.isEmpty ? account.login : account.name)
+                                    .foregroundStyle(.white)
+                                Text("Переключиться")
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(Theme.dim)
+                            }
+                            Spacer()
+                        }
+                        .contentShape(Rectangle())
+                    }
+                }
+                Button("Добавить аккаунт") { session.addAccount() }
+                    .tint(Theme.accent)
+            } header: {
+                Text("Аккаунт")
+            } footer: {
+                Text("Скачанная музыка общая для всех аккаунтов на этом устройстве. Без Плюса Яндекс отдаёт только отрывки треков.")
             }
             Section {
                 Toggle("Без цензуры", isOn: $uncensor)
@@ -517,6 +569,9 @@ struct SettingsScreen: View {
                 Text("Скачанная музыка хранится в памяти приложения и не удаляется системой. Кэш iOS может очистить сама, если место закончится.")
             }
             Section {
+                Button("Что нового") {
+                    navigate(.changes)
+                }
                 Button("Журнал ошибок") {
                     navigate(.log)
                 }
