@@ -127,7 +127,16 @@ final class Player: NSObject, ObservableObject {
         case finished, skipped
     }
 
-    private let av = AVPlayer()
+    /// Играющий проигрыватель и запасной. В запасном заранее лежит следующий трек: когда
+    /// текущий кончается, они меняются местами, и музыка идёт без паузы.
+    private var av = AVPlayer()
+    private var spare = AVPlayer()
+    private var timeObserver: Any?
+    /// Плавный переход: прежний трек затихает, новый набирает громкость.
+    private var fadeTask: Task<Void, Never>?
+    private var fading: AVPlayer?
+    /// Для этого трека плавный переход уже начат.
+    private var fadedFor: String?
     private var context = PlayContext.various("")
     private var wave: String?
     private var extendTask: Task<Void, Never>?
@@ -264,10 +273,43 @@ final class Player: NSObject, ObservableObject {
         progress.position = resume ?? 0
         progress.duration = track.duration
         itemObservation = nil
+        let smooth = blend
+        blend = false
+        endFade()
+        UserDefaults.standard.set(target, forKey: "playerIndex")
+
+        // Следующий трек уже лежит в запасном проигрывателе: меняем их местами.
+        if !viaFile, resume == nil, let ready = preloaded, ready.id == track.id, spare.currentItem === ready.item {
+            preloaded = nil
+            fromPreload = true
+            streamed = !((ready.item.asset as? AVURLAsset)?.url.isFileURL ?? true)
+            let old = av
+            av = spare
+            spare = old
+            watch()
+            let level = Self.level(for: track)
+            let seconds = Double(Settings.crossfade)
+            if smooth, autoplay, seconds > 0, old.rate > 0 {
+                av.volume = 0
+                // Переход не длиннее того, что осталось играть прежнему треку.
+                let left = (old.currentItem?.duration.seconds ?? .nan) - old.currentTime().seconds
+                fade(from: old, to: level, seconds: left.isFinite ? min(seconds, max(1, left)) : seconds)
+            } else {
+                old.pause()
+                old.replaceCurrentItem(with: nil)
+                av.volume = level
+            }
+            refreshNowPlaying()
+            loadArtwork(track)
+            attach(ready.item, track: track, resume: nil)
+            return
+        }
+        preloaded = nil
+        spare.replaceCurrentItem(with: nil)
         av.replaceCurrentItem(with: nil)
+        av.volume = Self.level(for: track)
         refreshNowPlaying()
         loadArtwork(track)
-        UserDefaults.standard.set(target, forKey: "playerIndex")
 
         // Следующий трек часто запускается с заблокированным экраном: просим у системы время на запрос.
         let background = UIApplication.shared.beginBackgroundTask(withName: "tune.load")
@@ -277,16 +319,9 @@ final class Player: NSObject, ObservableObject {
             }
             guard let self else { return }
             do {
-                let item: AVPlayerItem
-                if !viaFile, let ready = self.preloaded, ready.id == track.id {
-                    item = ready.item
-                    self.fromPreload = true
-                } else {
-                    item = try await self.makeItem(track, viaFile: viaFile)
-                    self.fromPreload = false
-                }
+                let item = try await self.makeItem(track, viaFile: viaFile)
+                self.fromPreload = false
                 self.streamed = !viaFile && !((item.asset as? AVURLAsset)?.url.isFileURL ?? true)
-                self.preloaded = nil
                 guard turn == self.generation else { return }
                 self.attach(item, track: track, resume: resume)
             } catch {
@@ -319,7 +354,12 @@ final class Player: NSObject, ObservableObject {
         itemObservation = item.observe(\.status) { [weak self] item, _ in
             Task { @MainActor [weak self] in self?.itemChanged(item) }
         }
-        av.replaceCurrentItem(with: item)
+        if av.currentItem !== item {
+            av.replaceCurrentItem(with: item)
+        } else {
+            // Заготовленный трек мог сломаться ещё в запасном проигрывателе, до начала наблюдения.
+            itemChanged(item)
+        }
         if let resume, resume > 1 {
             av.seek(to: CMTime(seconds: resume, preferredTimescale: 600))
         }
@@ -400,7 +440,74 @@ final class Player: NSObject, ObservableObject {
         let turn = generation
         Task { [weak self] in
             guard let self, let item = try? await self.makeItem(track), turn == self.generation else { return }
+            // Запасной проигрыватель ещё доигрывает затихающий трек: ждём конца перехода.
+            await self.fadeTask?.value
+            guard turn == self.generation else { return }
+            self.spare.pause()
+            self.spare.volume = 0
+            self.spare.replaceCurrentItem(with: item)
             self.preloaded = (track.id, item)
+        }
+    }
+
+    // MARK: - Громкость и плавный переход
+
+    /// Плавный переход разрешён только когда трек кончается сам, а не по нажатию.
+    private var blend = false
+
+    /// Громкость для трека. С выравниванием громкие записи приглушаются до −14 LUFS;
+    /// тихие остаются как есть: усиливать звук проигрыватель не умеет.
+    private static func level(for track: Track) -> Float {
+        guard Settings.normalize, let loudness = track.loudness else { return 1 }
+        let gain = min(0, -14 - loudness)
+        return Float(pow(10, max(gain, -12) / 20))
+    }
+
+    /// Настройку выравнивания поменяли: громкость играющего трека пересчитывается сразу.
+    func settingsChanged() {
+        guard fadeTask == nil, let track = current else { return }
+        av.volume = Self.level(for: track)
+    }
+
+    private func fade(from old: AVPlayer, to level: Float, seconds: Double) {
+        fading = old
+        let start = old.volume
+        let player = av
+        fadeTask = Task { [weak self] in
+            let steps = max(1, Int(seconds * 20))
+            for step in 1...steps {
+                try? await Task.sleep(nanoseconds: 50_000_000)
+                if Task.isCancelled { return }
+                let part = Float(step) / Float(steps)
+                // Равная мощность: сумма двух треков не проваливается по громкости в середине.
+                old.volume = start * cos(part * .pi / 2)
+                player.volume = level * sin(part * .pi / 2)
+            }
+            self?.endFade()
+        }
+    }
+
+    /// Конец перехода, в том числе досрочный: прежний трек замолкает, новый играет в полную силу.
+    private func endFade() {
+        guard let old = fading else { return }
+        fading = nil
+        fadeTask?.cancel()
+        fadeTask = nil
+        old.pause()
+        old.replaceCurrentItem(with: nil)
+        old.volume = 0
+        if let track = current { av.volume = Self.level(for: track) }
+    }
+
+    /// Следит за играющим проигрывателем: время и состояние буфера.
+    private func watch() {
+        if let timeObserver { spare.removeTimeObserver(timeObserver) }
+        timeObserver = av.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.5, preferredTimescale: 600), queue: .main) { [weak self] time in
+            let seconds = time.seconds
+            Task { @MainActor [weak self] in self?.tick(seconds) }
+        }
+        statusObservation = av.observe(\.timeControlStatus) { [weak self] _, _ in
+            Task { @MainActor [weak self] in self?.statusChanged() }
         }
     }
 
@@ -413,6 +520,7 @@ final class Player: NSObject, ObservableObject {
     func pause() {
         isPlaying = false
         isBuffering = false
+        endFade()
         av.pause()
         listen?.pause = true
         refreshNowPlaying()
@@ -476,7 +584,9 @@ final class Player: NSObject, ObservableObject {
         endCurrent(.skipped)
         generation += 1
         itemObservation = nil
+        endFade()
         av.replaceCurrentItem(with: nil)
+        spare.replaceCurrentItem(with: nil)
         queue = []
         index = 0
         wave = nil
@@ -625,7 +735,9 @@ final class Player: NSObject, ObservableObject {
             finishQueue()
             return
         }
+        blend = true
         if repeatMode == .one, let track = current {
+            blend = false
             av.seek(to: .zero)
             av.play()
             listen = Listen(track: track, context: context, session: wave)
@@ -660,6 +772,7 @@ final class Player: NSObject, ObservableObject {
     }
 
     private func finishQueue() {
+        blend = false
         isPlaying = false
         isBuffering = false
         av.pause()
@@ -695,13 +808,7 @@ final class Player: NSObject, ObservableObject {
     }
 
     private func observe() {
-        _ = av.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.5, preferredTimescale: 600), queue: .main) { [weak self] time in
-            let seconds = time.seconds
-            Task { @MainActor [weak self] in self?.tick(seconds) }
-        }
-        statusObservation = av.observe(\.timeControlStatus) { [weak self] _, _ in
-            Task { @MainActor [weak self] in self?.statusChanged() }
-        }
+        watch()
         let center = NotificationCenter.default
         center.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: nil, queue: .main) { [weak self] note in
             let item = note.object as? AVPlayerItem
@@ -735,6 +842,15 @@ final class Player: NSObject, ObservableObject {
         progress.position = seconds
         if av.rate > 0 {
             listen?.played += 0.5
+        }
+        // Плавный переход: следующий трек вступает за несколько секунд до конца текущего.
+        let overlap = Double(Settings.crossfade)
+        if overlap > 0, av.rate > 0, repeatMode != .one, !sleepAfterTrack, let track = current, fadedFor != track.id,
+           let ready = preloaded, queue.indices.contains(index + 1), queue[index + 1].id == ready.id,
+           ready.item.status == .readyToPlay, progress.duration > overlap * 4, seconds > overlap,
+           progress.duration - seconds <= overlap {
+            fadedFor = track.id
+            trackEnded()
         }
         if Date().timeIntervalSince(lastSave) > 15 {
             savePosition()

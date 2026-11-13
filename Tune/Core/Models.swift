@@ -62,6 +62,8 @@ struct Track: Codable, Hashable, Identifiable {
     var uncensored: Bool
     /// Пачка волны, из которой пришёл трек.
     var batch: String?
+    /// Средняя громкость записи в LUFS, как её измерил Яндекс. По ней выравнивается звук.
+    var loudness: Double?
 
     var duration: Double { Double(durationMs) / 1000 }
 

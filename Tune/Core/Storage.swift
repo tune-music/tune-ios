@@ -81,6 +81,18 @@ enum Settings {
         set { defaults.set(newValue, forKey: "uncensor") }
     }
 
+    /// Плавный переход между треками, секунд. 0 — выключен.
+    static var crossfade: Int {
+        get { defaults.integer(forKey: "crossfade") }
+        set { defaults.set(newValue, forKey: "crossfade") }
+    }
+
+    /// Громкие записи приглушаются до общего уровня.
+    static var normalize: Bool {
+        get { defaults.bool(forKey: "normalize") }
+        set { defaults.set(newValue, forKey: "normalize") }
+    }
+
     /// lossless — лучшее, nq — обычное, lq — экономное.
     static var streamQuality: String {
         get { defaults.string(forKey: "streamQuality") ?? "lossless" }

@@ -441,6 +441,8 @@ struct SettingsScreen: View {
     @Environment(\.navigate) private var navigate
     @State private var uncensor = Settings.uncensor
     @State private var appearance = Settings.appearance
+    @State private var crossfade = Settings.crossfade
+    @State private var normalize = Settings.normalize
     @State private var streamQuality = Settings.streamQuality
     @State private var downloadQuality = Settings.downloadQuality
     @State private var wifiOnly = Settings.wifiOnly
@@ -534,6 +536,20 @@ struct SettingsScreen: View {
                     Text("Светлая").tag(2)
                 }
             }
+            Section {
+                Picker("Плавный переход", selection: $crossfade) {
+                    Text("Выключен").tag(0)
+                    Text("3 секунды").tag(3)
+                    Text("5 секунд").tag(5)
+                    Text("8 секунд").tag(8)
+                }
+                Toggle("Выравнивать громкость", isOn: $normalize)
+                    .tint(Theme.accentText)
+            } header: {
+                Text("Воспроизведение")
+            } footer: {
+                Text("С плавным переходом следующий трек вступает, пока текущий затихает. Выравнивание приглушает громкие записи до общего уровня, чтобы треки не прыгали по громкости.")
+            }
             Section("Качество звука") {
                 Picker("При прослушивании", selection: $streamQuality) {
                     qualities
@@ -609,6 +625,11 @@ struct SettingsScreen: View {
         .onChange(of: appearance) { value in
             Settings.appearance = value
             Appearance.apply()
+        }
+        .onChange(of: crossfade) { Settings.crossfade = $0 }
+        .onChange(of: normalize) { value in
+            Settings.normalize = value
+            Player.shared.settingsChanged()
         }
         .onChange(of: streamQuality) { Settings.streamQuality = $0 }
         .onChange(of: downloadQuality) { Settings.downloadQuality = $0 }

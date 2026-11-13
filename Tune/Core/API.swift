@@ -136,7 +136,8 @@ final class API {
             hasLyrics: lyrics["hasAvailableSyncLyrics"].bool == true || lyrics["hasAvailableTextLyrics"].bool == true,
             unavailable: value["available"].bool == false,
             uncensored: uncensored,
-            batch: nil)
+            batch: nil,
+            loudness: value["r128"]["i"].double)
     }
 
     private static func parsePlaylist(_ value: JSON, owner: String) -> Playlist? {
