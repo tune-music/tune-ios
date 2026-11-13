@@ -42,7 +42,7 @@ struct ChangesScreen: View {
                             .foregroundStyle(Theme.dim)
                         Text(change.title)
                             .font(.scaled(size: 20, weight: .bold))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(Theme.text)
                         VStack(alignment: .leading, spacing: 8) {
                             ForEach(change.items, id: \.self) { item in
                                 HStack(alignment: .firstTextBaseline, spacing: 10) {
@@ -52,7 +52,7 @@ struct ChangesScreen: View {
                                         .offset(y: -3)
                                     Text(item)
                                         .font(.scaled(size: 15))
-                                        .foregroundStyle(.white.opacity(0.85))
+                                        .foregroundStyle(Theme.text.opacity(0.85))
                                         .fixedSize(horizontal: false, vertical: true)
                                 }
                             }

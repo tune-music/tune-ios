@@ -171,6 +171,18 @@ jobs:
             xcrun simctl terminate "$UDID" dev.tune.music || true
           done
 
+      # Светлая тема: все страницы ещё раз. Долго, поэтому по пометке [light] в сообщении коммита.
+      - name: Снимки светлой темы
+        if: contains(github.event.head_commit.message, '[light]') || github.event_name == 'workflow_dispatch'
+        run: |
+          UDID=$(xcrun simctl list devices booted -j | python3 -c "import json,sys; print(next(x['udid'] for r in json.load(sys.stdin)['devices'].values() for x in r))")
+          for screen in home homescroll toast find changes shelf search library likes filter album albumscroll artist playlist select downloads stats stations history wave picker settings; do
+            xcrun simctl launch "$UDID" dev.tune.music -demo -screen "$screen" -light
+            sleep 9
+            xcrun simctl io "$UDID" screenshot "screens/light-$screen.png"
+            xcrun simctl terminate "$UDID" dev.tune.music || true
+          done
+
       # Те же экраны на маленьком и большом телефоне, на прошлой iOS и с крупным шрифтом:
       # по ним видно, где вёрстка не помещается.
       # Долго, поэтому только по просьбе: пометка [sizes] в сообщении коммита или ручной запуск.

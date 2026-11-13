@@ -36,7 +36,7 @@ struct StorageScreen: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(Storage.sizeText(downloads.totalBytes))
                         .font(.scaled(size: 30, weight: .bold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Theme.text)
                     Text("\(plural(downloads.entries.count, "трек", "трека", "треков")) · \(plural(list.count, "исполнитель", "исполнителя", "исполнителей"))")
                         .font(.scaled(size: 14))
                         .foregroundStyle(Theme.dim)
@@ -50,7 +50,7 @@ struct StorageScreen: View {
                         VStack(alignment: .leading, spacing: 3) {
                             Text(bucket.name)
                                 .font(.scaled(size: 16, weight: .medium))
-                                .foregroundStyle(.white)
+                                .foregroundStyle(Theme.text)
                                 .lineLimit(1)
                             Text(plural(bucket.ids.count, "трек", "трека", "треков"))
                                 .font(.scaled(size: 14))

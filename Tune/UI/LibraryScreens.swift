@@ -21,14 +21,14 @@ struct LibraryScreen: View {
                         HStack(spacing: 12) {
                             Image(systemName: "arrow.down.circle.fill")
                                 .font(.system(size: 22))
-                                .foregroundStyle(Theme.accent)
+                                .foregroundStyle(Theme.accentText)
                             Text("Доступна версия \(version)")
                                 .font(.scaled(size: 16, weight: .semibold))
-                                .foregroundStyle(.white)
+                                .foregroundStyle(Theme.text)
                             Spacer(minLength: 0)
                             Text("Обновить")
                                 .font(.scaled(size: 15, weight: .semibold))
-                                .foregroundStyle(Theme.accent)
+                                .foregroundStyle(Theme.accentText)
                         }
                         .padding(14)
                         .glass(in: RoundedRectangle(cornerRadius: 18, style: .continuous))
@@ -45,7 +45,7 @@ struct LibraryScreen: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Мне нравится")
                                 .font(.scaled(size: 24, weight: .bold))
-                                .foregroundStyle(.white)
+                                .foregroundStyle(Theme.text)
                             Text(plural(session.likedIds.count, "трек", "трека", "треков"))
                                 .font(.scaled(size: 15))
                                 .foregroundStyle(Theme.dim)
@@ -75,7 +75,7 @@ struct LibraryScreen: View {
                 HStack {
                     Text("Плейлисты")
                         .font(.scaled(size: 22, weight: .bold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Theme.text)
                     Spacer()
                     Button {
                         byName.toggle()
@@ -99,7 +99,7 @@ struct LibraryScreen: View {
                         Image(systemName: "plus")
                             .accessibilityLabel("Создать")
                             .font(.system(size: 17, weight: .semibold))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(Theme.text)
                             .frame(width: 36, height: 36)
                             .glass(in: Circle(), interactive: true)
                     }
@@ -168,7 +168,7 @@ struct LibraryScreen: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(playlist.title)
                         .font(.scaled(size: 16, weight: .medium))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Theme.text)
                         .lineLimit(1)
                     Text(own ? plural(playlist.count, "трек", "трека", "треков") : (playlist.count > 0 ? "Добавлен · \(plural(playlist.count, "трек", "трека", "треков"))" : "Добавлен в коллекцию"))
                         .font(.scaled(size: 14))
@@ -196,12 +196,12 @@ struct LibraryScreen: View {
             HStack(spacing: 14) {
                 Image(systemName: icon)
                     .font(.system(size: 20))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Theme.text)
                     .frame(width: 44, height: 44)
                     .background(Theme.raised, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
                 Text(title)
                     .font(.scaled(size: 17, weight: .medium))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Theme.text)
                 Spacer(minLength: 0)
                 if !value.isEmpty {
                     Text(value)
@@ -253,7 +253,7 @@ struct PlaylistPicker: View {
                             .background(Theme.accent, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                         Text("Новый плейлист")
                             .font(.scaled(size: 16, weight: .medium))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(Theme.text)
                         Spacer(minLength: 0)
                     }
                     .contentShape(Rectangle())
@@ -271,7 +271,7 @@ struct PlaylistPicker: View {
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(playlist.title)
                                     .font(.scaled(size: 16, weight: .medium))
-                                    .foregroundStyle(.white)
+                                    .foregroundStyle(Theme.text)
                                     .lineLimit(1)
                                 Text(plural(playlist.count, "трек", "трека", "треков"))
                                     .font(.scaled(size: 14))
@@ -309,7 +309,7 @@ struct PlaylistPicker: View {
                 Button("Отмена", role: .cancel) {}
             }
         }
-        .tint(.white)
+        .tint(Theme.text)
         .presentationDetents([.medium, .large])
     }
 }
@@ -441,6 +441,7 @@ struct SettingsScreen: View {
     @EnvironmentObject private var downloads: Downloads
     @Environment(\.navigate) private var navigate
     @State private var uncensor = Settings.uncensor
+    @State private var appearance = Settings.appearance
     @State private var streamQuality = Settings.streamQuality
     @State private var downloadQuality = Settings.downloadQuality
     @State private var wifiOnly = Settings.wifiOnly
@@ -463,7 +464,7 @@ struct SettingsScreen: View {
                 } footer: {
                     Text((updater.notes.isEmpty ? "" : updater.notes + "\n\n") + "Установка идёт поверх: вход, настройки и скачанная музыка сохраняются.")
                 }
-                .tint(Theme.accent)
+                .tint(Theme.accentText)
             }
             Section {
                 HStack(spacing: 14) {
@@ -485,7 +486,7 @@ struct SettingsScreen: View {
                     if let profile = session.profile {
                         Text(profile.plus ? "Плюс активен" : "Без Плюса")
                             .font(.scaled(size: 13, weight: .semibold))
-                            .foregroundStyle(profile.plus ? Color.black : Color.white)
+                            .foregroundStyle(profile.plus ? Color.black : Theme.text)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 5)
                             .background(profile.plus ? Theme.accent : Theme.raised, in: Capsule())
@@ -504,7 +505,7 @@ struct SettingsScreen: View {
                                 .frame(width: 46)
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(account.name.isEmpty ? account.login : account.name)
-                                    .foregroundStyle(.white)
+                                    .foregroundStyle(Theme.text)
                                 Text("Переключиться")
                                     .font(.scaled(size: 13))
                                     .foregroundStyle(Theme.dim)
@@ -515,7 +516,7 @@ struct SettingsScreen: View {
                     }
                 }
                 Button("Добавить аккаунт") { session.addAccount() }
-                    .tint(Theme.accent)
+                    .tint(Theme.accentText)
             } header: {
                 Text("Аккаунт")
             } footer: {
@@ -523,9 +524,16 @@ struct SettingsScreen: View {
             }
             Section {
                 Toggle("Без цензуры", isOn: $uncensor)
-                    .tint(Theme.accent)
+                    .tint(Theme.accentText)
             } footer: {
                 Text("Вместо версий с вырезанными словами играют оригинальные — из открытого списка FckCensor. Треки, удалённые из Яндекса, но оставшиеся в списке, снова доступны.")
+            }
+            Section("Оформление") {
+                Picker("Тема", selection: $appearance) {
+                    Text("Как в системе").tag(0)
+                    Text("Тёмная").tag(1)
+                    Text("Светлая").tag(2)
+                }
             }
             Section("Качество звука") {
                 Picker("При прослушивании", selection: $streamQuality) {
@@ -544,7 +552,7 @@ struct SettingsScreen: View {
             } footer: {
                 Text("С включённым «Только по Wi-Fi» загрузки в сотовой сети ждут в очереди. Лайкнутые треки скачиваются сами: новые — сразу, остальные — когда откроете «Мне нравится». В офлайн-режиме в списках сразу показано только скачанное. Отдельный плейлист можно скачивать автоматически — в его меню.")
             }
-            .tint(Theme.accent)
+            .tint(Theme.accentText)
             Section {
                 Button {
                     navigate(.storage)
@@ -599,6 +607,10 @@ struct SettingsScreen: View {
                 Task { await Uncensor.shared.refresh() }
             }
         }
+        .onChange(of: appearance) { value in
+            Settings.appearance = value
+            Appearance.apply()
+        }
         .onChange(of: streamQuality) { Settings.streamQuality = $0 }
         .onChange(of: downloadQuality) { Settings.downloadQuality = $0 }
         .onChange(of: offlineMode) { Settings.offlineMode = $0 }
@@ -652,7 +664,7 @@ struct LogScreen: View {
         ScrollView {
             Text(text.isEmpty ? "Ошибок не было." : text)
                 .font(.scaled(size: 12, design: .monospaced))
-                .foregroundStyle(text.isEmpty ? Theme.dim : Color.white)
+                .foregroundStyle(text.isEmpty ? Theme.dim : Theme.text)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(16)
                 .textSelection(.enabled)

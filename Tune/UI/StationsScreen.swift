@@ -44,7 +44,7 @@ struct StationsScreen: View {
                         VStack(alignment: .leading, spacing: 12) {
                             Text(group.title)
                                 .font(.scaled(size: 22, weight: .bold))
-                                .foregroundStyle(.white)
+                                .foregroundStyle(Theme.text)
                             WaveGrid(waves: group.waves)
                         }
                     }
@@ -96,7 +96,7 @@ struct WaveGrid: View {
                             .lineLimit(1)
                         Spacer(minLength: 0)
                     }
-                    .foregroundStyle(active ? Color.black : Color.white)
+                    .foregroundStyle(active ? Color.black : Theme.text)
                     .padding(.horizontal, 14)
                     .frame(height: 48)
                     .background(active ? Theme.accent : Theme.surface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))

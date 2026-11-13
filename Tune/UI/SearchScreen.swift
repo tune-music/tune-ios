@@ -122,7 +122,7 @@ struct SearchScreen: View {
                     .submitLabel(.search)
                     .onSubmit { remember() }
                     .font(.scaled(size: 17))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Theme.text)
                 if !query.isEmpty {
                     Button {
                         query = ""
@@ -146,7 +146,7 @@ struct SearchScreen: View {
                 } label: {
                     Text("Отмена")
                         .font(.scaled(size: 16, weight: .medium))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Theme.text)
                 }
                 .buttonStyle(.plain)
                 .transition(.move(edge: .trailing).combined(with: .opacity))
@@ -187,10 +187,10 @@ struct SearchScreen: View {
                                 .font(.scaled(size: 14, weight: .medium))
                                 .lineLimit(1)
                         }
-                        .foregroundStyle(.white.opacity(0.85))
+                        .foregroundStyle(Theme.text.opacity(0.85))
                         .padding(.horizontal, 12)
                         .frame(height: 34)
-                        .overlay(Capsule().strokeBorder(.white.opacity(0.18)))
+                        .overlay(Capsule().strokeBorder(Theme.text.opacity(0.18)))
                         .contentShape(Capsule())
                     }
                     .buttonStyle(.plain)
@@ -230,7 +230,7 @@ struct SearchScreen: View {
                     } label: {
                         Text(item.title)
                             .font(.scaled(size: 15, weight: .semibold))
-                            .foregroundStyle(on ? Color.black : Color.white)
+                            .foregroundStyle(on ? Color.black : Theme.text)
                             .padding(.horizontal, 16)
                             .padding(.vertical, 9)
                             .background(on ? Theme.accent : Theme.raised, in: Capsule())
@@ -328,7 +328,7 @@ struct SearchScreen: View {
         HStack {
             Text("Вы искали")
                 .font(.scaled(size: 22, weight: .bold))
-                .foregroundStyle(.white)
+                .foregroundStyle(Theme.text)
             Spacer()
             Button {
                 recent = []
@@ -352,7 +352,7 @@ struct SearchScreen: View {
                         .foregroundStyle(Theme.dim)
                     Text(text)
                         .font(.scaled(size: 16))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Theme.text)
                     Spacer(minLength: 0)
                     Image(systemName: "arrow.up.left")
                         .font(.system(size: 13, weight: .semibold))
@@ -381,7 +381,7 @@ struct SearchScreen: View {
         HStack {
             Text(text)
                 .font(.scaled(size: 22, weight: .bold))
-                .foregroundStyle(.white)
+                .foregroundStyle(Theme.text)
             Spacer()
             if let more {
                 Button {
@@ -454,7 +454,7 @@ private struct BestCard: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(item.title)
                         .font(.scaled(size: 19, weight: .bold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Theme.text)
                         .lineLimit(2)
                     Text(item.kind)
                         .font(.scaled(size: 14))

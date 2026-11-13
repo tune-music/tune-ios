@@ -1,12 +1,60 @@
 import SwiftUI
 
 enum Theme {
-    static let background = Color.black
+    private static func pair(_ dark: UIColor, _ light: UIColor) -> Color {
+        Color(UIColor { $0.userInterfaceStyle == .light ? light : dark })
+    }
+
+    private static func gray(_ dark: CGFloat, _ light: CGFloat) -> Color {
+        pair(UIColor(white: dark, alpha: 1), UIColor(white: light, alpha: 1))
+    }
+
+    static let background = gray(0, 1)
+    /// Жёлтый для заливок: кнопка «Слушать», активная вкладка. Текст на нём всегда чёрный.
     static let accent = Color("AccentColor")
-    static let surface = Color(white: 0.11)
-    static let raised = Color(white: 0.17)
-    static let dim = Color(white: 0.6)
-    static let tone = Color(white: 0.16)
+    /// Жёлтый для текста и значков: на белом фоне он темнее, иначе не читается.
+    static let accentText = pair(UIColor(red: 0.98, green: 0.8, blue: 0.082, alpha: 1), UIColor(red: 0.72, green: 0.5, blue: 0, alpha: 1))
+    static let text = gray(1, 0.07)
+    static let surface = gray(0.11, 0.95)
+    static let raised = gray(0.17, 0.9)
+    static let dim = gray(0.6, 0.42)
+    static let tone = gray(0.16, 0.9)
+
+    /// Цвет обложки для фона страницы: в тёмной теме как есть, в светлой — разбавлен белым,
+    /// чтобы на нём читался тёмный текст.
+    static func wash(_ tone: Color) -> Color {
+        Color(UIColor { traits in
+            let color = UIColor(tone).resolvedColor(with: traits)
+            guard traits.userInterfaceStyle == .light else { return color }
+            var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
+            guard color.getRed(&red, green: &green, blue: &blue, alpha: &alpha) else { return color }
+            let part: CGFloat = 0.3
+            return UIColor(red: red * part + 1 - part, green: green * part + 1 - part, blue: blue * part + 1 - part, alpha: 1)
+        })
+    }
+}
+
+/// Тема приложения: системная, тёмная или светлая.
+enum Appearance {
+    static var style: UIUserInterfaceStyle {
+        // Снимки светлой темы в демо-режиме.
+        if ProcessInfo.processInfo.arguments.contains("-light") { return .light }
+        switch Settings.appearance {
+        case 0: return .unspecified
+        case 2: return .light
+        default: return .dark
+        }
+    }
+
+    /// Ставит тему всем окнам. Окно плеера всегда тёмное: оно окрашено под обложку.
+    @MainActor
+    static func apply() {
+        for scene in UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }) {
+            for window in scene.windows {
+                window.overrideUserInterfaceStyle = style
+            }
+        }
+    }
 }
 
 extension Color {
@@ -308,13 +356,13 @@ struct TrackRow: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(track.fullTitle)
                             .font(.scaled(size: 16, weight: .medium))
-                            .foregroundStyle(playing ? Theme.accent : Color.white)
+                            .foregroundStyle(playing ? Theme.accentText : Theme.text)
                             .lineLimit(1)
                         HStack(spacing: 5) {
                             if track.uncensored {
                                 Image(systemName: "lock.open.fill")
                                     .font(.system(size: 10))
-                                    .foregroundStyle(Theme.accent)
+                                    .foregroundStyle(Theme.accentText)
                             } else if track.explicit {
                                 Text("E")
                                     .font(.scaled(size: 9, weight: .heavy))
@@ -325,7 +373,7 @@ struct TrackRow: View {
                             if downloads.has(track.id) {
                                 Image(systemName: "arrow.down.circle.fill")
                                     .font(.system(size: 11))
-                                    .foregroundStyle(Theme.accent)
+                                    .foregroundStyle(Theme.accentText)
                             }
                             Text(track.artists.isEmpty ? track.albumTitle : track.artists)
                                 .font(.scaled(size: 14))
@@ -349,7 +397,7 @@ struct TrackRow: View {
             } else if session.isLiked(track.id) {
                 Image(systemName: "heart.fill")
                     .font(.system(size: 13))
-                    .foregroundStyle(Theme.accent)
+                    .foregroundStyle(Theme.accentText)
                     .padding(.horizontal, 4)
             }
             if number != nil {
@@ -386,7 +434,7 @@ struct TrackRow: View {
                 } label: {
                     Label("Скачать", systemImage: "arrow.down.circle")
                 }
-                .tint(Theme.accent)
+                .tint(Theme.accentText)
             }
         }
         .swipeActions(edge: .leading, allowsFullSwipe: true) {
@@ -406,7 +454,7 @@ extension TrackRow {
     fileprivate func lead(_ playing: Bool) -> some View {
         let mark = Image(systemName: now.playing ? "waveform" : "pause.fill")
             .font(.system(size: 17, weight: .semibold))
-            .foregroundStyle(Theme.accent)
+            .foregroundStyle(Theme.accentText)
         if let number {
             ZStack {
                 if playing {
@@ -471,7 +519,7 @@ struct CardView: View {
                 .padding(.bottom, 4)
             Text(title)
                 .font(.scaled(size: 15, weight: .medium))
-                .foregroundStyle(playing == nil ? .white : Theme.accent)
+                .foregroundStyle(playing == nil ? Theme.text : Theme.accentText)
                 .lineLimit(1)
             if !subtitle.isEmpty {
                 Text(subtitle)
@@ -619,13 +667,13 @@ struct WaveTile: View {
                 } else {
                     Image(systemName: "play.fill")
                         .font(.system(size: 26))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Theme.text)
                 }
             }
             .frame(width: size, height: size)
             Text(wave.title)
                 .font(.scaled(size: 15, weight: .medium))
-                .foregroundStyle(playing == nil ? .white : Theme.accent)
+                .foregroundStyle(playing == nil ? Theme.text : Theme.accentText)
                 .multilineTextAlignment(.center)
                 .lineLimit(2)
         }
@@ -650,7 +698,7 @@ struct Shelf<Content: View>: View {
             HStack(alignment: .firstTextBaseline) {
                 Text(title)
                     .font(.scaled(size: 22, weight: .bold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Theme.text)
                     .lineLimit(2)
                 Spacer(minLength: 8)
                 if let more {
@@ -692,7 +740,7 @@ struct Placeholder: View {
                 .foregroundStyle(Theme.dim)
             Text(title)
                 .font(.scaled(size: 18, weight: .semibold))
-                .foregroundStyle(.white)
+                .foregroundStyle(Theme.text)
             if !text.isEmpty {
                 Text(text)
                     .font(.scaled(size: 15))
@@ -703,7 +751,7 @@ struct Placeholder: View {
                 Button(action: retry) {
                     Text("Повторить")
                         .font(.scaled(size: 15, weight: .semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Theme.text)
                         .padding(.horizontal, 20)
                         .padding(.vertical, 10)
                         .glass(in: Capsule(), interactive: true)
@@ -724,7 +772,7 @@ struct Spinner: View {
         HStack {
             Spacer()
             ProgressView()
-                .tint(.white)
+                .tint(Theme.text)
             Spacer()
         }
         .padding(.vertical, 48)
@@ -801,7 +849,10 @@ struct SymbolCover: View {
 
     /// «Мне нравится» — единственная цветная обложка: это главный раздел коллекции.
     static let likes = [Color(red: 1, green: 0.83, blue: 0.25), Color(red: 0.97, green: 0.66, blue: 0.1)]
-    static let plain = [Color(white: 0.25), Color(white: 0.15)]
+    static let plain = [
+        Color(UIColor { $0.userInterfaceStyle == .light ? UIColor(white: 0.84, alpha: 1) : UIColor(white: 0.25, alpha: 1) }),
+        Color(UIColor { $0.userInterfaceStyle == .light ? UIColor(white: 0.9, alpha: 1) : UIColor(white: 0.15, alpha: 1) }),
+    ]
     static let downloads = plain
     static let history = plain
     static let disliked = plain
@@ -812,7 +863,7 @@ struct SymbolCover: View {
             .overlay {
                 Image(systemName: symbol)
                     .font(.system(size: size * 0.42, weight: .semibold))
-                    .foregroundStyle(colors == Self.likes ? Color.black : Color.white)
+                    .foregroundStyle(colors == Self.likes ? Color.black : Theme.text)
             }
             .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
     }
@@ -828,7 +879,7 @@ struct RoundButton: View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: 19, weight: .semibold))
-                .foregroundStyle(active ? Theme.accent : Color.white)
+                .foregroundStyle(active ? Theme.accentText : Theme.text)
                 .frame(width: 50, height: 50)
                 .glass(in: Circle(), interactive: true)
         }
@@ -872,7 +923,7 @@ struct ToastView: View {
             if let text {
                 Text(text)
                     .font(.scaled(size: 15, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Theme.text)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 18)
                     .padding(.vertical, 11)
@@ -923,7 +974,7 @@ struct MiniPlayer: View {
                 } label: {
                     Image(systemName: liked ? "heart.fill" : "heart")
                         .font(.system(size: 20))
-                        .foregroundStyle(liked ? Theme.accent : Color.white)
+                        .foregroundStyle(liked ? Theme.accentText : Theme.text)
                         .frame(width: 46)
                         .frame(maxHeight: .infinity)
                         .contentShape(Rectangle())
@@ -933,7 +984,7 @@ struct MiniPlayer: View {
                     player.toggle()
                 } label: {
                     PlayGlyph(playing: player.isPlaying, size: 22)
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Theme.text)
                         .opacity(player.isBuffering ? 0.5 : 1)
                         .frame(width: 50)
                     .frame(maxHeight: .infinity)
@@ -972,10 +1023,10 @@ private struct MiniProgress: View {
         GeometryReader { geometry in
             let share = progress.duration > 0 ? min(max(progress.position / progress.duration, 0), 1) : 0
             Capsule()
-                .fill(Color.white)
+                .fill(Theme.text)
                 .frame(width: geometry.size.width * share)
         }
         .frame(height: 2)
-        .background(Color.white.opacity(0.18), in: Capsule())
+        .background(Theme.text.opacity(0.18), in: Capsule())
     }
 }

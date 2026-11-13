@@ -157,7 +157,7 @@ struct CoverView: View {
         let side = ImageLoader.side(for: size)
         let shown = image ?? ImageLoader.shared.cached(uri, side: side)
         ZStack {
-            Color(white: 0.14)
+            Theme.raised
             if let shown {
                 Image(uiImage: shown)
                     .resizable()
@@ -165,7 +165,7 @@ struct CoverView: View {
             } else {
                 Image(systemName: round ? "person.fill" : "music.note")
                     .font(.system(size: size * 0.36))
-                    .foregroundStyle(Color(white: 0.32))
+                    .foregroundStyle(Theme.dim)
             }
         }
         .frame(width: size, height: size)

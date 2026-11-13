@@ -58,15 +58,15 @@ struct TuneApp: App {
         if #unavailable(iOS 26.0) {
             let tabs = UITabBarAppearance()
             tabs.configureWithOpaqueBackground()
-            tabs.backgroundColor = .black
+            tabs.backgroundColor = .systemBackground
             tabs.shadowColor = .clear
             UITabBar.appearance().standardAppearance = tabs
             UITabBar.appearance().scrollEdgeAppearance = tabs
-            UITabBar.appearance().unselectedItemTintColor = UIColor(white: 0.55, alpha: 1)
+            UITabBar.appearance().unselectedItemTintColor = UIColor.secondaryLabel
 
             let scrolled = UINavigationBarAppearance()
             scrolled.configureWithTransparentBackground()
-            scrolled.backgroundEffect = UIBlurEffect(style: .systemChromeMaterialDark)
+            scrolled.backgroundEffect = UIBlurEffect(style: .systemChromeMaterial)
             scrolled.shadowColor = .clear
             let top = UINavigationBarAppearance()
             top.configureWithTransparentBackground()
@@ -82,8 +82,8 @@ struct TuneApp: App {
                 .environmentObject(session)
                 .environmentObject(player)
                 .environmentObject(downloads)
-                .preferredColorScheme(.dark)
-                .tint(.white)
+                .tint(Theme.text)
+                .onAppear { Appearance.apply() }
                 .environment(\.locale, Locale(identifier: "ru_RU"))
                 .task { await Updater.shared.check() }
                 .task {
@@ -169,6 +169,7 @@ struct RootView: View {
         Group {
             if session.token == nil || session.adding {
                 LoginScreen()
+                    .environment(\.colorScheme, .dark)
             } else {
                 // Другой аккаунт — другие страницы: всё строится заново.
                 // И другой размер системного шрифта: текст пересчитывается.
@@ -205,7 +206,7 @@ struct RootView: View {
                 .tabItem { Label("Коллекция", systemImage: "heart.fill") }
                 .tag(2)
         }
-        .tint(Theme.accent)
+        .tint(Theme.accentText)
         .environmentObject(router)
         .environment(\.openPlayer, { PlayerWindow.shared.show() })
         .environment(\.pickPlaylist, { picking = $0 })
@@ -253,7 +254,9 @@ struct TabRoot<Content: View>: View {
         // Мини-плеер лежит поверх страницы, а место под него отступает каждая страница сама:
         // так список докручивается до конца и последние строки не прячутся.
         .overlay(alignment: .bottom) {
+            // Мини-плеер окрашен под обложку, поэтому в любой теме тёмный.
             MiniPlayer()
+                .environment(\.colorScheme, .dark)
         }
     }
 

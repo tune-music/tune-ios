@@ -69,6 +69,12 @@ enum Storage {
 enum Settings {
     private static let defaults = UserDefaults.standard
 
+    /// Тема: 0 — как в системе, 1 — тёмная, 2 — светлая.
+    static var appearance: Int {
+        get { defaults.object(forKey: "appearance") as? Int ?? 1 }
+        set { defaults.set(newValue, forKey: "appearance") }
+    }
+
     /// Версии треков без цензуры из открытого списка FckCensor.
     static var uncensor: Bool {
         get { defaults.object(forKey: "uncensor") as? Bool ?? true }

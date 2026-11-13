@@ -136,7 +136,7 @@ struct StatsScreen: View {
 
                 Text("Любимые треки")
                     .font(.scaled(size: 22, weight: .bold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Theme.text)
                     .plain(top: 0, bottom: 6)
                 ForEach(Array(data.tracks.enumerated()), id: \.element.id) { index, item in
                     TrackRow(track: item.track, number: index + 1) {
@@ -146,7 +146,7 @@ struct StatsScreen: View {
 
                 Text("Любимые исполнители")
                     .font(.scaled(size: 22, weight: .bold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Theme.text)
                     .plain(top: 22, bottom: 10)
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(alignment: .top, spacing: 14) {
@@ -193,7 +193,7 @@ struct StatsScreen: View {
         VStack(spacing: 4) {
             Text(value)
                 .font(.scaled(size: 22, weight: .bold))
-                .foregroundStyle(.white)
+                .foregroundStyle(Theme.text)
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
             Text(caption)

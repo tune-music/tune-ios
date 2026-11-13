@@ -160,7 +160,7 @@ struct HomeScreen: View {
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(Theme.dim)
             }
-            .foregroundStyle(.white)
+            .foregroundStyle(Theme.text)
             .padding(16)
             .glass(in: RoundedRectangle(cornerRadius: 20, style: .continuous))
         }
@@ -181,10 +181,10 @@ struct HomeScreen: View {
                         Text("Все волны")
                             .font(.scaled(size: 15, weight: .semibold))
                     }
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Theme.text)
                     .padding(.horizontal, 15)
                     .frame(height: 40)
-                    .overlay(Capsule().strokeBorder(.white.opacity(0.22)))
+                    .overlay(Capsule().strokeBorder(Theme.text.opacity(0.22)))
                     .contentShape(Capsule())
                 }
                 .buttonStyle(PressStyle())
@@ -200,7 +200,7 @@ struct HomeScreen: View {
                                 .font(.scaled(size: 15, weight: .semibold))
                                 .lineLimit(1)
                         }
-                        .foregroundStyle(active ? .black : .white)
+                        .foregroundStyle(active ? Color.black : Theme.text)
                         .padding(.horizontal, 15)
                         .frame(height: 40)
                         .background {
@@ -236,7 +236,7 @@ private struct QuickTile: View {
                 }
                 Text(title)
                     .font(.scaled(size: 14, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Theme.text)
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
                 Spacer(minLength: 4)
@@ -312,17 +312,17 @@ private struct WaveHero: View {
                     HStack(spacing: 7) {
                         Image(systemName: now.playing ? "waveform" : "pause.fill")
                             .font(.system(size: 12, weight: .bold))
-                            .foregroundStyle(Theme.accent)
+                            .foregroundStyle(Theme.accentText)
                         Text("Сейчас играет: \(other)")
                             .font(.scaled(size: 14, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.85))
+                            .foregroundStyle(Theme.text.opacity(0.85))
                             .lineLimit(1)
                     }
                     .padding(.horizontal, 24)
                 }
                 Text("Моя волна")
                     .font(.scaled(size: 36, weight: .bold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Theme.text)
                 HStack(spacing: 12) {
                     Button {
                         player.tapWave()
@@ -345,7 +345,7 @@ private struct WaveHero: View {
                             Text(Player.waveSettings.isEmpty ? "Настроить" : "Настроено")
                         }
                         .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Theme.text)
                         .padding(.horizontal, 20)
                         .frame(height: 48)
                         .glass(in: Capsule(), interactive: true)
@@ -418,7 +418,7 @@ struct WaveSettingsSheet: View {
                         VStack(alignment: .leading, spacing: 10) {
                             Text(group.title)
                                 .font(.scaled(size: 17, weight: .semibold))
-                                .foregroundStyle(.white)
+                                .foregroundStyle(Theme.text)
                             ScrollView(.horizontal, showsIndicators: false) {
                                 HStack(spacing: 8) {
                                     ForEach(group.options, id: \.seed) { option in
@@ -449,7 +449,7 @@ struct WaveSettingsSheet: View {
                 }
             }
         }
-        .tint(.white)
+        .tint(Theme.text)
         .presentationDetents([.medium, .large])
     }
 
@@ -463,7 +463,7 @@ struct WaveSettingsSheet: View {
         } label: {
             Text(name)
                 .font(.scaled(size: 15, weight: .semibold))
-                .foregroundStyle(on ? Color.black : Color.white)
+                .foregroundStyle(on ? Color.black : Theme.text)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 10)
                 .background(on ? Theme.accent : Theme.raised, in: Capsule())
