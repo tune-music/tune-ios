@@ -108,6 +108,7 @@ struct HomeScreen: View {
                     navigate(.settings)
                 } label: {
                     Image(systemName: "person.crop.circle")
+                        .accessibilityLabel("Аккаунт")
                 }
                 .accessibilityLabel("Настройки и аккаунт")
             }
@@ -149,9 +150,9 @@ struct HomeScreen: View {
                     .font(.system(size: 20))
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Нет связи с Яндексом")
-                        .font(.system(size: 16, weight: .semibold))
+                        .font(.scaled(size: 16, weight: .semibold))
                     Text(downloads.entries.isEmpty ? "Скачанной музыки пока нет" : "Скачано: \(plural(downloads.entries.count, "трек", "трека", "треков"))")
-                        .font(.system(size: 14))
+                        .font(.scaled(size: 14))
                         .foregroundStyle(Theme.dim)
                 }
                 Spacer(minLength: 0)
@@ -178,7 +179,7 @@ struct HomeScreen: View {
                         Image(systemName: "square.grid.2x2.fill")
                             .font(.system(size: 12, weight: .bold))
                         Text("Все волны")
-                            .font(.system(size: 15, weight: .semibold))
+                            .font(.scaled(size: 15, weight: .semibold))
                     }
                     .foregroundStyle(.white)
                     .padding(.horizontal, 15)
@@ -196,7 +197,7 @@ struct HomeScreen: View {
                             Image(systemName: active ? (now.playing ? "waveform" : "pause.fill") : "dot.radiowaves.left.and.right")
                                 .font(.system(size: 12, weight: .bold))
                             Text(wave.title)
-                                .font(.system(size: 15, weight: .semibold))
+                                .font(.scaled(size: 15, weight: .semibold))
                                 .lineLimit(1)
                         }
                         .foregroundStyle(active ? .black : .white)
@@ -234,7 +235,7 @@ private struct QuickTile: View {
                     CoverView(uri: cover, size: 56, corner: 0)
                 }
                 Text(title)
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.scaled(size: 14, weight: .semibold))
                     .foregroundStyle(.white)
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
@@ -313,14 +314,14 @@ private struct WaveHero: View {
                             .font(.system(size: 12, weight: .bold))
                             .foregroundStyle(Theme.accent)
                         Text("Сейчас играет: \(other)")
-                            .font(.system(size: 14, weight: .medium))
+                            .font(.scaled(size: 14, weight: .medium))
                             .foregroundStyle(.white.opacity(0.85))
                             .lineLimit(1)
                     }
                     .padding(.horizontal, 24)
                 }
                 Text("Моя волна")
-                    .font(.system(size: 36, weight: .bold))
+                    .font(.scaled(size: 36, weight: .bold))
                     .foregroundStyle(.white)
                 HStack(spacing: 12) {
                     Button {
@@ -329,7 +330,7 @@ private struct WaveHero: View {
                         HStack(spacing: 8) {
                             PlayGlyph(playing: playing, size: 18)
                             Text(playing ? "Пауза" : "Слушать")
-                                .font(.system(size: 17, weight: .semibold))
+                                .font(.scaled(size: 17, weight: .semibold))
                         }
                         .foregroundStyle(.black)
                         .padding(.horizontal, 26)
@@ -416,7 +417,7 @@ struct WaveSettingsSheet: View {
                     ForEach(Self.groups, id: \.title) { group in
                         VStack(alignment: .leading, spacing: 10) {
                             Text(group.title)
-                                .font(.system(size: 17, weight: .semibold))
+                                .font(.scaled(size: 17, weight: .semibold))
                                 .foregroundStyle(.white)
                             ScrollView(.horizontal, showsIndicators: false) {
                                 HStack(spacing: 8) {
@@ -461,7 +462,7 @@ struct WaveSettingsSheet: View {
             if !was { chosen.insert(seed) }
         } label: {
             Text(name)
-                .font(.system(size: 15, weight: .semibold))
+                .font(.scaled(size: 15, weight: .semibold))
                 .foregroundStyle(on ? Color.black : Color.white)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 10)

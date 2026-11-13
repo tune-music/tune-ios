@@ -58,6 +58,15 @@ extension View {
     }
 }
 
+extension Font {
+    /// Шрифт текста: следует за системной настройкой размера, но не больше чем на треть —
+    /// на это рассчитаны строки и кнопки.
+    static func scaled(size: CGFloat, weight: Font.Weight = .regular, design: Font.Design = .default) -> Font {
+        let factor = UIFontMetrics.default.scaledValue(for: 100) / 100
+        return .system(size: size * min(max(factor, 0.9), 1.3), weight: weight, design: design)
+    }
+}
+
 /// Нажатие с откликом: кнопка поджимается под пальцем и пружинит обратно.
 struct PressStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
@@ -298,7 +307,7 @@ struct TrackRow: View {
                     lead(playing)
                     VStack(alignment: .leading, spacing: 3) {
                         Text(track.fullTitle)
-                            .font(.system(size: 16, weight: .medium))
+                            .font(.scaled(size: 16, weight: .medium))
                             .foregroundStyle(playing ? Theme.accent : Color.white)
                             .lineLimit(1)
                         HStack(spacing: 5) {
@@ -308,7 +317,7 @@ struct TrackRow: View {
                                     .foregroundStyle(Theme.accent)
                             } else if track.explicit {
                                 Text("E")
-                                    .font(.system(size: 9, weight: .heavy))
+                                    .font(.scaled(size: 9, weight: .heavy))
                                     .foregroundStyle(.black)
                                     .frame(width: 13, height: 13)
                                     .background(Theme.dim, in: RoundedRectangle(cornerRadius: 3, style: .continuous))
@@ -319,7 +328,7 @@ struct TrackRow: View {
                                     .foregroundStyle(Theme.accent)
                             }
                             Text(track.artists.isEmpty ? track.albumTitle : track.artists)
-                                .font(.system(size: 14))
+                                .font(.scaled(size: 14))
                                 .foregroundStyle(Theme.dim)
                                 .lineLimit(1)
                         }
@@ -345,7 +354,7 @@ struct TrackRow: View {
             }
             if number != nil {
                 Text(timeText(track.duration))
-                    .font(.system(size: 13).monospacedDigit())
+                    .font(.scaled(size: 13).monospacedDigit())
                     .foregroundStyle(Theme.dim)
                     .padding(.leading, 4)
             }
@@ -353,6 +362,7 @@ struct TrackRow: View {
                 TrackMenu(track: track, onRemove: onRemove, navigate: navigate, pick: pickPlaylist)
             } label: {
                 Image(systemName: "ellipsis")
+                    .accessibilityLabel("Ещё")
                     .font(.system(size: 17, weight: .semibold))
                     .frame(width: 36, height: 44)
                     .contentShape(Rectangle())
@@ -403,7 +413,7 @@ extension TrackRow {
                     mark
                 } else {
                     Text("\(number)")
-                        .font(.system(size: 16, weight: .medium).monospacedDigit())
+                        .font(.scaled(size: 16, weight: .medium).monospacedDigit())
                         .foregroundStyle(Theme.dim)
                 }
             }
@@ -460,12 +470,12 @@ struct CardView: View {
                 }
                 .padding(.bottom, 4)
             Text(title)
-                .font(.system(size: 15, weight: .medium))
+                .font(.scaled(size: 15, weight: .medium))
                 .foregroundStyle(playing == nil ? .white : Theme.accent)
                 .lineLimit(1)
             if !subtitle.isEmpty {
                 Text(subtitle)
-                    .font(.system(size: 13))
+                    .font(.scaled(size: 13))
                     .foregroundStyle(Theme.dim)
                     .lineLimit(1)
             }
@@ -614,7 +624,7 @@ struct WaveTile: View {
             }
             .frame(width: size, height: size)
             Text(wave.title)
-                .font(.system(size: 15, weight: .medium))
+                .font(.scaled(size: 15, weight: .medium))
                 .foregroundStyle(playing == nil ? .white : Theme.accent)
                 .multilineTextAlignment(.center)
                 .lineLimit(2)
@@ -639,7 +649,7 @@ struct Shelf<Content: View>: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .firstTextBaseline) {
                 Text(title)
-                    .font(.system(size: 22, weight: .bold))
+                    .font(.scaled(size: 22, weight: .bold))
                     .foregroundStyle(.white)
                     .lineLimit(2)
                 Spacer(minLength: 8)
@@ -681,18 +691,18 @@ struct Placeholder: View {
                 .font(.system(size: 38))
                 .foregroundStyle(Theme.dim)
             Text(title)
-                .font(.system(size: 18, weight: .semibold))
+                .font(.scaled(size: 18, weight: .semibold))
                 .foregroundStyle(.white)
             if !text.isEmpty {
                 Text(text)
-                    .font(.system(size: 15))
+                    .font(.scaled(size: 15))
                     .foregroundStyle(Theme.dim)
                     .multilineTextAlignment(.center)
             }
             if let retry {
                 Button(action: retry) {
                     Text("Повторить")
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(.scaled(size: 15, weight: .semibold))
                         .foregroundStyle(.white)
                         .padding(.horizontal, 20)
                         .padding(.vertical, 10)
@@ -861,7 +871,7 @@ struct ToastView: View {
         ZStack {
             if let text {
                 Text(text)
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.scaled(size: 15, weight: .semibold))
                     .foregroundStyle(.white)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 18)

@@ -23,11 +23,11 @@ struct LibraryScreen: View {
                                 .font(.system(size: 22))
                                 .foregroundStyle(Theme.accent)
                             Text("Доступна версия \(version)")
-                                .font(.system(size: 16, weight: .semibold))
+                                .font(.scaled(size: 16, weight: .semibold))
                                 .foregroundStyle(.white)
                             Spacer(minLength: 0)
                             Text("Обновить")
-                                .font(.system(size: 15, weight: .semibold))
+                                .font(.scaled(size: 15, weight: .semibold))
                                 .foregroundStyle(Theme.accent)
                         }
                         .padding(14)
@@ -44,10 +44,10 @@ struct LibraryScreen: View {
                         SymbolCover(symbol: "heart.fill", colors: SymbolCover.likes, size: 92, corner: 18)
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Мне нравится")
-                                .font(.system(size: 24, weight: .bold))
+                                .font(.scaled(size: 24, weight: .bold))
                                 .foregroundStyle(.white)
                             Text(plural(session.likedIds.count, "трек", "трека", "треков"))
-                                .font(.system(size: 15))
+                                .font(.scaled(size: 15))
                                 .foregroundStyle(Theme.dim)
                         }
                         Spacer(minLength: 0)
@@ -74,7 +74,7 @@ struct LibraryScreen: View {
 
                 HStack {
                     Text("Плейлисты")
-                        .font(.system(size: 22, weight: .bold))
+                        .font(.scaled(size: 22, weight: .bold))
                         .foregroundStyle(.white)
                     Spacer()
                     Button {
@@ -82,9 +82,10 @@ struct LibraryScreen: View {
                     } label: {
                         HStack(spacing: 4) {
                             Image(systemName: "arrow.up.arrow.down")
+                                .accessibilityLabel("Сортировка")
                                 .font(.system(size: 12, weight: .semibold))
                             Text(byName ? "По названию" : "Недавние")
-                                .font(.system(size: 14, weight: .medium))
+                                .font(.scaled(size: 14, weight: .medium))
                         }
                         .foregroundStyle(Theme.dim)
                         .padding(.trailing, 6)
@@ -96,6 +97,7 @@ struct LibraryScreen: View {
                         creating = true
                     } label: {
                         Image(systemName: "plus")
+                            .accessibilityLabel("Создать")
                             .font(.system(size: 17, weight: .semibold))
                             .foregroundStyle(.white)
                             .frame(width: 36, height: 36)
@@ -109,7 +111,7 @@ struct LibraryScreen: View {
 
                 if session.playlists.isEmpty && session.likedPlaylists.isEmpty {
                     Text("Создайте плейлист или добавьте чужой в коллекцию — он появится здесь.")
-                        .font(.system(size: 15))
+                        .font(.scaled(size: 15))
                         .foregroundStyle(Theme.dim)
                         .padding(.horizontal, 16)
                         .padding(.top, 4)
@@ -137,6 +139,7 @@ struct LibraryScreen: View {
                     navigate(.settings)
                 } label: {
                     Image(systemName: "gearshape")
+                        .accessibilityLabel("Настройки")
                 }
             }
         }
@@ -164,11 +167,11 @@ struct LibraryScreen: View {
                 CoverView(uri: playlist.cover, size: 56, corner: 10)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(playlist.title)
-                        .font(.system(size: 16, weight: .medium))
+                        .font(.scaled(size: 16, weight: .medium))
                         .foregroundStyle(.white)
                         .lineLimit(1)
                     Text(own ? plural(playlist.count, "трек", "трека", "треков") : (playlist.count > 0 ? "Добавлен · \(plural(playlist.count, "трек", "трека", "треков"))" : "Добавлен в коллекцию"))
-                        .font(.system(size: 14))
+                        .font(.scaled(size: 14))
                         .foregroundStyle(Theme.dim)
                         .lineLimit(1)
                 }
@@ -197,12 +200,12 @@ struct LibraryScreen: View {
                     .frame(width: 44, height: 44)
                     .background(Theme.raised, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
                 Text(title)
-                    .font(.system(size: 17, weight: .medium))
+                    .font(.scaled(size: 17, weight: .medium))
                     .foregroundStyle(.white)
                 Spacer(minLength: 0)
                 if !value.isEmpty {
                     Text(value)
-                        .font(.system(size: 15))
+                        .font(.scaled(size: 15))
                         .foregroundStyle(Theme.dim)
                 }
                 Image(systemName: "chevron.right")
@@ -243,12 +246,13 @@ struct PlaylistPicker: View {
                 } label: {
                     HStack(spacing: 12) {
                         Image(systemName: "plus")
+                            .accessibilityLabel("Создать")
                             .font(.system(size: 20, weight: .semibold))
                             .foregroundStyle(.black)
                             .frame(width: 50, height: 50)
                             .background(Theme.accent, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                         Text("Новый плейлист")
-                            .font(.system(size: 16, weight: .medium))
+                            .font(.scaled(size: 16, weight: .medium))
                             .foregroundStyle(.white)
                         Spacer(minLength: 0)
                     }
@@ -266,11 +270,11 @@ struct PlaylistPicker: View {
                             CoverView(uri: playlist.cover, size: 50, corner: 10)
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(playlist.title)
-                                    .font(.system(size: 16, weight: .medium))
+                                    .font(.scaled(size: 16, weight: .medium))
                                     .foregroundStyle(.white)
                                     .lineLimit(1)
                                 Text(plural(playlist.count, "трек", "трека", "треков"))
-                                    .font(.system(size: 14))
+                                    .font(.scaled(size: 14))
                                     .foregroundStyle(Theme.dim)
                             }
                             Spacer(minLength: 0)
@@ -374,6 +378,7 @@ struct CardGridScreen: View {
                     }
                 } label: {
                     Image(systemName: "arrow.up.arrow.down")
+                        .accessibilityLabel("Сортировка")
                 }
             }
         }
@@ -463,23 +468,23 @@ struct SettingsScreen: View {
             Section {
                 HStack(spacing: 14) {
                     Text(String((session.profile?.name ?? "?").prefix(1)).uppercased())
-                        .font(.system(size: 20, weight: .bold))
+                        .font(.scaled(size: 20, weight: .bold))
                         .foregroundStyle(.black)
                         .frame(width: 46, height: 46)
                         .background(Theme.accent, in: Circle())
                     VStack(alignment: .leading, spacing: 3) {
                         Text(session.profile?.name ?? "Аккаунт")
-                            .font(.system(size: 17, weight: .semibold))
+                            .font(.scaled(size: 17, weight: .semibold))
                         if let login = session.profile?.login, !login.isEmpty {
                             Text(login)
-                                .font(.system(size: 14))
+                                .font(.scaled(size: 14))
                                 .foregroundStyle(Theme.dim)
                         }
                     }
                     Spacer(minLength: 8)
                     if let profile = session.profile {
                         Text(profile.plus ? "Плюс активен" : "Без Плюса")
-                            .font(.system(size: 13, weight: .semibold))
+                            .font(.scaled(size: 13, weight: .semibold))
                             .foregroundStyle(profile.plus ? Color.black : Color.white)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 5)
@@ -493,6 +498,7 @@ struct SettingsScreen: View {
                     } label: {
                         HStack(spacing: 14) {
                             Image(systemName: "person.crop.circle")
+                                .accessibilityLabel("Аккаунт")
                                 .font(.system(size: 26))
                                 .foregroundStyle(Theme.dim)
                                 .frame(width: 46)
@@ -500,7 +506,7 @@ struct SettingsScreen: View {
                                 Text(account.name.isEmpty ? account.login : account.name)
                                     .foregroundStyle(.white)
                                 Text("Переключиться")
-                                    .font(.system(size: 13))
+                                    .font(.scaled(size: 13))
                                     .foregroundStyle(Theme.dim)
                             }
                             Spacer()
@@ -645,7 +651,7 @@ struct LogScreen: View {
     var body: some View {
         ScrollView {
             Text(text.isEmpty ? "Ошибок не было." : text)
-                .font(.system(size: 12, design: .monospaced))
+                .font(.scaled(size: 12, design: .monospaced))
                 .foregroundStyle(text.isEmpty ? Theme.dim : Color.white)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(16)

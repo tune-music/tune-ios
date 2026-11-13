@@ -163,6 +163,7 @@ struct RootView: View {
     @ObservedObject private var playerWindow = PlayerWindow.shared
     @State private var picking: Track? = Demo.screen == "picker" ? Demo.data.tracks.first : nil
     @Environment(\.scenePhase) private var phase
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         Group {
@@ -170,7 +171,8 @@ struct RootView: View {
                 LoginScreen()
             } else {
                 // Другой аккаунт — другие страницы: всё строится заново.
-                tabs.id(session.epoch)
+                // И другой размер системного шрифта: текст пересчитывается.
+                tabs.id("\(session.epoch)-\(typeSize)")
             }
         }
         .onChange(of: phase) { now in

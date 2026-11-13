@@ -15,7 +15,7 @@ struct LoginScreen: View {
                 .font(.system(size: 64, weight: .semibold))
                 .foregroundStyle(Theme.accent)
             Text("Tune")
-                .font(.system(size: 40, weight: .bold))
+                .font(.scaled(size: 40, weight: .bold))
             Text("Яндекс Музыка без цензуры\nи с офлайн-библиотекой")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)

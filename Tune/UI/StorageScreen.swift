@@ -35,10 +35,10 @@ struct StorageScreen: View {
             } else {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(Storage.sizeText(downloads.totalBytes))
-                        .font(.system(size: 30, weight: .bold))
+                        .font(.scaled(size: 30, weight: .bold))
                         .foregroundStyle(.white)
                     Text("\(plural(downloads.entries.count, "трек", "трека", "треков")) · \(plural(list.count, "исполнитель", "исполнителя", "исполнителей"))")
-                        .font(.system(size: 14))
+                        .font(.scaled(size: 14))
                         .foregroundStyle(Theme.dim)
                 }
                 .listRowBackground(Color.clear)
@@ -49,16 +49,16 @@ struct StorageScreen: View {
                         CoverView(uri: bucket.cover, size: 46, corner: 8)
                         VStack(alignment: .leading, spacing: 3) {
                             Text(bucket.name)
-                                .font(.system(size: 16, weight: .medium))
+                                .font(.scaled(size: 16, weight: .medium))
                                 .foregroundStyle(.white)
                                 .lineLimit(1)
                             Text(plural(bucket.ids.count, "трек", "трека", "треков"))
-                                .font(.system(size: 14))
+                                .font(.scaled(size: 14))
                                 .foregroundStyle(Theme.dim)
                         }
                         Spacer(minLength: 8)
                         Text(Storage.sizeText(bucket.bytes))
-                            .font(.system(size: 15).monospacedDigit())
+                            .font(.scaled(size: 15).monospacedDigit())
                             .foregroundStyle(Theme.dim)
                     }
                     .listRowBackground(Color.clear)

@@ -188,6 +188,7 @@ private struct PlayerBody: View {
                 close()
             } label: {
                 Image(systemName: "chevron.down")
+                    .accessibilityLabel("Свернуть плеер")
                     .font(.system(size: 18, weight: .semibold))
                     .frame(width: 44, height: 44)
                     .glass(in: Circle(), interactive: true)
@@ -197,11 +198,11 @@ private struct PlayerBody: View {
             Spacer()
             VStack(spacing: 2) {
                 Text(sourceLabel)
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.scaled(size: 11, weight: .semibold))
                     .kerning(1)
                     .foregroundStyle(.white.opacity(0.6))
                 Text(player.contextName)
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.scaled(size: 14, weight: .semibold))
                     .lineLimit(1)
             }
             Spacer()
@@ -211,6 +212,7 @@ private struct PlayerBody: View {
                 actions = true
             } label: {
                 Image(systemName: "ellipsis")
+                    .accessibilityLabel("Ещё")
                     .font(.system(size: 18, weight: .semibold))
                     .frame(width: 44, height: 44)
                     .glass(in: Circle(), interactive: true)
@@ -232,7 +234,7 @@ private struct PlayerBody: View {
                         router.push(.album(album))
                     } label: {
                         Text(track.fullTitle)
-                            .font(.system(size: 22, weight: .bold))
+                            .font(.scaled(size: 22, weight: .bold))
                             .foregroundStyle(.white)
                             .lineLimit(1)
                             .contentShape(Rectangle())
@@ -251,7 +253,7 @@ private struct PlayerBody: View {
                     router.push(.artist(artist.id, artist.name))
                 } label: {
                     Text(track.artists)
-                        .font(.system(size: 17))
+                        .font(.scaled(size: 17))
                         .foregroundStyle(.white.opacity(0.65))
                         .lineLimit(1)
                         .contentShape(Rectangle())
@@ -286,6 +288,7 @@ private struct PlayerBody: View {
         HStack {
             Button(action: player.toggleShuffle) {
                 Image(systemName: "shuffle")
+                    .accessibilityLabel("Перемешать")
                     .font(.system(size: 20, weight: .semibold))
                     .foregroundStyle(player.shuffle ? Theme.accent : Color.white.opacity(0.6))
                     .frame(width: 44, height: 44)
@@ -374,6 +377,7 @@ private struct PlayerBody: View {
                     downloads.download(track)
                 } label: {
                     Image(systemName: "arrow.down.circle")
+                        .accessibilityLabel("Скачать")
                         .frame(width: 48, height: 44)
                         .contentShape(Rectangle())
                 }
@@ -383,6 +387,7 @@ private struct PlayerBody: View {
                 queue = true
             } label: {
                 Image(systemName: "list.bullet")
+                    .accessibilityLabel("Очередь")
                     .frame(width: 48, height: 44)
                     .contentShape(Rectangle())
             }
@@ -483,11 +488,11 @@ private struct TrackActionsSheet: View {
                 CoverView(uri: track.cover, size: 56, corner: 10)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(track.fullTitle)
-                        .font(.system(size: 17, weight: .semibold))
+                        .font(.scaled(size: 17, weight: .semibold))
                         .foregroundStyle(.white)
                         .lineLimit(1)
                     Text(track.artists)
-                        .font(.system(size: 14))
+                        .font(.scaled(size: 14))
                         .foregroundStyle(Theme.dim)
                         .lineLimit(1)
                 }
@@ -522,15 +527,15 @@ private struct SleepSheet: View {
         List {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Таймер сна")
-                    .font(.system(size: 20, weight: .bold))
+                    .font(.scaled(size: 20, weight: .bold))
                     .foregroundStyle(.white)
                 if let date = player.sleepAt {
                     Text("Музыка остановится в \(date.formatted(date: .omitted, time: .shortened))")
-                        .font(.system(size: 14))
+                        .font(.scaled(size: 14))
                         .foregroundStyle(Theme.accent)
                 } else if player.sleepAfterTrack {
                     Text("Музыка остановится после этого трека")
-                        .font(.system(size: 14))
+                        .font(.scaled(size: 14))
                         .foregroundStyle(Theme.accent)
                 }
             }
@@ -687,7 +692,7 @@ private struct QueueSheet: View {
                             if index == player.index + 1 {
                                 // С этого места начинается то, что ещё не играло.
                                 Text(player.isWave ? "Далее в волне" : "Далее")
-                                    .font(.system(size: 13, weight: .semibold))
+                                    .font(.scaled(size: 13, weight: .semibold))
                                     .kerning(0.6)
                                     .textCase(.uppercase)
                                     .foregroundStyle(Theme.dim)
@@ -697,11 +702,11 @@ private struct QueueSheet: View {
                                 CoverView(uri: track.cover, size: 46, corner: 8)
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(track.fullTitle)
-                                        .font(.system(size: 16, weight: .medium))
+                                        .font(.scaled(size: 16, weight: .medium))
                                         .foregroundStyle(index == player.index ? Theme.accent : Color.white)
                                         .lineLimit(1)
                                     Text(track.artists)
-                                        .font(.system(size: 14))
+                                        .font(.scaled(size: 14))
                                         .foregroundStyle(Theme.dim)
                                         .lineLimit(1)
                                 }
@@ -784,7 +789,7 @@ private struct LyricsPane: View {
                         Image(systemName: "text.quote")
                             .font(.system(size: 34))
                         Text("Текста нет")
-                            .font(.system(size: 18, weight: .semibold))
+                            .font(.scaled(size: 18, weight: .semibold))
                     }
                     .foregroundStyle(.white.opacity(0.6))
                 } else {
@@ -811,7 +816,7 @@ private struct LyricsPane: View {
                     ForEach(lines) { line in
                         let on = !timed || line.id == current
                         Text(line.text.isEmpty ? "♪" : line.text)
-                            .font(.system(size: 24, weight: .bold))
+                            .font(.scaled(size: 24, weight: .bold))
                             .multilineTextAlignment(.center)
                             .foregroundStyle(Color.white.opacity(on ? 1 : 0.32))
                             .scaleEffect(on ? 1 : 0.9)

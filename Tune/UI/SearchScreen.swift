@@ -112,6 +112,7 @@ struct SearchScreen: View {
         HStack(spacing: 12) {
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass")
+                    .accessibilityLabel("Поиск")
                     .font(.system(size: 17, weight: .medium))
                     .foregroundStyle(Theme.dim)
                 TextField("Трек, альбом, исполнитель", text: $query)
@@ -120,13 +121,14 @@ struct SearchScreen: View {
                     .textInputAutocapitalization(.never)
                     .submitLabel(.search)
                     .onSubmit { remember() }
-                    .font(.system(size: 17))
+                    .font(.scaled(size: 17))
                     .foregroundStyle(.white)
                 if !query.isEmpty {
                     Button {
                         query = ""
                     } label: {
                         Image(systemName: "xmark.circle.fill")
+                            .accessibilityLabel("Очистить")
                             .foregroundStyle(Theme.dim)
                     }
                     .buttonStyle(.plain)
@@ -143,7 +145,7 @@ struct SearchScreen: View {
                     focused = false
                 } label: {
                     Text("Отмена")
-                        .font(.system(size: 16, weight: .medium))
+                        .font(.scaled(size: 16, weight: .medium))
                         .foregroundStyle(.white)
                 }
                 .buttonStyle(.plain)
@@ -179,9 +181,10 @@ struct SearchScreen: View {
                     } label: {
                         HStack(spacing: 6) {
                             Image(systemName: "magnifyingglass")
+                                .accessibilityLabel("Поиск")
                                 .font(.system(size: 12, weight: .semibold))
                             Text(item)
-                                .font(.system(size: 14, weight: .medium))
+                                .font(.scaled(size: 14, weight: .medium))
                                 .lineLimit(1)
                         }
                         .foregroundStyle(.white.opacity(0.85))
@@ -226,7 +229,7 @@ struct SearchScreen: View {
                         tab = item
                     } label: {
                         Text(item.title)
-                            .font(.system(size: 15, weight: .semibold))
+                            .font(.scaled(size: 15, weight: .semibold))
                             .foregroundStyle(on ? Color.black : Color.white)
                             .padding(.horizontal, 16)
                             .padding(.vertical, 9)
@@ -324,7 +327,7 @@ struct SearchScreen: View {
     @ViewBuilder private var history: some View {
         HStack {
             Text("Вы искали")
-                .font(.system(size: 22, weight: .bold))
+                .font(.scaled(size: 22, weight: .bold))
                 .foregroundStyle(.white)
             Spacer()
             Button {
@@ -332,7 +335,7 @@ struct SearchScreen: View {
                 UserDefaults.standard.removeObject(forKey: "recentSearches")
             } label: {
                 Text("Очистить")
-                    .font(.system(size: 15, weight: .medium))
+                    .font(.scaled(size: 15, weight: .medium))
                     .foregroundStyle(Theme.dim)
             }
             .buttonStyle(.plain)
@@ -348,7 +351,7 @@ struct SearchScreen: View {
                     Image(systemName: "clock.arrow.circlepath")
                         .foregroundStyle(Theme.dim)
                     Text(text)
-                        .font(.system(size: 16))
+                        .font(.scaled(size: 16))
                         .foregroundStyle(.white)
                     Spacer(minLength: 0)
                     Image(systemName: "arrow.up.left")
@@ -377,7 +380,7 @@ struct SearchScreen: View {
     private func title(_ text: String, more: SearchTab? = nil) -> some View {
         HStack {
             Text(text)
-                .font(.system(size: 22, weight: .bold))
+                .font(.scaled(size: 22, weight: .bold))
                 .foregroundStyle(.white)
             Spacer()
             if let more {
@@ -386,7 +389,7 @@ struct SearchScreen: View {
                     tab = more
                 } label: {
                     Text("Все")
-                        .font(.system(size: 15, weight: .medium))
+                        .font(.scaled(size: 15, weight: .medium))
                         .foregroundStyle(Theme.dim)
                 }
                 .buttonStyle(.plain)
@@ -450,11 +453,11 @@ private struct BestCard: View {
                 CoverView(uri: item.cover, size: 76, corner: 12, round: item.round)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(item.title)
-                        .font(.system(size: 19, weight: .bold))
+                        .font(.scaled(size: 19, weight: .bold))
                         .foregroundStyle(.white)
                         .lineLimit(2)
                     Text(item.kind)
-                        .font(.system(size: 14))
+                        .font(.scaled(size: 14))
                         .foregroundStyle(Theme.dim)
                         .lineLimit(1)
                 }

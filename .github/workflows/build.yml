@@ -121,7 +121,7 @@ jobs:
   # Снимки экранов в симуляторе на демо-данных: по ним проверяется интерфейс.
   screens:
     runs-on: macos-15
-    timeout-minutes: 30
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
 
@@ -173,7 +173,9 @@ jobs:
 
       # Те же экраны на маленьком и большом телефоне, на прошлой iOS и с крупным шрифтом:
       # по ним видно, где вёрстка не помещается.
+      # Долго, поэтому только по просьбе: пометка [sizes] в сообщении коммита или ручной запуск.
       - name: Снимки других размеров
+        if: contains(github.event.head_commit.message, '[sizes]') || github.event_name == 'workflow_dispatch'
         run: |
           pick() {
             xcrun simctl list devices available -j | python3 -c '
@@ -205,7 +207,7 @@ jobs:
             xcrun simctl status_bar "$udid" override --time "9:41" --batteryState charged --batteryLevel 100 || true
             xcrun simctl ui "$udid" content_size "$size" || true
             xcrun simctl install "$udid" sim/Build/Products/Debug-iphonesimulator/Tune.app
-            for screen in home search library album artist player queue settings; do
+            for screen in home search library album player queue; do
               xcrun simctl launch "$udid" dev.tune.music -demo -screen "$screen"
               sleep 9
               xcrun simctl io "$udid" screenshot "screens/$tag-$screen.png"

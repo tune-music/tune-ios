@@ -37,11 +37,11 @@ struct ChangesScreen: View {
                 ForEach(Change.all) { change in
                     VStack(alignment: .leading, spacing: 10) {
                         Text(change.day.uppercased())
-                            .font(.system(size: 12, weight: .semibold))
+                            .font(.scaled(size: 12, weight: .semibold))
                             .kerning(0.6)
                             .foregroundStyle(Theme.dim)
                         Text(change.title)
-                            .font(.system(size: 20, weight: .bold))
+                            .font(.scaled(size: 20, weight: .bold))
                             .foregroundStyle(.white)
                         VStack(alignment: .leading, spacing: 8) {
                             ForEach(change.items, id: \.self) { item in
@@ -51,7 +51,7 @@ struct ChangesScreen: View {
                                         .frame(width: 5, height: 5)
                                         .offset(y: -3)
                                     Text(item)
-                                        .font(.system(size: 15))
+                                        .font(.scaled(size: 15))
                                         .foregroundStyle(.white.opacity(0.85))
                                         .fixedSize(horizontal: false, vertical: true)
                                 }

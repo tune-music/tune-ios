@@ -332,7 +332,7 @@ struct TrackListScreen: View {
                 ForEach(Array(tracks.enumerated()), id: \.offset) { index, track in
                     if kind == .history, plainOrder, let day = model.days[track.id] {
                         Text(day)
-                            .font(.system(size: 20, weight: .bold))
+                            .font(.scaled(size: 20, weight: .bold))
                             .foregroundStyle(.white)
                             .listRowBackground(Color.clear)
                             .listRowSeparator(.hidden)
@@ -340,7 +340,7 @@ struct TrackListScreen: View {
                     }
                     if let disk = diskStart(index) {
                         Text("Диск \(disk)")
-                            .font(.system(size: 15, weight: .semibold))
+                            .font(.scaled(size: 15, weight: .semibold))
                             .foregroundStyle(Theme.dim)
                             .listRowBackground(Color.clear)
                             .listRowSeparator(.hidden)
@@ -437,6 +437,7 @@ struct TrackListScreen: View {
                     focused = true
                 } label: {
                     Image(systemName: "magnifyingglass")
+                        .accessibilityLabel("Поиск")
                 }
             }
             toolbarGap()
@@ -448,6 +449,7 @@ struct TrackListScreen: View {
                         menu
                     } label: {
                         Image(systemName: "ellipsis")
+                            .accessibilityLabel("Ещё")
                     }
                 }
             }
@@ -495,9 +497,9 @@ struct TrackListScreen: View {
             } label: {
                 VStack(spacing: 3) {
                     Text("\(list.count)")
-                        .font(.system(size: 17, weight: .bold))
+                        .font(.scaled(size: 17, weight: .bold))
                     Text(selected.count == shown.count ? "Снять" : "Все")
-                        .font(.system(size: 11, weight: .medium))
+                        .font(.scaled(size: 11, weight: .medium))
                 }
                 .frame(maxWidth: .infinity)
                 .contentShape(Rectangle())
@@ -544,7 +546,7 @@ struct TrackListScreen: View {
                 Image(systemName: symbol ?? icon)
                     .font(.system(size: 19))
                 Text(title)
-                    .font(.system(size: 11, weight: .medium))
+                    .font(.scaled(size: 11, weight: .medium))
             }
             .frame(maxWidth: .infinity)
             .contentShape(Rectangle())
@@ -649,6 +651,7 @@ struct TrackListScreen: View {
         HStack(spacing: 10) {
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass")
+                    .accessibilityLabel("Поиск")
                     .foregroundStyle(Theme.dim)
                 TextField("Поиск в списке", text: $filter)
                     .focused($focused)
@@ -660,6 +663,7 @@ struct TrackListScreen: View {
                         filter = ""
                     } label: {
                         Image(systemName: "xmark.circle.fill")
+                            .accessibilityLabel("Очистить")
                             .foregroundStyle(Theme.dim)
                     }
                     .buttonStyle(.plain)
@@ -674,7 +678,7 @@ struct TrackListScreen: View {
                 withAnimation(.easeInOut(duration: 0.2)) { searching = false }
             } label: {
                 Text("Отмена")
-                    .font(.system(size: 16, weight: .medium))
+                    .font(.scaled(size: 16, weight: .medium))
                     .foregroundStyle(.white)
             }
             .buttonStyle(.plain)
@@ -861,11 +865,11 @@ struct TrackListScreen: View {
                 .shadow(color: .black.opacity(0.45), radius: 22, y: 12)
                 .padding(.bottom, 12)
             Text(kindName.uppercased())
-                .font(.system(size: 11, weight: .semibold))
+                .font(.scaled(size: 11, weight: .semibold))
                 .kerning(1)
                 .foregroundStyle(.white.opacity(0.6))
             Text(title)
-                .font(.system(size: 26, weight: .bold))
+                .font(.scaled(size: 26, weight: .bold))
                 .foregroundStyle(.white)
                 .multilineTextAlignment(.center)
                 .lineLimit(3)
@@ -874,7 +878,7 @@ struct TrackListScreen: View {
                     if let artist = model.album?.artist, !artist.id.isEmpty { navigate(.artist(artist.id, artist.name)) }
                 } label: {
                     Text(model.subtitle)
-                        .font(.system(size: 15, weight: .medium))
+                        .font(.scaled(size: 15, weight: .medium))
                         .foregroundStyle(.white.opacity(0.75))
                         .multilineTextAlignment(.center)
                 }
@@ -882,13 +886,13 @@ struct TrackListScreen: View {
             }
             if count > 0 {
                 Text(summary(count))
-                    .font(.system(size: 13))
+                    .font(.scaled(size: 13))
                     .foregroundStyle(.white.opacity(0.55))
                     .multilineTextAlignment(.center)
             }
             if let about = model.info?.about, !about.isEmpty {
                 Text(about)
-                    .font(.system(size: 14))
+                    .font(.scaled(size: 14))
                     .foregroundStyle(.white.opacity(0.7))
                     .multilineTextAlignment(.center)
                     .lineLimit(3)
@@ -934,10 +938,10 @@ private struct DownloadsPanel: View {
                 HStack(spacing: 10) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(status)
-                            .font(.system(size: 17, weight: .semibold))
+                            .font(.scaled(size: 17, weight: .semibold))
                             .foregroundStyle(.white)
                         Text("В очереди: \(plural(downloads.queue.count, "трек", "трека", "треков"))")
-                            .font(.system(size: 13))
+                            .font(.scaled(size: 13))
                             .foregroundStyle(Theme.dim)
                     }
                     Spacer(minLength: 0)
@@ -954,7 +958,7 @@ private struct DownloadsPanel: View {
                 }
                 if downloads.queue.count > 4 {
                     Text("и ещё \(downloads.queue.count - 4)")
-                        .font(.system(size: 13))
+                        .font(.scaled(size: 13))
                         .foregroundStyle(Theme.dim)
                         .padding(.top, 6)
                 }
@@ -972,10 +976,10 @@ private struct DownloadsPanel: View {
                         .foregroundStyle(Theme.accent)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Не удалось скачать: \(downloads.failed.count)")
-                            .font(.system(size: 15, weight: .medium))
+                            .font(.scaled(size: 15, weight: .medium))
                             .foregroundStyle(.white)
                         Text(downloads.failed.prefix(2).map(\.title).joined(separator: ", "))
-                            .font(.system(size: 13))
+                            .font(.scaled(size: 13))
                             .foregroundStyle(Theme.dim)
                             .lineLimit(1)
                     }
@@ -1015,11 +1019,11 @@ private struct DownloadsPanel: View {
             CoverView(uri: track.cover, size: 38, corner: 7)
             VStack(alignment: .leading, spacing: 1) {
                 Text(track.fullTitle)
-                    .font(.system(size: 15, weight: .medium))
+                    .font(.scaled(size: 15, weight: .medium))
                     .foregroundStyle(.white)
                     .lineLimit(1)
                 Text(track.artists)
-                    .font(.system(size: 13))
+                    .font(.scaled(size: 13))
                     .foregroundStyle(Theme.dim)
                     .lineLimit(1)
             }
@@ -1059,11 +1063,11 @@ private struct SelectRow: View {
                 CoverView(uri: track.cover, size: 50, corner: 8)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(track.fullTitle)
-                        .font(.system(size: 16, weight: .medium))
+                        .font(.scaled(size: 16, weight: .medium))
                         .foregroundStyle(.white)
                         .lineLimit(1)
                     Text(track.artists.isEmpty ? track.albumTitle : track.artists)
-                        .font(.system(size: 14))
+                        .font(.scaled(size: 14))
                         .foregroundStyle(Theme.dim)
                         .lineLimit(1)
                 }
@@ -1100,16 +1104,16 @@ struct ArtistScreen: View {
                         .shadow(color: .black.opacity(0.45), radius: 22, y: 12)
                         .padding(.bottom, 8)
                     Text("ИСПОЛНИТЕЛЬ")
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(.scaled(size: 11, weight: .semibold))
                         .kerning(1)
                         .foregroundStyle(.white.opacity(0.6))
                     Text(page.name)
-                        .font(.system(size: 30, weight: .bold))
+                        .font(.scaled(size: 30, weight: .bold))
                         .foregroundStyle(.white)
                         .multilineTextAlignment(.center)
                     if let listeners = page.listeners, listeners > 0 {
                         Text("\(shortCount(listeners)) слушателей за месяц")
-                            .font(.system(size: 14))
+                            .font(.scaled(size: 14))
                             .foregroundStyle(.white.opacity(0.6))
                     }
                     HStack(spacing: 14) {
@@ -1187,6 +1191,7 @@ struct ArtistScreen: View {
                 if let url = URL(string: "https://music.yandex.ru/artist/\(id)") {
                     ShareLink(item: url) {
                         Image(systemName: "square.and.arrow.up")
+                            .accessibilityLabel("Поделиться")
                     }
                 }
             }
@@ -1202,15 +1207,15 @@ struct ArtistScreen: View {
     private func about(_ text: String) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Об исполнителе")
-                .font(.system(size: 22, weight: .bold))
+                .font(.scaled(size: 22, weight: .bold))
                 .foregroundStyle(.white)
             Text(text)
-                .font(.system(size: 15))
+                .font(.scaled(size: 15))
                 .foregroundStyle(.white.opacity(0.75))
                 .lineLimit(expanded ? nil : 3)
             if !expanded {
                 Text("Читать дальше")
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.scaled(size: 15, weight: .semibold))
                     .foregroundStyle(Theme.accent)
             }
         }
@@ -1238,14 +1243,14 @@ struct ArtistScreen: View {
     private func heading(_ text: String, more: Route) -> some View {
         HStack {
             Text(text)
-                .font(.system(size: 22, weight: .bold))
+                .font(.scaled(size: 22, weight: .bold))
                 .foregroundStyle(.white)
             Spacer()
             Button {
                 navigate(more)
             } label: {
                 Text("Все")
-                    .font(.system(size: 15, weight: .medium))
+                    .font(.scaled(size: 15, weight: .medium))
                     .foregroundStyle(Theme.dim)
             }
             .buttonStyle(.plain)

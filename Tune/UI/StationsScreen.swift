@@ -43,7 +43,7 @@ struct StationsScreen: View {
                     ForEach(groups) { group in
                         VStack(alignment: .leading, spacing: 12) {
                             Text(group.title)
-                                .font(.system(size: 22, weight: .bold))
+                                .font(.scaled(size: 22, weight: .bold))
                                 .foregroundStyle(.white)
                             WaveGrid(waves: group.waves)
                         }
@@ -92,7 +92,7 @@ struct WaveGrid: View {
                                 .font(.system(size: 13, weight: .bold))
                         }
                         Text(wave.title)
-                            .font(.system(size: 15, weight: .semibold))
+                            .font(.scaled(size: 15, weight: .semibold))
                             .lineLimit(1)
                         Spacer(minLength: 0)
                     }

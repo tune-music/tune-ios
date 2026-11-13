@@ -135,7 +135,7 @@ struct StatsScreen: View {
                 .plain(top: 0, bottom: 18)
 
                 Text("Любимые треки")
-                    .font(.system(size: 22, weight: .bold))
+                    .font(.scaled(size: 22, weight: .bold))
                     .foregroundStyle(.white)
                     .plain(top: 0, bottom: 6)
                 ForEach(Array(data.tracks.enumerated()), id: \.element.id) { index, item in
@@ -145,7 +145,7 @@ struct StatsScreen: View {
                 }
 
                 Text("Любимые исполнители")
-                    .font(.system(size: 22, weight: .bold))
+                    .font(.scaled(size: 22, weight: .bold))
                     .foregroundStyle(.white)
                     .plain(top: 22, bottom: 10)
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -192,12 +192,12 @@ struct StatsScreen: View {
     private func tile(_ value: String, _ caption: String) -> some View {
         VStack(spacing: 4) {
             Text(value)
-                .font(.system(size: 22, weight: .bold))
+                .font(.scaled(size: 22, weight: .bold))
                 .foregroundStyle(.white)
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
             Text(caption)
-                .font(.system(size: 13))
+                .font(.scaled(size: 13))
                 .foregroundStyle(Theme.dim)
                 .lineLimit(1)
         }
