@@ -171,6 +171,55 @@ jobs:
             xcrun simctl terminate "$UDID" dev.tune.music || true
           done
 
+      # Те же экраны на маленьком и большом телефоне, на прошлой iOS и с крупным шрифтом:
+      # по ним видно, где вёрстка не помещается.
+      - name: Снимки других размеров
+        run: |
+          pick() {
+            xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          kind = sys.argv[1]
+          d = json.load(sys.stdin)["devices"]
+          ver = lambda r: [int(n) for n in r.split("iOS-")[-1].split("-")]
+          runs = sorted((r for r in d if "iOS-" in r), key=ver, reverse=True)
+          def find(test, where):
+              for r in where:
+                  for x in d[r]:
+                      if x["name"].startswith("iPhone") and test(x["name"]):
+                          return x["udid"]
+              return ""
+          if kind == "small":
+              print(find(lambda n: "SE" in n or "16e" in n or "mini" in n, runs))
+          elif kind == "large":
+              print(find(lambda n: "Pro Max" in n, runs))
+          else:
+              print(find(lambda n: True, [r for r in runs if ver(r)[0] < 26]))
+          ' "$1"
+          }
+          shoot() {
+            tag=$1; udid=$2; size=$3
+            if [ -z "$udid" ]; then echo "нет симулятора для $tag"; return 0; fi
+            xcrun simctl list devices available | grep "$udid" || true
+            xcrun simctl boot "$udid" || true
+            xcrun simctl bootstatus "$udid" -b
+            xcrun simctl status_bar "$udid" override --time "9:41" --batteryState charged --batteryLevel 100 || true
+            xcrun simctl ui "$udid" content_size "$size" || true
+            xcrun simctl install "$udid" sim/Build/Products/Debug-iphonesimulator/Tune.app
+            for screen in home search library album artist player queue settings; do
+              xcrun simctl launch "$udid" dev.tune.music -demo -screen "$screen"
+              sleep 9
+              xcrun simctl io "$udid" screenshot "screens/$tag-$screen.png"
+              xcrun simctl terminate "$udid" dev.tune.music || true
+            done
+            xcrun simctl ui "$udid" content_size large || true
+            xcrun simctl shutdown "$udid" || true
+          }
+          MAIN=$(xcrun simctl list devices booted -j | python3 -c "import json,sys; print(next(x['udid'] for r in json.load(sys.stdin)['devices'].values() for x in r))")
+          shoot text "$MAIN" extra-extra-extra-large
+          shoot small "$(pick small)" large
+          shoot big "$(pick large)" large
+          shoot old "$(pick old)" large
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
