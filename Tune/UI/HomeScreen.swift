@@ -60,14 +60,14 @@ struct HomeScreen: View {
                 }
                 quick
                     .id("quick")
-                ForEach(model.page.blocks) { block in
+                ForEach(Demo.screen == "skeleton" ? [] : model.page.blocks) { block in
                     Shelf(block.title, more: block.items.count > 3 ? { navigate(.block(block)) } : nil) {
                         ForEach(block.items) { item in
                             HomeCard(item: item)
                         }
                     }
                 }
-                if model.loading && model.page.blocks.isEmpty {
+                if (model.loading && model.page.blocks.isEmpty) || Demo.screen == "skeleton" {
                     HomeSkeleton()
                 }
             }
@@ -272,8 +272,9 @@ private struct HomeSkeleton: View {
             }
         }
         .padding(.horizontal, 16)
-        // Заглушка шире экрана: без этой рамки она растягивала всю страницу вместе с плитками.
-        .frame(maxWidth: .infinity, alignment: .leading)
+        // Заглушка шире экрана. Рамка с нулевой нижней границей не даёт ей растянуть всю
+        // страницу вместе с плитками: без minWidth рамка подстраивалась под содержимое.
+        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
         .clipped()
         .opacity(dim ? 0.45 : 1)
         .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: dim)
