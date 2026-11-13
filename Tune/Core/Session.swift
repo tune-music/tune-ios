@@ -384,7 +384,7 @@ final class Router: ObservableObject {
         guard Demo.on else { return }
         let data = Demo.data
         switch Demo.screen {
-        case "search": tab = 1
+        case "search", "find": tab = 1
         case "library": tab = 2
         case "likes", "filter": tab = 2; paths[2] = [.likes]
         case "history": tab = 2; paths[2] = [.history]

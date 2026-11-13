@@ -27,7 +27,8 @@ struct StationsScreen: View {
             if groups.isEmpty {
                 Group {
                     if loading {
-                        Spinner()
+                        TilesSkeleton(height: 48, count: 12)
+                            .padding(.top, -60)
                     } else if failed {
                         Placeholder(icon: "wifi.slash", title: "Не удалось загрузить волны") {
                             Task { await load() }

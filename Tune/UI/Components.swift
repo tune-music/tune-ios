@@ -759,6 +759,29 @@ struct RowsSkeleton: View {
     }
 }
 
+/// Заглушка сетки в два столбца: карточки альбомов или плитки волн.
+struct TilesSkeleton: View {
+    var height: CGFloat = 190
+    var count = 6
+    @State private var dim = false
+
+    var body: some View {
+        let columns = [GridItem(.flexible(), spacing: 14), GridItem(.flexible(), spacing: 14)]
+        LazyVGrid(columns: columns, spacing: 14) {
+            ForEach(0..<count, id: \.self) { _ in
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Theme.surface)
+                    .frame(height: height)
+            }
+        }
+        .padding(.horizontal, 16)
+        .opacity(dim ? 0.45 : 1)
+        .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: dim)
+        .onAppear { dim = true }
+        .accessibilityHidden(true)
+    }
+}
+
 /// Плитка вместо обложки у «Мне нравится», «Скачанного» и «Истории».
 struct SymbolCover: View {
     let symbol: String
@@ -824,21 +847,30 @@ struct PlayButton: View {
     }
 }
 
-/// Короткое сообщение сверху экрана.
+/// Короткое сообщение. На страницах оно всплывает снизу, над мини-плеером: наверху
+/// оно закрывало кнопки навигации. В плеере — под его шапкой.
 struct ToastView: View {
+    var bottom = false
+
     @EnvironmentObject private var session: Session
+    @EnvironmentObject private var player: Player
 
     var body: some View {
+        // Снимок для проверки места: в демо-режиме сообщение не пропадает.
+        let text = session.toast ?? (Demo.screen == "toast" ? "Добавлено в плейлист «В дорогу»" : nil)
         ZStack {
-            if let text = session.toast {
+            if let text {
                 Text(text)
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(.white)
+                    .multilineTextAlignment(.center)
                     .padding(.horizontal, 18)
                     .padding(.vertical, 11)
                     .glass(in: Capsule())
-                    .padding(.top, 6)
-                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .padding(.horizontal, 24)
+                    .padding(.top, bottom ? 0 : 58)
+                    .padding(.bottom, bottom ? (player.current == nil ? 64 : 132) : 0)
+                    .transition(.move(edge: bottom ? .bottom : .top).combined(with: .opacity))
             }
         }
         .animation(.spring(response: 0.35, dampingFraction: 0.8), value: session.toast)

@@ -205,8 +205,8 @@ struct RootView: View {
         .environmentObject(router)
         .environment(\.openPlayer, { PlayerWindow.shared.show() })
         .environment(\.pickPlaylist, { picking = $0 })
-        .overlay(alignment: .top) {
-            ToastView()
+        .overlay(alignment: .bottom) {
+            ToastView(bottom: true)
         }
         .sheet(item: $picking) { track in
             PlaylistPicker(track: track)

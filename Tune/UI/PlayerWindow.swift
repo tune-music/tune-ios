@@ -28,6 +28,8 @@ final class PlayerWindow: ObservableObject {
 
     func show(animated: Bool = true) {
         guard window == nil, Player.shared.current != nil else { return }
+        // Клавиатура поиска оставалась поверх плеера.
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
         let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
         guard let scene = scenes.first(where: { $0.activationState == .foregroundActive }) ?? scenes.first else {
             Log.shared.add("плеер: нет сцены для окна")

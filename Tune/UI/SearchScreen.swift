@@ -42,6 +42,7 @@ struct SearchScreen: View {
     /// Волны по жанрам: показаны, пока в поиске ничего не набрано.
     @State private var genres: [WaveCard] = []
     @State private var recent = UserDefaults.standard.stringArray(forKey: "recentSearches") ?? []
+    @FocusState private var focused: Bool
 
     private var text: String { query.trimmingCharacters(in: .whitespaces) }
 
@@ -69,7 +70,7 @@ struct SearchScreen: View {
                     Placeholder(icon: "wifi.slash", title: "Не удалось выполнить поиск")
                 } else if result.isEmpty {
                     if loading {
-                        Spinner()
+                        RowsSkeleton(count: 8)
                     } else {
                         Placeholder(icon: "magnifyingglass", title: "Ничего не найдено")
                     }
@@ -87,11 +88,9 @@ struct SearchScreen: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .background(Theme.background)
-        .navigationTitle("Поиск")
-        .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Трек, альбом, исполнитель")
-        .autocorrectionDisabled()
+        .safeAreaInset(edge: .top, spacing: 0) { field }
+        .toolbar(.hidden, for: .navigationBar)
         .scrollDismissesKeyboard(.immediately)
-        .onSubmit(of: .search) { remember() }
         .task(id: query + "|" + tab.rawValue) { await search() }
         .task(id: query) { await suggest() }
         .task {
@@ -105,6 +104,66 @@ struct SearchScreen: View {
             Task {
                 if let route = await Links.route(for: url) { navigate(route) }
             }
+        }
+    }
+
+    /// Строка поиска: всегда стеклянная, список растворяется под ней.
+    private var field: some View {
+        HStack(spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 17, weight: .medium))
+                    .foregroundStyle(Theme.dim)
+                TextField("Трек, альбом, исполнитель", text: $query)
+                    .focused($focused)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .submitLabel(.search)
+                    .onSubmit { remember() }
+                    .font(.system(size: 17))
+                    .foregroundStyle(.white)
+                if !query.isEmpty {
+                    Button {
+                        query = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(Theme.dim)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 14)
+            .frame(height: 46)
+            .glass(in: Capsule())
+            .contentShape(Capsule())
+            .onTapGesture { focused = true }
+            if focused || !query.isEmpty {
+                Button {
+                    query = ""
+                    focused = false
+                } label: {
+                    Text("Отмена")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundStyle(.white)
+                }
+                .buttonStyle(.plain)
+                .transition(.move(edge: .trailing).combined(with: .opacity))
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: focused || !query.isEmpty)
+        .padding(.horizontal, 16)
+        .padding(.top, 6)
+        .padding(.bottom, 14)
+        .background {
+            LinearGradient(
+                stops: [
+                    .init(color: Theme.background, location: 0),
+                    .init(color: Theme.background.opacity(0.92), location: 0.7),
+                    .init(color: Theme.background.opacity(0), location: 1),
+                ],
+                startPoint: .top, endPoint: .bottom
+            )
+            .ignoresSafeArea(edges: .top)
         }
     }
 

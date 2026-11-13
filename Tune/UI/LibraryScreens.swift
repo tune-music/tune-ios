@@ -354,7 +354,8 @@ struct CardGridScreen: View {
                     Task { await load() }
                 }
             } else {
-                Spinner()
+                TilesSkeleton(height: 170)
+                    .padding(.top, 16)
             }
         }
         .background(Theme.background)
