@@ -321,10 +321,24 @@ struct CardGridScreen: View {
     @EnvironmentObject private var session: Session
     @State private var cards: [Card]?
     @State private var error: String?
+    /// 0 — как добавляли, 1 — по названию, 2 — по исполнителю.
+    @AppStorage("albumSort") private var albumSort = 0
+    @AppStorage("artistSort") private var artistSort = 0
+
+    private var order: Int { kind == .albums ? albumSort : artistSort }
+
+    private var sorted: [Card]? {
+        guard let cards else { return nil }
+        switch order {
+        case 1: return cards.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        case 2: return cards.sorted { $0.subtitle.localizedCaseInsensitiveCompare($1.subtitle) == .orderedAscending }
+        default: return cards
+        }
+    }
 
     var body: some View {
         ScrollView {
-            if let cards {
+            if let cards = sorted {
                 if cards.isEmpty {
                     Placeholder(icon: kind == .albums ? "square.stack" : "music.mic", title: "Здесь пока пусто", text: kind == .albums ? "Нажмите на сердечко на странице альбома, чтобы добавить его сюда." : "Нажмите на сердечко на странице исполнителя, чтобы добавить его сюда.")
                 } else {
@@ -346,6 +360,21 @@ struct CardGridScreen: View {
         .background(Theme.background)
         .navigationTitle(kind == .albums ? "Альбомы" : "Исполнители")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Menu {
+                    Picker("Сортировка", selection: kind == .albums ? $albumSort : $artistSort) {
+                        Text("Недавно добавленные").tag(0)
+                        Text(kind == .albums ? "По названию" : "По имени").tag(1)
+                        if kind == .albums {
+                            Text("По исполнителю").tag(2)
+                        }
+                    }
+                } label: {
+                    Image(systemName: "arrow.up.arrow.down")
+                }
+            }
+        }
         .task { if cards == nil { await load() } }
     }
 

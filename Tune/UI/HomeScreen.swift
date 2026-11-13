@@ -232,6 +232,9 @@ private struct HomeSkeleton: View {
             }
         }
         .padding(.horizontal, 16)
+        // Заглушка шире экрана: без этой рамки она растягивала всю страницу вместе с плитками.
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .clipped()
         .opacity(dim ? 0.45 : 1)
         .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: dim)
         .onAppear { dim = true }

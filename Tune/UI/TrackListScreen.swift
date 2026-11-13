@@ -39,6 +39,8 @@ final class TrackListModel: ObservableObject {
     @Published var more: [Card] = []
     /// Автор и описание плейлиста.
     @Published var info: PlaylistPage?
+    /// История: подпись дня у первого трека, который слушали в этот день.
+    @Published var days: [String: String] = [:]
     private var loaded = false
 
     /// Сохранённая копия списка: с неё страница открывается мгновенно и без сети.
@@ -84,7 +86,9 @@ final class TrackListModel: ObservableObject {
             case .likes:
                 try await loadLikes()
             case .history:
-                tracks = try await API.shared.history()
+                let page = try await API.shared.history()
+                tracks = page.tracks
+                days = page.days
             case .disliked:
                 if Session.shared.profile == nil { await Session.shared.refresh() }
                 var found: [Track] = []
@@ -311,15 +315,8 @@ struct TrackListScreen: View {
         ScrollViewReader { proxy in
             List {
                 header(count: all.count)
-                    .background {
-                        // Шапка почти ушла под панель навигации: пора показать название в панели.
-                        GeometryReader { geometry in
-                            let hidden = geometry.frame(in: .global).maxY < 150
-                            Color.clear
-                                .onAppear { compact = hidden }
-                                .onChange(of: hidden) { compact = $0 }
-                        }
-                    }
+                    // Шапка почти ушла под панель навигации: пора показать название в панели.
+                    .background { HeaderWatch(hidden: $compact) }
                     .onDisappear { compact = true }
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
@@ -333,6 +330,14 @@ struct TrackListScreen: View {
                     empty
                 }
                 ForEach(Array(tracks.enumerated()), id: \.offset) { index, track in
+                    if kind == .history, plainOrder, let day = model.days[track.id] {
+                        Text(day)
+                            .font(.system(size: 20, weight: .bold))
+                            .foregroundStyle(.white)
+                            .listRowBackground(Color.clear)
+                            .listRowSeparator(.hidden)
+                            .listRowInsets(EdgeInsets(top: index == 0 ? 4 : 20, leading: 16, bottom: 6, trailing: 16))
+                    }
                     if let disk = diskStart(index) {
                         Text("Диск \(disk)")
                             .font(.system(size: 15, weight: .semibold))
@@ -390,8 +395,15 @@ struct TrackListScreen: View {
         .sheet(isPresented: $pickingMany, onDismiss: endModes) {
             PlaylistPicker(tracks: chosen)
         }
-        .navigationTitle(compact && !searching ? title : "")
+        .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
+        .onDisappear {
+            // Пустой поиск закрывается при уходе со страницы: иначе при возврате строка выскакивала рывком.
+            if filter.isEmpty {
+                searching = false
+                focused = false
+            }
+        }
         .onAppear {
             guard !prepared else { return }
             prepared = true
@@ -410,6 +422,9 @@ struct TrackListScreen: View {
         }
         .refreshable { await model.load(kind, force: true) }
         .toolbar {
+            ToolbarItem(placement: .principal) {
+                BarTitle(text: title, shown: compact && !searching)
+            }
             ToolbarItemGroup(placement: .navigationBarTrailing) {
                 if let liked {
                     Button(action: toggleLike) {
@@ -607,6 +622,16 @@ struct TrackListScreen: View {
         .listRowBackground(Color.clear)
         .listRowSeparator(.hidden)
         .listRowInsets(EdgeInsets(top: 14, leading: 16, bottom: 6, trailing: 16))
+        if !album.versions.isEmpty {
+            Shelf("Другие версии") {
+                ForEach(album.versions) { card in
+                    HomeCard(item: .album(card))
+                }
+            }
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets(top: 18, leading: 0, bottom: 0, trailing: 0))
+        }
         if !model.more.isEmpty {
             Shelf(album.artist.map { "Ещё от \($0.name)" } ?? "Ещё от исполнителя") {
                 ForEach(model.more) { card in
@@ -749,10 +774,30 @@ struct TrackListScreen: View {
             } label: {
                 Label("Переименовать", systemImage: "pencil")
             }
+            if let open = model.info?.open {
+                Button {
+                    setOpen(!open)
+                } label: {
+                    Label(open ? "Сделать приватным" : "Открыть доступ по ссылке", systemImage: open ? "lock" : "link")
+                }
+            }
             Button(role: .destructive) {
                 confirmDelete = true
             } label: {
                 Label("Удалить плейлист", systemImage: "trash")
+            }
+        }
+    }
+
+    private func setOpen(_ open: Bool) {
+        guard let playlist else { return }
+        Task {
+            do {
+                try await API.shared.setPlaylistOpen(uid: playlist.owner, kind: playlist.kind, open)
+                model.info?.open = open
+                session.show(open ? "Плейлист открыт по ссылке" : "Плейлист виден только вам")
+            } catch {
+                session.show("Не удалось изменить доступ")
             }
         }
     }
@@ -1045,6 +1090,7 @@ struct ArtistScreen: View {
     @State private var expanded = false
     @State private var error: String?
     @State private var tone = Theme.tone
+    @State private var compact = false
 
     var body: some View {
         List {
@@ -1080,6 +1126,8 @@ struct ArtistScreen: View {
                     .padding(.top, 12)
                 }
                 .frame(maxWidth: .infinity)
+                .background { HeaderWatch(hidden: $compact) }
+                .onDisappear { compact = true }
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
                 .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 14, trailing: 16))
@@ -1133,6 +1181,9 @@ struct ArtistScreen: View {
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItem(placement: .principal) {
+                BarTitle(text: page?.name ?? name, shown: compact)
+            }
             ToolbarItem(placement: .navigationBarTrailing) {
                 if let url = URL(string: "https://music.yandex.ru/artist/\(id)") {
                     ShareLink(item: url) {

@@ -291,7 +291,8 @@ final class API {
             author: value["owner"]["name"].string ?? "",
             about: value["description"].string ?? "",
             title: value["title"].string ?? "",
-            cover: Self.parsePlaylist(value, owner: playlist.owner)?.cover)
+            cover: Self.parsePlaylist(value, owner: playlist.owner)?.cover,
+            open: value["visibility"].string.map { $0 == "public" })
     }
 
     // MARK: - Альбомы, исполнители, поиск
@@ -305,6 +306,7 @@ final class API {
             page.label = "Warner Records"
             page.genre = "rock"
             page.disks = [8, max(1, Demo.data.tracks.count - 8)]
+            page.versions = Array(all.filter { $0.id != card.id }.prefix(2))
             return page
         }
         let value = result(try await get("albums/\(id)/with-tracks"))
@@ -339,6 +341,7 @@ final class API {
         page.genre = value["genre"].string ?? ""
         page.kind = value["type"].string ?? ""
         page.disks = disks.map(\.count).filter { $0 > 0 }
+        page.versions = value["duplicates"].array.compactMap(Self.albumCard).filter { $0.id != id }
         return page
     }
 
@@ -515,6 +518,10 @@ final class API {
         _ = try await post("users/\(uid)/playlists/\(kind)/name?value=\(Self.encode(title))")
     }
 
+    func setPlaylistOpen(uid: String, kind: String, _ open: Bool) async throws {
+        _ = try await post("users/\(uid)/playlists/\(kind)/visibility?value=\(open ? "public" : "private")")
+    }
+
     func deletePlaylist(uid: String, kind: String) async throws {
         _ = try await post("users/\(uid)/playlists/\(kind)/delete")
     }
@@ -575,15 +582,27 @@ final class API {
     }
 
     /// Последние прослушанные треки, новые сначала и без повторов.
-    func history(limit: Int = 200) async throws -> [Track] {
-        if Demo.on { return Demo.data.tracks.reversed() }
+    /// История и дни: у первого трека каждого дня — подпись «Сегодня», «Вчера» или дата.
+    func history(limit: Int = 200) async throws -> (tracks: [Track], days: [String: String]) {
+        if Demo.on {
+            let list = Array(Demo.data.tracks.reversed())
+            var days: [String: String] = [:]
+            if let first = list.first { days[first.id] = "Сегодня" }
+            if list.count > 4 { days[list[4].id] = "Вчера" }
+            return (list, days)
+        }
         let value = result(try await get("music-history", [("fullModelsCount", "0")]))
         var ids: [String] = []
+        var dayOf: [String: String] = [:]
         var seen = Set<String>()
         for tab in value["historyTabs"].array {
+            let day = Self.dayName(tab["date"].string ?? "")
             for item in tab["items"].array {
                 for track in item["tracks"].array {
-                    if let id = track["data"]["itemId"]["trackId"].idText, seen.insert(id).inserted { ids.append(id) }
+                    if let id = track["data"]["itemId"]["trackId"].idText, seen.insert(id).inserted {
+                        ids.append(id)
+                        dayOf[id] = day
+                    }
                 }
             }
         }
@@ -591,7 +610,30 @@ final class API {
         for chunk in Array(ids.prefix(limit)).chunked(150) {
             out += try await tracks(ids: chunk)
         }
-        return out
+        var days: [String: String] = [:]
+        var last = ""
+        for track in out {
+            let day = dayOf[track.id] ?? ""
+            if !day.isEmpty, day != last { days[track.id] = day }
+            if !day.isEmpty { last = day }
+        }
+        return (out, days)
+    }
+
+    /// «2026-11-12» → «Сегодня», «Вчера» или «12 ноября».
+    private static func dayName(_ text: String) -> String {
+        let parser = DateFormatter()
+        parser.locale = Locale(identifier: "en_US_POSIX")
+        parser.dateFormat = "yyyy-MM-dd"
+        guard let date = parser.date(from: String(text.prefix(10))) else { return "" }
+        let calendar = Calendar.current
+        if calendar.isDateInToday(date) { return "Сегодня" }
+        if calendar.isDateInYesterday(date) { return "Вчера" }
+        let out = DateFormatter()
+        out.locale = Locale(identifier: "ru_RU")
+        let sameYear = calendar.component(.year, from: date) == calendar.component(.year, from: Date())
+        out.dateFormat = sameYear ? "d MMMM" : "d MMMM yyyy"
+        return out.string(from: date)
     }
 
     // MARK: - Главная

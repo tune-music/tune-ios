@@ -87,6 +87,37 @@ struct PlayGlyph: View {
 }
 
 /// Разрыв между кнопками панели навигации: на iOS 26 меню «…» получает свою стеклянную
+/// Следит, ушла ли шапка страницы под панель навигации.
+struct HeaderWatch: View {
+    @Binding var hidden: Bool
+
+    var body: some View {
+        GeometryReader { geometry in
+            let gone = geometry.frame(in: .global).maxY < 150
+            Color.clear
+                .onAppear { hidden = gone }
+                .onChange(of: gone) { hidden = $0 }
+        }
+    }
+}
+
+/// Название страницы в панели навигации: проявляется плавно, когда шапка прокручена.
+struct BarTitle: View {
+    let text: String
+    let shown: Bool
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 17, weight: .semibold))
+            .foregroundStyle(.white)
+            .lineLimit(1)
+            .opacity(shown ? 1 : 0)
+            .offset(y: shown ? 0 : 6)
+            .animation(.easeOut(duration: 0.22), value: shown)
+            .accessibilityHidden(!shown)
+    }
+}
+
 /// кнопку и раскрывается из неё, а не из общей плашки.
 @ToolbarContentBuilder
 func toolbarGap() -> some ToolbarContent {
