@@ -223,6 +223,22 @@ final class TrackPagerView: UIView {
         }
     }
 
+    /// Исходное положение: играющий трек по центру, соседа не видно.
+    private func rest() {
+        run += 1
+        front.layer.removeAllAnimations()
+        back.layer.removeAllAnimations()
+        front.transform = .identity
+        back.transform = .identity
+        back.isHidden = true
+    }
+
+    /// Вкладку с лентой убрали с экрана или вернули: анимация оборвалась, страницы встают на место.
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        rest()
+    }
+
     /// Первый показ: без движения.
     func set(_ track: Track?) {
         front.show(track)
@@ -255,6 +271,13 @@ final class TrackPagerView: UIView {
     /// Трек сменился: новый доезжает до центра оттуда, где стоит, прежний уезжает за край.
     func change(to track: Track, back goingBack: Bool) {
         guard track.id != front.track?.id else { return }
+        // Лента не на экране (другая вкладка) или ещё без размера: двигать нечего.
+        // Иначе прежний трек «уезжал» на пару точек и оставался лежать поверх нового.
+        guard window != nil, bounds.width > 0 else {
+            front.show(track)
+            rest()
+            return
+        }
         freeze()
         let from = front.transform.tx
         let side = !goingBack
