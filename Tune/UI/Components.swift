@@ -101,20 +101,41 @@ struct HeaderWatch: View {
     }
 }
 
-/// Название страницы в панели навигации: проявляется плавно, когда шапка прокручена.
-struct BarTitle: View {
-    let text: String
-    let shown: Bool
+/// Название в панели навигации меняется плавно: системная панель сама его не анимирует,
+/// поэтому в момент смены на неё вешается короткое затухание.
+struct BarFade: UIViewRepresentable {
+    let title: String
 
-    var body: some View {
-        Text(text)
-            .font(.system(size: 17, weight: .semibold))
-            .foregroundStyle(.white)
-            .lineLimit(1)
-            .opacity(shown ? 1 : 0)
-            .offset(y: shown ? 0 : 6)
-            .animation(.easeOut(duration: 0.22), value: shown)
-            .accessibilityHidden(!shown)
+    final class Box {
+        var title: String?
+    }
+
+    func makeCoordinator() -> Box { Box() }
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.isUserInteractionEnabled = false
+        return view
+    }
+
+    func updateUIView(_ view: UIView, context: Context) {
+        let box = context.coordinator
+        guard box.title != title else { return }
+        let first = box.title == nil
+        box.title = title
+        if first { return }
+        var next: UIResponder? = view
+        while let responder = next {
+            if let controller = responder as? UIViewController, let bar = controller.navigationController?.navigationBar {
+                let fade = CATransition()
+                fade.type = .fade
+                fade.duration = 0.22
+                fade.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                bar.layer.add(fade, forKey: "title")
+                break
+            }
+            next = responder.next
+        }
     }
 }
 

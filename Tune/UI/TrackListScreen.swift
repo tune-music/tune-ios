@@ -395,8 +395,9 @@ struct TrackListScreen: View {
         .sheet(isPresented: $pickingMany, onDismiss: endModes) {
             PlaylistPicker(tracks: chosen)
         }
-        .navigationTitle("")
+        .navigationTitle(compact && !searching ? title : "")
         .navigationBarTitleDisplayMode(.inline)
+        .background(BarFade(title: compact && !searching ? title : ""))
         .onDisappear {
             // Пустой поиск закрывается при уходе со страницы: иначе при возврате строка выскакивала рывком.
             if filter.isEmpty {
@@ -422,9 +423,6 @@ struct TrackListScreen: View {
         }
         .refreshable { await model.load(kind, force: true) }
         .toolbar {
-            ToolbarItem(placement: .principal) {
-                BarTitle(text: title, shown: compact && !searching)
-            }
             ToolbarItemGroup(placement: .navigationBarTrailing) {
                 if let liked {
                     Button(action: toggleLike) {
@@ -1178,12 +1176,10 @@ struct ArtistScreen: View {
             .ignoresSafeArea()
         }
         .topScrim(tone)
-        .navigationTitle("")
+        .navigationTitle(compact ? (page?.name ?? name) : "")
         .navigationBarTitleDisplayMode(.inline)
+        .background(BarFade(title: compact ? (page?.name ?? name) : ""))
         .toolbar {
-            ToolbarItem(placement: .principal) {
-                BarTitle(text: page?.name ?? name, shown: compact)
-            }
             ToolbarItem(placement: .navigationBarTrailing) {
                 if let url = URL(string: "https://music.yandex.ru/artist/\(id)") {
                     ShareLink(item: url) {
