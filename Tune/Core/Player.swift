@@ -187,6 +187,12 @@ final class Player: NSObject, ObservableObject {
         guard !tracks.isEmpty else { return }
         if !shuffled {
             guard tracks.indices.contains(start) else { return }
+            // Нажали на трек, что уже звучит из этого же списка: пауза и продолжение, а не заново.
+            if let current, current.id == tracks[start].id, now.kind == context.kind, now.item == context.item,
+               context.item != nil || now.name == context.name {
+                toggle()
+                return
+            }
             guard playable(tracks[start]) else {
                 errorText = "Этот трек недоступен"
                 return

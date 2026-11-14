@@ -66,14 +66,14 @@ enum ExternalLyrics {
         track.artistList.first?.name ?? track.artists
     }
 
-    static func synced(_ lines: [LyricLine]) -> Bool {
-        lines.contains { $0.time != nil }
+    /// Текст из чужой базы: без строк с авторами.
+    private static func external(_ text: String, _ source: String) -> LyricsText {
+        let lines = API.parseLRC(text).filter { !isCredit($0.text) }
+        return LyricsText(lines: lines.enumerated().map { LyricLine(id: $0.offset, time: $0.element.time, text: $0.element.text) }, authors: nil, source: source)
     }
 
-    /// Текст из чужой базы: без строк с авторами.
-    private static func external(_ text: String) -> [LyricLine] {
-        let lines = API.parseLRC(text).filter { !isCredit($0.text) }
-        return lines.enumerated().map { LyricLine(id: $0.offset, time: $0.element.time, text: $0.element.text) }
+    static func synced(_ lines: [LyricLine]) -> Bool {
+        lines.contains { $0.time != nil }
     }
 
     private static func string(_ value: Any?) -> String? {
@@ -82,16 +82,16 @@ enum ExternalLyrics {
     }
 
     /// Текст из LRCLIB: точное совпадение, а нет его — поиск.
-    private static func lrclib(_ track: Track) async throws -> [LyricLine]? {
+    private static func lrclib(_ track: Track) async throws -> LyricsText? {
         let headers = ["Lrclib-Client": "Tune iOS"]
         let artist = firstArtist(track)
         var query = "track_name=\(enc(track.title))&artist_name=\(enc(artist))"
         if !track.albumTitle.isEmpty { query += "&album_name=\(enc(track.albumTitle))" }
         if track.duration > 0 { query += "&duration=\(Int(track.duration))" }
         let exact = try await get("https://lrclib.net/api/get?\(query)", headers: headers) as? [String: Any]
-        func pick(_ value: [String: Any]) -> [LyricLine]? {
+        func pick(_ value: [String: Any]) -> LyricsText? {
             guard let text = string(value["syncedLyrics"]) ?? string(value["plainLyrics"]) else { return nil }
-            return external(text)
+            return external(text, "LRCLIB")
         }
         if let exact, string(exact["syncedLyrics"]) != nil, let found = pick(exact) { return found }
         let list = try await get("https://lrclib.net/api/search?track_name=\(enc(track.title))&artist_name=\(enc(artist))", headers: headers) as? [[String: Any]] ?? []
@@ -103,7 +103,7 @@ enum ExternalLyrics {
     }
 
     /// Синхронный текст из NetEase, если там именно этот трек.
-    private static func netease(_ track: Track) async throws -> [LyricLine]? {
+    private static func netease(_ track: Track) async throws -> LyricsText? {
         let headers = ["Referer": "https://music.163.com/"]
         let query = "\(firstArtist(track)) \(track.title)".trimmingCharacters(in: .whitespaces)
         guard let found = try await get("https://music.163.com/api/search/get?s=\(enc(query))&type=1&limit=10", headers: headers) as? [String: Any] else { return nil }
@@ -119,39 +119,45 @@ enum ExternalLyrics {
             let lrc = ((lyric["lrc"] as? [String: Any])?["lyric"] as? String) ?? ""
             // Хотя бы несколько строк со временем — иначе это пустышка или «纯音乐».
             if lrc.components(separatedBy: .newlines).filter({ $0.hasPrefix("[") && $0.count > 11 }).count >= 4 {
-                return external(lrc)
+                return external(lrc, "NetEase")
             }
         }
         return nil
     }
 
     /// Текст трека: Яндекс, LRCLIB и NetEase — в порядке из настроек.
-    static func find(_ track: Track, yandex: (String) async throws -> [LyricLine]) async throws -> [LyricLine] {
+    /// Есть ли смысл открывать текст: у Яндекса он есть или его можно поискать в других базах.
+    static func available(_ track: Track) -> Bool {
+        track.hasLyrics || (Settings.lyricsExternal && (Settings.lyricsLRCLIB || Settings.lyricsNetEase))
+    }
+
+    static func find(_ track: Track, yandex: (String) async throws -> LyricsText) async throws -> LyricsText {
+        let empty = LyricsText(lines: [], authors: nil, source: nil)
         let enabled = Settings.lyricsExternal
-        var own: [LyricLine]?
+        var own: LyricsText?
         if track.hasLyrics, !enabled || !Settings.lyricsAlways {
             let found = try await yandex(track.id)
-            if !enabled || synced(found) { return found }
+            if !enabled || found.synced { return found }
             own = found
         }
-        guard enabled else { return [] }
-        typealias Search = (Track) async throws -> [LyricLine]?
+        guard enabled else { return empty }
+        typealias Search = (Track) async throws -> LyricsText?
         let lrc: (Bool, Search) = (Settings.lyricsLRCLIB, lrclib)
         let net: (Bool, Search) = (Settings.lyricsNetEase, netease)
         let order = Settings.lyricsNetEaseFirst ? [net, lrc] : [lrc, net]
-        var fallback: [LyricLine]?
+        var fallback: LyricsText?
         for (on, search) in order where on {
             // Чужая база не ответила — не беда, есть другие.
-            guard let found = try? await search(track), !found.isEmpty else { continue }
-            if synced(found) { return found }
+            guard let found = try? await search(track), !found.lines.isEmpty else { continue }
+            if found.synced { return found }
             if fallback == nil { fallback = found }
         }
         // Синхронного нет нигде — текст Яндекса, хоть и простой, лучше простого из LRCLIB.
         if track.hasLyrics {
-            let mine: [LyricLine]
+            let mine: LyricsText
             if let own { mine = own } else { mine = try await yandex(track.id) }
-            if !mine.isEmpty { return mine }
+            if !mine.lines.isEmpty { return mine }
         }
-        return fallback ?? []
+        return fallback ?? empty
     }
 }

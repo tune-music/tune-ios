@@ -340,8 +340,8 @@ private struct PlayerBody: View {
                     .frame(width: 48, height: 44)
                     .contentShape(Rectangle())
             }
-            .disabled(!track.hasLyrics && !lyrics)
-            .opacity(track.hasLyrics || lyrics ? 1 : 0.35)
+            .disabled(!ExternalLyrics.available(track) && !lyrics)
+            .opacity(ExternalLyrics.available(track) || lyrics ? 1 : 0.35)
             Spacer()
             RoutePicker()
                 .frame(width: 48, height: 44)
@@ -769,6 +769,7 @@ private struct LyricsPane: View {
     let track: Track
     @ObservedObject var progress: PlaybackProgress
     @State private var lines: [LyricLine]?
+    @State private var info: LyricsText?
     /// Когда текст последний раз листали пальцем: в это время он сам не прокручивается.
     @State private var touched = Date.distantPast
 
@@ -803,7 +804,32 @@ private struct LyricsPane: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task(id: track.id) {
             lines = nil
-            lines = (try? await API.shared.lyrics(for: track)) ?? []
+            info = nil
+            let found = try? await API.shared.lyrics(for: track)
+            info = found
+            lines = found?.lines ?? []
+        }
+    }
+
+    /// Под текстом, как в Tune Native: авторы и источник, если это не Яндекс.
+    @ViewBuilder private var credits: some View {
+        if let info {
+            VStack(spacing: 6) {
+                if let authors = info.authors, !authors.isEmpty {
+                    Text("Авторы: \(authors.joined(separator: ", "))")
+                        .font(.scaled(size: 14))
+                        .foregroundStyle(.white.opacity(0.55))
+                }
+                if let source = info.source, source != LyricsText.yandex {
+                    Text("Текст: \(source)")
+                        .font(.scaled(size: 13))
+                        .foregroundStyle(.white.opacity(0.4))
+                }
+            }
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: .infinity)
+            .padding(.top, 14)
+            .padding(.horizontal, 24)
         }
     }
 
@@ -828,6 +854,7 @@ private struct LyricsPane: View {
                             }
                             .id(line.id)
                     }
+                    credits
                 }
                 // Запас сверху и снизу: первая и последняя строки тоже встают по центру.
                 .padding(.vertical, 130)

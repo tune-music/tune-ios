@@ -117,9 +117,11 @@ extension Font {
 
 /// Нажатие с откликом: кнопка поджимается под пальцем и пружинит обратно.
 struct PressStyle: ButtonStyle {
+    var scale: CGFloat = 0.86
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .scaleEffect(configuration.isPressed ? 0.86 : 1)
+            .scaleEffect(configuration.isPressed ? scale : 1)
             .opacity(configuration.isPressed ? 0.75 : 1)
             .animation(.spring(response: 0.25, dampingFraction: 0.6), value: configuration.isPressed)
     }
@@ -606,6 +608,26 @@ struct PlayingBars: View {
     }
 }
 
+/// Кружок волны для плашек: цвет волны и её картинка от Яндекса.
+struct WaveDot: View {
+    let wave: WaveCard
+    var size: CGFloat = 24
+
+    var body: some View {
+        ZStack {
+            Circle().fill(Color(hex: wave.color) ?? Theme.raised)
+            if let cover = wave.cover {
+                CoverView(uri: cover, size: size, round: true, backdrop: nil)
+            } else {
+                Image(systemName: "dot.radiowaves.left.and.right")
+                    .font(.system(size: size * 0.45, weight: .bold))
+                    .foregroundStyle(.white)
+            }
+        }
+        .frame(width: size, height: size)
+    }
+}
+
 /// Карточка полки главной: ведёт на страницу или запускает волну.
 struct HomeCard: View {
     let item: HomeItem
@@ -709,7 +731,7 @@ struct WaveTile: View {
                 Circle()
                     .fill(color)
                 if let cover = wave.cover {
-                    CoverView(uri: cover, size: size, round: true)
+                    CoverView(uri: cover, size: size, round: true, backdrop: nil)
                 }
                 if let playing {
                     Circle()

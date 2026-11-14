@@ -200,7 +200,7 @@ final class API {
         let seeds = (data["seeds"].isArray ? data["seeds"] : wave["seeds"]).array.compactMap { $0.string }
         guard !seeds.isEmpty, let title = data["title"].string ?? wave["name"].string else { return nil }
         let cover = data["compactImageUrl"].string ?? data["agent"]["cover"]["uri"].string ?? data["imageUrl"].string ?? data["backgroundImageUrl"].string
-        return .wave(WaveCard(title: title, seeds: seeds, cover: cover, color: data["colors"]["average"].string))
+        return .wave(WaveCard(title: title, seeds: seeds, cover: cover, color: data["colors"]["average"].string ?? data["agent"]["cover"]["color"].string))
     }
 
     /// У блоков главной разные ответы, но элементы в них одни и те же.
@@ -796,25 +796,29 @@ final class API {
     }
 
     /// Текст трека: Яндекс, LRCLIB и NetEase — в порядке из настроек.
-    func lyrics(for track: Track) async throws -> [LyricLine] {
-        if Demo.on { return Demo.lyrics }
+    func lyrics(for track: Track) async throws -> LyricsText {
+        if Demo.on { return LyricsText(lines: Demo.lyrics, authors: ["Автор текста", "Композитор"], source: "LRCLIB") }
         // Однажды полученный текст лежит на устройстве: он есть и без сети.
         _ = Storage.lyrics
         let name = "Lyrics/\(Storage.hash(track.id)).json"
-        if let saved = Storage.load(name, as: [LyricLine].self), !Self.isStub(saved) { return saved }
-        let lines = try await ExternalLyrics.find(track) { id in
+        if let saved = Storage.load(name, as: LyricsText.self), !Self.isStub(saved.lines) { return saved }
+        // Текст из прошлых версий: только строки Яндекса.
+        if let old = Storage.load(name, as: [LyricLine].self), !Self.isStub(old), ExternalLyrics.synced(old) || !Settings.lyricsExternal {
+            return LyricsText(lines: old, authors: nil, source: LyricsText.yandex)
+        }
+        let found = try await ExternalLyrics.find(track) { id in
             // Просьба подключить подписку вместо текста — не текст: ищем в других базах.
             let own = try await self.fetchLyrics(track: id)
-            return Self.isStub(own) ? [] : own
+            return Self.isStub(own.lines) ? LyricsText(lines: [], authors: nil, source: nil) : own
         }
         // Аккаунту без Плюса Яндекс вместо текста отдаёт просьбу подключить подписку.
         // Её нельзя сохранять: иначе она останется и после входа в аккаунт с Плюсом.
-        if Self.isStub(lines) {
+        if Self.isStub(found.lines) || found.lines.isEmpty {
             Storage.remove(name)
-            return []
+            return LyricsText(lines: [], authors: nil, source: nil)
         }
-        if !lines.isEmpty { Storage.save(lines, name) }
-        return lines
+        Storage.save(found, name)
+        return found
     }
 
     /// Вместо текста пришла заглушка про подписку: пара строк со словом «подписка».
@@ -824,7 +828,7 @@ final class API {
         return words.joined(separator: " ").lowercased().contains("подписк")
     }
 
-    private func fetchLyrics(track id: String) async throws -> [LyricLine] {
+    private func fetchLyrics(track id: String) async throws -> LyricsText {
         for format in ["LRC", "TEXT"] {
             let stamp = String(Int(Date().timeIntervalSince1970))
             let value: JSON
@@ -836,9 +840,10 @@ final class API {
             guard let link = value["downloadUrl"].string, let url = URL(string: link) else { continue }
             guard let (data, _) = try? await http.data(from: url), let text = String(data: data, encoding: .utf8) else { continue }
             let lines = Self.parseLRC(text)
-            if lines.contains(where: { !$0.text.isEmpty }) { return lines }
+            let authors = value["writers"].array.compactMap { $0.string }
+            if lines.contains(where: { !$0.text.isEmpty }) { return LyricsText(lines: lines, authors: authors, source: LyricsText.yandex) }
         }
-        return []
+        return LyricsText(lines: [], authors: nil, source: nil)
     }
 
     static func parseLRC(_ text: String) -> [LyricLine] {

@@ -89,8 +89,8 @@ struct WaveGrid: View {
                     HStack(spacing: 8) {
                         if active {
                             PlayingBars(playing: now.playing, size: 14, color: .black)
-                        } else if let cover = wave.cover {
-                            CoverView(uri: cover, size: 26, round: true)
+                        } else if wave.cover != nil || wave.color != nil {
+                            WaveDot(wave: wave, size: 26)
                         }
                         Text(wave.title)
                             .font(.scaled(size: 15, weight: .semibold))

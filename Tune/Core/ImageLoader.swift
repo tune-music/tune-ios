@@ -150,6 +150,8 @@ struct CoverView: View {
     let size: CGFloat
     var corner: CGFloat = 6
     var round = false
+    /// Подложка, пока картинки нет. nil — прозрачная: под картинкой виден цвет волны.
+    var backdrop: Color? = Theme.raised
 
     @State private var image: UIImage?
 
@@ -157,12 +159,12 @@ struct CoverView: View {
         let side = ImageLoader.side(for: size)
         let shown = image ?? ImageLoader.shared.cached(uri, side: side)
         ZStack {
-            Theme.raised
+            if let backdrop { backdrop }
             if let shown {
                 Image(uiImage: shown)
                     .resizable()
                     .scaledToFill()
-            } else {
+            } else if backdrop != nil {
                 Image(systemName: round ? "person.fill" : "music.note")
                     .font(.system(size: size * 0.36))
                     .foregroundStyle(Theme.dim)

@@ -196,11 +196,8 @@ struct HomeScreen: View {
                         HStack(spacing: 7) {
                             if active {
                                 PlayingBars(playing: now.playing, size: 13, color: .black)
-                            } else if let cover = wave.cover {
-                                CoverView(uri: cover, size: 24, round: true)
                             } else {
-                                Image(systemName: "dot.radiowaves.left.and.right")
-                                    .font(.system(size: 12, weight: .bold))
+                                WaveDot(wave: wave)
                             }
                             Text(wave.title)
                                 .font(.scaled(size: 15, weight: .semibold))

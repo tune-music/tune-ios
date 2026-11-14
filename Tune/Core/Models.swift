@@ -39,6 +39,17 @@ struct JSON {
     }
 }
 
+/// Текст песни: строки, авторы и откуда он взят.
+struct LyricsText: Codable {
+    var lines: [LyricLine]
+    var authors: [String]?
+    /// «Яндекс Музыка», «LRCLIB» или «NetEase».
+    var source: String?
+
+    static let yandex = "Яндекс Музыка"
+    var synced: Bool { lines.contains { $0.time != nil } }
+}
+
 struct ArtistRef: Codable, Hashable {
     var id: String
     var name: String

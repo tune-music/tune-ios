@@ -437,6 +437,14 @@ private struct BestCard: View {
     let best: SearchBest
     let action: () -> Void
 
+    @ObservedObject private var now = Player.shared.now
+
+    /// Этот трек сейчас в плеере.
+    private var current: Bool {
+        if case .track(let track) = best { return now.id == track.id }
+        return false
+    }
+
     private var content: (cover: String?, title: String, kind: String, round: Bool, symbol: String) {
         switch best {
         case .track(let track): return (track.cover, track.fullTitle, "Трек · \(track.artists)", false, "play.fill")
@@ -462,16 +470,32 @@ private struct BestCard: View {
                         .lineLimit(1)
                 }
                 Spacer(minLength: 0)
-                Image(systemName: item.symbol)
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(item.symbol == "play.fill" ? Color.black : Theme.dim)
+                if item.symbol == "play.fill" {
+                    let on = current
+                    ZStack {
+                        if on, now.playing {
+                            PlayingBars(playing: true, size: 16, color: .black)
+                                .transition(.scale.combined(with: .opacity))
+                        } else {
+                            PlayGlyph(playing: false, size: 15)
+                                .transition(.scale.combined(with: .opacity))
+                        }
+                    }
+                    .foregroundStyle(Color.black)
                     .frame(width: 38, height: 38)
-                    .background(item.symbol == "play.fill" ? Theme.accent : Color.clear, in: Circle())
+                    .background(Theme.accent, in: Circle())
+                    .animation(.spring(response: 0.35, dampingFraction: 0.8), value: on && now.playing)
+                } else {
+                    Image(systemName: item.symbol)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(Theme.dim)
+                        .frame(width: 38, height: 38)
+                }
             }
             .padding(12)
             .background(Theme.surface, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressStyle(scale: 0.97))
     }
 }
