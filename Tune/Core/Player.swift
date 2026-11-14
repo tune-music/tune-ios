@@ -139,6 +139,8 @@ final class Player: NSObject, ObservableObject {
     private var fadedFor: String?
     private var context = PlayContext.various("")
     private var wave: String?
+    /// Семена играющей волны: по ним видно волну-сет, у неё свои точки перехода.
+    private var waveSeeds: [String] = []
     private var extendTask: Task<Void, Never>?
     /// Порядок очереди до перемешивания.
     private var original: [Track]?
@@ -205,6 +207,7 @@ final class Player: NSObject, ObservableObject {
         }
         endCurrent(.skipped)
         wave = nil
+        waveSeeds = []
         shuffle = shuffled
         self.context = context
         contextName = context.name
@@ -241,6 +244,7 @@ final class Player: NSObject, ObservableObject {
                 guard !started.tracks.isEmpty else { throw TuneError("Волна не прислала треков") }
                 self.endCurrent(.skipped)
                 self.wave = started.session
+                self.waveSeeds = seeds
                 self.original = nil
                 self.shuffle = false
                 self.context = PlayContext(kind: "radio", item: seeds.first, name: name)
@@ -273,8 +277,8 @@ final class Player: NSObject, ObservableObject {
         progress.position = resume ?? 0
         progress.duration = track.duration
         itemObservation = nil
-        let smooth = blend
-        blend = 0
+        let out = crossOut
+        crossOut = nil
         endFade()
         UserDefaults.standard.set(target, forKey: "playerIndex")
 
@@ -288,12 +292,15 @@ final class Player: NSObject, ObservableObject {
             spare = old
             watch()
             let level = Self.level(for: track)
-            let seconds = smooth
-            if autoplay, seconds > 0, old.rate > 0 {
+            if autoplay, let out, old.rate > 0, let fade = points(track) {
+                // Новый трек нарастает ровно столько, сколько затихает прежний; в волне-сете — по
+                // своим точкам и с начала сведения.
+                let rise = mixWave ? (fade.inStart, fade.inStop) : (fade.inStart, fade.inStart + (out.1 - out.0))
+                if mixWave, fade.inStart > 0 {
+                    av.seek(to: CMTime(seconds: fade.inStart, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+                }
                 av.volume = 0
-                // Переход не длиннее того, что осталось играть прежнему треку.
-                let left = (old.currentItem?.duration.seconds ?? .nan) - old.currentTime().seconds
-                fade(from: old, to: level, seconds: left.isFinite ? min(seconds, max(1, left)) : seconds)
+                crossfade(from: old, out: out, rise: rise, level: level)
             } else {
                 old.pause()
                 old.replaceCurrentItem(with: nil)
@@ -456,15 +463,22 @@ final class Player: NSObject, ObservableObject {
 
     // MARK: - Громкость и плавный переход
 
-    /// Плавный переход разрешён только когда трек кончается сам, а не по нажатию.
-    private var blend: Double = 0
+    /// Окно затухания играющего трека: задаётся, когда пора переходить к следующему.
+    private var crossOut: (Double, Double)?
 
-    /// Громкость для трека. С выравниванием громкие записи приглушаются до −14 LUFS;
-    /// тихие остаются как есть: усиливать звук проигрыватель не умеет.
+    private var mixWave: Bool {
+        wave != nil && waveSeeds.contains { $0.hasPrefix("mix-") }
+    }
+
+    /// Множитель громкости, который приводит трек к −14 LUFS по его R128, как в Tune Native:
+    /// тихий поднимается не выше, чем позволяет пик (−1 dBTP), громкий — не тише, чем на 12 дБ.
+    /// Системный проигрыватель громче 100% не играет, поэтому подъём тихих записей ограничен.
     private static func level(for track: Track) -> Float {
-        guard Settings.normalize, let loudness = Loudness.shared.value(track) else { return 1 }
-        let gain = min(0, -14 - loudness)
-        return Float(pow(10, max(gain, -12) / 20))
+        guard Settings.normalize, let found = Loudness.shared.value(track) else { return 1 }
+        var db = -14 - found.i
+        if let tp = found.tp { db = min(db, -1 - tp) }
+        db = min(max(db, -12), 6)
+        return Float(min(1, pow(10, db / 20)))
     }
 
     /// Настройку выравнивания поменяли: громкость играющего трека пересчитывается сразу.
@@ -474,14 +488,34 @@ final class Player: NSObject, ObservableObject {
         learnLoudness(track)
     }
 
-    /// Сколько секунд длится переход от одного трека к другому. В режиме «Авто» треки одного
-    /// альбома идут подряд без наложения (в альбомах песни часто перетекают одна в другую),
-    /// короткие треки смешиваются 3 секунды, остальные — 6.
-    private static func overlap(from track: Track, to next: Track?) -> Double {
+    /// Точки перехода трека. «Авто»: разметка Яндекса, в волне-сете своя, плотнее обычной;
+    /// без разметки — ровный переход на 6 секунд, чтобы перетекали любые треки. С заданной
+    /// длиной — ровный переход на неё. Короткие треки, подкасты и книги без перехода.
+    private func points(_ track: Track) -> FadePoints? {
+        let length = track.duration
         let setting = Settings.crossfade
-        if setting >= 0 { return Double(setting) }
-        if let album = track.albumId, album == next?.albumId { return 0 }
-        return track.duration < 120 ? 3 : 6
+        if setting > 0 {
+            let span = Double(setting)
+            guard length >= 30 else { return nil }
+            return FadePoints(inStart: 0, inStop: span, outStart: length - span, outStop: length)
+        }
+        if let marked = mixWave ? (track.mixFade ?? track.fade) : track.fade { return marked }
+        guard length >= 30 else { return nil }
+        return FadePoints(inStart: 0, inStop: 6, outStart: length - 6, outStop: length)
+    }
+
+    /// Когда затухает играющий трек: в конце его окна и не дольше 6 секунд — точки Яндекса
+    /// бывают и на 10–15 секунд, трек тогда уходил задолго до конца. В волне-сете переход —
+    /// часть сведения, его длина не режется.
+    private func window(_ fade: FadePoints) -> (Double, Double) {
+        if mixWave || Settings.crossfade > 0 { return (fade.outStart, fade.outStop) }
+        return (max(fade.outStart, fade.outStop - 6), fade.outStop)
+    }
+
+    /// Доля пути от начала окна до конца, от 0 до 1.
+    private static func part(_ position: Double, _ range: (Double, Double)) -> Float {
+        if range.1 <= range.0 { return position >= range.0 ? 1 : 0 }
+        return Float(min(max((position - range.0) / (range.1 - range.0), 0), 1))
     }
 
     /// Громкость трека неизвестна (скачан или сохранён до того, как она стала приходить):
@@ -502,20 +536,35 @@ final class Player: NSObject, ObservableObject {
         }
     }
 
-    private func fade(from old: AVPlayer, to level: Float, seconds: Double) {
+    /// Переход по месту в каждом треке, а не по таймеру: прежний затихает в своём окне и там
+    /// кончается, новый нарастает в своём. Громкость идёт по S-кривой — в начале и в конце
+    /// окна меняется медленно, без рывка, а громкости двух треков в сумме дают единицу.
+    private func crossfade(from old: AVPlayer, out: (Double, Double), rise: (Double, Double), level: Float) {
         fading = old
         let start = old.volume
         let player = av
         fadeTask = Task { [weak self] in
-            let steps = max(1, Int(seconds * 20))
-            for step in 1...steps {
-                try? await Task.sleep(nanoseconds: 50_000_000)
-                if Task.isCancelled { return }
-                let part = Float(step) / Float(steps)
-                // Равная мощность: сумма двух треков не проваливается по громкости в середине.
-                old.volume = start * cos(part * .pi / 2)
-                player.volume = level * sin(part * .pi / 2)
+            var gone = false
+            while !Task.isCancelled {
+                if !gone {
+                    let was = old.currentTime().seconds
+                    if !was.isFinite || was >= out.1 || old.currentItem == nil || old.timeControlStatus == .paused {
+                        gone = true
+                        old.pause()
+                        old.replaceCurrentItem(with: nil)
+                        old.volume = 0
+                    } else {
+                        old.volume = start * pow(cos(Self.part(was, out) * .pi / 2), 2)
+                    }
+                }
+                let now = player.currentTime().seconds
+                if now.isFinite {
+                    player.volume = level * pow(sin(Self.part(now, rise) * .pi / 2), 2)
+                }
+                if gone, !now.isFinite || now >= rise.1 { break }
+                try? await Task.sleep(nanoseconds: 40_000_000)
             }
+            guard !Task.isCancelled else { return }
             self?.endFade()
         }
     }
@@ -623,6 +672,7 @@ final class Player: NSObject, ObservableObject {
         queue = []
         index = 0
         wave = nil
+        waveSeeds = []
         original = nil
         preloaded = nil
         isPlaying = false
@@ -768,9 +818,8 @@ final class Player: NSObject, ObservableObject {
             finishQueue()
             return
         }
-        blend = current.map { Self.overlap(from: $0, to: queue.indices.contains(index + 1) ? queue[index + 1] : nil) } ?? 0
         if repeatMode == .one, let track = current {
-            blend = 0
+            crossOut = nil
             av.seek(to: .zero)
             av.play()
             listen = Listen(track: track, context: context, session: wave)
@@ -805,7 +854,7 @@ final class Player: NSObject, ObservableObject {
     }
 
     private func finishQueue() {
-        blend = 0
+        crossOut = nil
         isPlaying = false
         isBuffering = false
         av.pause()
@@ -876,14 +925,17 @@ final class Player: NSObject, ObservableObject {
         if av.rate > 0 {
             listen?.played += 0.5
         }
-        // Плавный переход: следующий трек вступает за несколько секунд до конца текущего.
-        let overlap = current.map { Self.overlap(from: $0, to: queue.indices.contains(index + 1) ? queue[index + 1] : nil) } ?? 0
-        if overlap > 0, av.rate > 0, repeatMode != .one, !sleepAfterTrack, let track = current, fadedFor != track.id,
+        // Плавный переход: трек дошёл до начала своего окна затухания, и у следующего
+        // тоже есть точки перехода. Повтор одного трека переходом не идёт.
+        if Settings.crossfade != 0, av.rate > 0, repeatMode != .one, !sleepAfterTrack, let track = current, fadedFor != track.id,
            let ready = preloaded, queue.indices.contains(index + 1), queue[index + 1].id == ready.id,
-           ready.item.status == .readyToPlay, progress.duration > overlap * 4, seconds > overlap,
-           progress.duration - seconds <= overlap {
-            fadedFor = track.id
-            trackEnded()
+           ready.item.status == .readyToPlay, let fade = points(track), points(queue[index + 1]) != nil {
+            let out = window(fade)
+            if seconds >= out.0, seconds < out.1 {
+                fadedFor = track.id
+                crossOut = out
+                trackEnded()
+            }
         }
         if Date().timeIntervalSince(lastSave) > 15 {
             savePosition()

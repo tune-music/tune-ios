@@ -44,6 +44,24 @@ struct ArtistRef: Codable, Hashable {
     var name: String
 }
 
+/// Где трек нарастает в начале и затихает в конце, секунды от начала трека.
+struct FadePoints: Codable, Hashable {
+    var inStart: Double
+    var inStop: Double
+    var outStart: Double
+    var outStop: Double
+
+    static func parse(_ value: JSON) -> FadePoints? {
+        func point(_ key: String) -> Double? {
+            guard let x = value[key].double, x.isFinite, x >= 0 else { return nil }
+            return x
+        }
+        guard let inStart = point("inStart"), let inStop = point("inStop"), let outStart = point("outStart"), let outStop = point("outStop"),
+              inStop >= inStart, outStop > outStart else { return nil }
+        return FadePoints(inStart: inStart, inStop: inStop, outStart: outStart, outStop: outStop)
+    }
+}
+
 struct Track: Codable, Hashable, Identifiable {
     var id: String
     var title: String
@@ -64,6 +82,12 @@ struct Track: Codable, Hashable, Identifiable {
     var batch: String?
     /// Средняя громкость записи в LUFS, как её измерил Яндекс. По ней выравнивается звук.
     var loudness: Double?
+    /// Истинный пик записи в dBTP: тихий трек поднимается не выше, чем он позволяет.
+    var peak: Double?
+    /// Точки плавного перехода в секундах, которые Яндекс размечает для музыки.
+    var fade: FadePoints?
+    /// Точки перехода для волны-сета: в ней треки сведены плотнее, чем обычно.
+    var mixFade: FadePoints?
 
     var duration: Double { Double(durationMs) / 1000 }
 

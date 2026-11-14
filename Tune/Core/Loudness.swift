@@ -7,24 +7,32 @@ import AVFoundation
 final class Loudness {
     static let shared = Loudness()
 
-    private var known: [String: Double]
+    /// Средняя громкость в LUFS и пик в dBTP.
+    struct Level: Codable {
+        var i: Double
+        var tp: Double?
+    }
+
+    private var known: [String: Level]
 
     private init() {
-        known = Storage.load("loudness.json", as: [String: Double].self) ?? [:]
+        known = Storage.load("loudness-r128.json", as: [String: Level].self) ?? [:]
     }
 
     /// Громкость, если она уже известна.
-    func value(_ track: Track) -> Double? {
-        track.loudness ?? known[track.id]
+    func value(_ track: Track) -> Level? {
+        if let i = track.loudness { return Level(i: i, tp: track.peak) }
+        return known[track.id]
     }
 
     /// Узнаёт громкость трека: у Яндекса, а если не вышло — по файлу.
-    func resolve(_ track: Track) async -> Double? {
+    func resolve(_ track: Track) async -> Level? {
         if let value = value(track) { return value }
         if Demo.on { return nil }
-        if !Session.shared.offline, let fresh = try? await API.shared.tracks(ids: [track.id]).first?.loudness {
-            store(track.id, fresh)
-            return fresh
+        if !Session.shared.offline, let fresh = try? await API.shared.tracks(ids: [track.id]).first, let i = fresh.loudness {
+            let level = Level(i: i, tp: fresh.peak)
+            store(track.id, level)
+            return level
         }
         guard let file = Downloads.shared.fileURL(for: track.id) ?? TrackFiles.existing(id: track.id, in: Storage.stream) else { return nil }
         guard let measured = await Task.detached(priority: .utility, operation: { Self.measure(file) }).value else { return nil }
@@ -32,15 +40,15 @@ final class Loudness {
         return measured
     }
 
-    private func store(_ id: String, _ value: Double) {
+    private func store(_ id: String, _ value: Level) {
         known[id] = value
         let snapshot = known
-        Task.detached(priority: .utility) { Storage.save(snapshot, "loudness.json") }
+        Task.detached(priority: .utility) { Storage.save(snapshot, "loudness-r128.json") }
     }
 
     /// Средняя громкость файла. Это приближение к LUFS: без частотной поправки стандарта,
     /// поэтому может отличаться от числа Яндекса на пару децибел.
-    nonisolated static func measure(_ url: URL) -> Double? {
+    nonisolated static func measure(_ url: URL) -> Level? {
         let asset = AVURLAsset(url: url)
         guard let track = asset.tracks(withMediaType: .audio).first, let reader = try? AVAssetReader(asset: asset) else { return nil }
         let settings: [String: Any] = [
@@ -58,6 +66,7 @@ final class Loudness {
         guard reader.startReading() else { return nil }
         var sum = 0.0
         var count = 0
+        var top = 0.0
         var samples: [Int16] = []
         while let buffer = output.copyNextSampleBuffer() {
             guard let block = CMSampleBufferGetDataBuffer(buffer) else { continue }
@@ -73,11 +82,12 @@ final class Loudness {
             for index in 0..<size {
                 let value = Double(samples[index]) / 32768
                 sum += value * value
+                top = max(top, abs(value))
             }
             count += size
         }
         guard count > 22050, sum > 0 else { return nil }
         // +3 дБ: у стереозаписи мощность двух каналов складывается, а здесь они сведены в один.
-        return 10 * log10(sum / Double(count)) + 3
+        return Level(i: 10 * log10(sum / Double(count)) + 3, tp: top > 0 ? 20 * log10(top) : nil)
     }
 }

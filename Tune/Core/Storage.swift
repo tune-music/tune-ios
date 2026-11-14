@@ -81,9 +81,10 @@ enum Settings {
         set { defaults.set(newValue, forKey: "uncensor") }
     }
 
-    /// Плавный переход между треками, секунд. 0 — выключен.
+    /// Плавный переход между треками: −1 — «Авто» по точкам Яндекса, 0 — выключен,
+    /// иначе ровный переход на столько секунд.
     static var crossfade: Int {
-        get { defaults.integer(forKey: "crossfade") }
+        get { defaults.object(forKey: "crossfade") as? Int ?? -1 }
         set { defaults.set(newValue, forKey: "crossfade") }
     }
 

@@ -137,7 +137,11 @@ final class API {
             unavailable: value["available"].bool == false,
             uncensored: uncensored,
             batch: nil,
-            loudness: value["r128"]["i"].double)
+            loudness: value["r128"]["i"].double,
+            peak: value["r128"]["tp"].double,
+            // Точки перехода есть только у музыки: у подкастов и книг их нет.
+            fade: value["type"].string == "music" ? FadePoints.parse(value["fade"]) : nil,
+            mixFade: value["type"].string == "music" ? FadePoints.parse(value["mixFade"]) : nil)
     }
 
     private static func parsePlaylist(_ value: JSON, owner: String) -> Playlist? {
