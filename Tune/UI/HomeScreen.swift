@@ -644,6 +644,8 @@ private struct WordCardView: View {
                 pill("hand.thumbsdown", "Мимо", card.feedback == "dislike") { words.rate(track, "dislike") }
                 Spacer(minLength: 0)
                 more(card, track)
+                    .lineLimit(1)
+                    .layoutPriority(-1)
             }
         }
         .padding(.horizontal, 20)
@@ -697,6 +699,8 @@ private struct WordCardView: View {
             HStack(spacing: 6) {
                 Image(systemName: icon)
                 Text(title)
+                    .lineLimit(1)
+                    .fixedSize()
             }
             .font(.scaled(size: 13, weight: .medium))
             .foregroundStyle(active ? Color.black : Theme.text)
