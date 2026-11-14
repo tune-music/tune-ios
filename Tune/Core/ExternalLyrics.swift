@@ -180,47 +180,61 @@ enum ExternalLyrics {
             .map { $0 ? "1" : "0" }.joined() + (mirror(Settings.lyricsMirror) ?? "")
     }
 
-    /// Ответ одной базы: текст или nil, и смогли ли до неё достучаться.
-    private struct Answer {
-        var text: LyricsText?
-        var reached: Bool
+    private enum Source {
+        case yandex, lrclib, netease
     }
 
-    private static func ask(_ on: Bool, _ search: @escaping (Track) async throws -> LyricsText?, _ track: Track) async -> Answer {
-        guard on else { return Answer(text: nil, reached: true) }
-        do {
-            let found = try await search(track)
-            return Answer(text: (found?.lines.isEmpty ?? true) ? nil : found, reached: true)
-        } catch {
-            return Answer(text: nil, reached: false)
-        }
-    }
-
-    /// Текст трека и все ли базы ответили. Не ответила какая-то — найденное не окончательно,
-    /// в следующий раз спросим снова.
-    static func find(_ track: Track, yandex: (String) async throws -> LyricsText) async throws -> (LyricsText, complete: Bool) {
+    /// Текст трека и все ли источники ответили. Не ответил какой-то — найденное не
+    /// окончательно, в следующий раз спросим снова.
+    ///
+    /// Яндекс, LRCLIB и NetEase спрашиваются одновременно: первый пришедший синхронный текст
+    /// и показывается, остальные запросы отменяются. Медленная или недоступная база не держит
+    /// остальные. Если «Искать и там, где у Яндекса есть свой текст» выключено, синхронный текст
+    /// Яндекса годится сразу; включено — он берётся, только если в других базах синхронного нет.
+    static func find(_ track: Track, yandex: @escaping (String) async throws -> LyricsText) async -> (LyricsText, complete: Bool) {
         let empty = LyricsText(lines: [], authors: nil, source: nil)
         let enabled = Settings.lyricsExternal
-        var own: LyricsText?
-        if track.hasLyrics, !enabled || !Settings.lyricsAlways {
-            let found = try await yandex(track.id)
-            if !enabled || found.synced { return (found, true) }
-            own = found
+        var sources: [Source] = []
+        if track.hasLyrics { sources.append(.yandex) }
+        if enabled, Settings.lyricsLRCLIB { sources.append(.lrclib) }
+        if enabled, Settings.lyricsNetEase { sources.append(.netease) }
+        guard !sources.isEmpty else { return (empty, true) }
+        let always = Settings.lyricsAlways
+        let neteaseFirst = Settings.lyricsNetEaseFirst
+        return await withTaskGroup(of: (Source, LyricsText?, Bool).self) { group in
+            for source in sources {
+                group.addTask {
+                    do {
+                        let found: LyricsText?
+                        switch source {
+                        case .yandex: found = try await yandex(track.id)
+                        case .lrclib: found = try await lrclib(track)
+                        case .netease: found = try await netease(track)
+                        }
+                        return (source, (found?.lines.isEmpty ?? true) ? nil : found, true)
+                    } catch {
+                        return (source, nil, false)
+                    }
+                }
+            }
+            var found: [Source: LyricsText] = [:]
+            var complete = true
+            for await (source, text, reached) in group {
+                if !reached { complete = false }
+                guard let text else { continue }
+                found[source] = text
+                // Синхронный текст: показываем первый пришедший.
+                if text.synced, source != .yandex || !always || !enabled {
+                    group.cancelAll()
+                    return (text, true)
+                }
+            }
+            let external = (neteaseFirst ? [Source.netease, .lrclib] : [.lrclib, .netease]).compactMap { found[$0] }
+            // Синхронного нигде, кроме Яндекса, нет — берём Яндекс; простой текст Яндекса лучше
+            // простого из чужих баз.
+            if let own = found[.yandex] { return (own, complete) }
+            return (external.first ?? empty, complete)
         }
-        guard enabled else { return (empty, true) }
-        // Обе базы спрашиваем одновременно: медленная или недоступная не задерживает другую.
-        async let lrc = ask(Settings.lyricsLRCLIB, lrclib, track)
-        async let net = ask(Settings.lyricsNetEase, netease, track)
-        let answers = Settings.lyricsNetEaseFirst ? [await net, await lrc] : [await lrc, await net]
-        let complete = answers.allSatisfy(\.reached)
-        if let synced = answers.compactMap(\.text).first(where: \.synced) { return (synced, complete) }
-        // Синхронного нет нигде — текст Яндекса, хоть и простой, лучше простого из LRCLIB.
-        if track.hasLyrics {
-            let mine: LyricsText
-            if let own { mine = own } else { mine = try await yandex(track.id) }
-            if !mine.lines.isEmpty { return (mine, complete) }
-        }
-        return (answers.compactMap(\.text).first ?? empty, complete)
     }
 }
 

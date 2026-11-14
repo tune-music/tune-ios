@@ -770,6 +770,8 @@ private struct LyricsPane: View {
     @ObservedObject var progress: PlaybackProgress
     @State private var lines: [LyricLine]?
     @State private var info: LyricsText?
+    /// Нажали «Повторить»: поиск идёт заново.
+    @State private var attempt = 0
     /// Когда текст последний раз листали пальцем: в это время он сам не прокручивается.
     @State private var touched = Date.distantPast
 
@@ -791,6 +793,18 @@ private struct LyricsPane: View {
                             .font(.system(size: 34))
                         Text("Текста нет")
                             .font(.scaled(size: 18, weight: .semibold))
+                        Button {
+                            attempt += 1
+                        } label: {
+                            Text("Повторить")
+                                .font(.scaled(size: 15, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 18)
+                                .frame(height: 36)
+                                .background(Color.white.opacity(0.14), in: Capsule())
+                        }
+                        .buttonStyle(PressStyle())
+                        .padding(.top, 6)
                     }
                     .foregroundStyle(.white.opacity(0.6))
                 } else {
@@ -802,10 +816,11 @@ private struct LyricsPane: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .task(id: track.id) {
+        .task(id: "\(track.id)#\(attempt)") {
             lines = nil
             info = nil
             let found = try? await API.shared.lyrics(for: track)
+            if Task.isCancelled { return }
             info = found
             lines = found?.lines ?? []
         }

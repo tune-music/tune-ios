@@ -887,21 +887,19 @@ final class API {
         if let text = saved, Self.isStub(text.lines) { saved = nil }
         // Искали с теми же настройками — второй раз в сеть не идём.
         if let saved, saved.searched == key { return saved }
-        let found: LyricsText
-        let complete: Bool
-        do {
-            let answer = try await ExternalLyrics.find(track) { id in
-                // Просьба подключить подписку вместо текста — не текст: ищем в других базах.
-                let own = try await self.fetchLyrics(track: id)
-                return Self.isStub(own.lines) ? LyricsText(lines: [], authors: nil, source: nil) : own
-            }
-            found = answer.0
-            complete = answer.complete
-        } catch {
-            // Нет сети — выручает сохранённый текст.
-            if let saved { return saved }
-            throw error
+        let ask: (String) async throws -> LyricsText = { id in
+            // Просьба подключить подписку вместо текста — не текст: ищем в других базах.
+            let own = try await self.fetchLyrics(track: id)
+            return Self.isStub(own.lines) ? LyricsText(lines: [], authors: nil, source: nil) : own
         }
+        var (found, complete) = await ExternalLyrics.find(track, yandex: ask)
+        // Ни один источник не ответил (первое соединение не успело, сеть мигнула) — ещё раз,
+        // а не сразу «Текста нет».
+        if found.lines.isEmpty, !complete, !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            (found, complete) = await ExternalLyrics.find(track, yandex: ask)
+        }
+        if found.lines.isEmpty, !complete, let saved { return saved }
         // Аккаунту без Плюса Яндекс вместо текста отдаёт просьбу подключить подписку.
         // Её нельзя сохранять: иначе она останется и после входа в аккаунт с Плюсом.
         if Self.isStub(found.lines) || found.lines.isEmpty {
