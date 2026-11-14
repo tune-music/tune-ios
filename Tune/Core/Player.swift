@@ -417,7 +417,7 @@ final class Player: NSObject, ObservableObject {
         preloadNext()
         prepareContinuation()
         if wave != nil {
-            WaveWords.shared.load(queue: queue, from: target)
+            WaveWords.shared.load(queue: queue, from: index)
             WaveWords.shared.shown(track)
         }
     }
