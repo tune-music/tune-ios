@@ -287,6 +287,7 @@ final class Uncensor {
                 }
             }
         }
+        fillCupsizeMetadata(&list)
         // Треки подменённого альбома без своей обложки берут обложку альбома.
         for (albumID, album) in list.albums.sorted(by: { $0.key < $1.key }) {
             let fields = catalogEntry(albumID, album).dict
@@ -301,5 +302,33 @@ final class Uncensor {
             }
         }
         return list
+    }
+
+    /// У этого релиза FckCensor хранит порядок и аудио, а названия есть в ID3-тегах файлов.
+    private static func fillCupsizeMetadata(_ list: inout List) {
+        let albumID = "24720439"
+        guard list.albums[albumID] != nil else { return }
+        let artist: [String: Any] = ["id": 10946087, "name": "CUPSIZE"]
+        let featured: [String: Any] = ["name": "17 SEVENTEEN"]
+        let titles = [
+            "110945082": "ДАВАЙ ТРАХАТЬСЯ В МАШИНЕ",
+            "110945083": "люби меня, алина",
+            "110945084": "ГИДРОПОН",
+            "110945085": "Папик",
+            "110945087": "вайфуу",
+            "110945088": "я схавал опиат",
+            "110945089": "Вирус",
+            "110945090": "МОЯ МАМА ПЬЕТ",
+            "110945091": "Ты любишь травку",
+            "110945092": "Забуду",
+            "110945093": "мне похуй",
+        ]
+        let album: [String: Any] = ["title": "Еби меня, малышка", "artists": [artist], "year": 2023]
+        list.albums[albumID]?.merge(album) { existing, fallback in existing is NSNull ? fallback : existing }
+        for (id, title) in titles where list.files[id] != nil {
+            let artists = id == "110945085" ? [artist, featured] : [artist]
+            let metadata: [String: Any] = ["title": title, "artists": artists, "contentWarning": "explicit"]
+            list.tracks[id, default: [:]].merge(metadata) { existing, fallback in existing is NSNull ? fallback : existing }
+        }
     }
 }
