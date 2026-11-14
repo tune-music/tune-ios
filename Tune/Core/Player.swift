@@ -279,6 +279,9 @@ final class Player: NSObject, ObservableObject {
         itemObservation = nil
         let out = crossOut
         crossOut = nil
+        // Трек мог уже уходить переходом раньше (вернулись к нему кнопкой «назад»): в этот раз
+        // он снова перетекает в следующий.
+        fadedFor = nil
         endFade()
         UserDefaults.standard.set(target, forKey: "playerIndex")
 
@@ -840,8 +843,11 @@ final class Player: NSObject, ObservableObject {
                 await self.extendWave()
                 if self.index + 1 < self.queue.count {
                     self.load(self.index + 1, autoplay: true)
+                } else if self.now.kind == "radio", let seeds = self.now.item, !seeds.isEmpty {
+                    // Сессия волны устарела (например, после перезапуска): начинаем её заново.
+                    self.playWave(seeds: seeds.components(separatedBy: ","), name: self.now.name)
                 } else {
-                    self.finishQueue()
+                    self.continueAfterQueue()
                 }
             }
             return
@@ -850,7 +856,17 @@ final class Player: NSObject, ObservableObject {
             load(0, autoplay: true)
             return
         }
-        if auto { finishQueue() }
+        if auto { continueAfterQueue() }
+    }
+
+    /// Очередь кончилась сама: музыка не обрывается, а продолжается волной по последнему
+    /// треку — так же, как в приложении Яндекса.
+    private func continueAfterQueue() {
+        guard let last = current, !sleepAfterTrack else {
+            finishQueue()
+            return
+        }
+        playWave(seeds: ["track:\(last.id)"], name: "Волна по треку «\(last.title)»")
     }
 
     private func finishQueue() {
@@ -1055,11 +1071,17 @@ final class Player: NSObject, ObservableObject {
     private struct Saved: Codable {
         var queue: [Track]
         var name: String
+        /// Откуда играла очередь: после перезапуска на главной и в списках видно, что играет.
+        var kind: String?
+        var item: String?
+        /// Волна: её сессия и затравки, чтобы она продолжилась и после перезапуска.
+        var session: String?
+        var seeds: [String]?
     }
 
     private func saveQueue() {
         if Demo.on { return }
-        let saved = Saved(queue: queue, name: contextName)
+        let saved = Saved(queue: queue, name: contextName, kind: now.kind, item: now.item, session: wave, seeds: waveSeeds)
         Task.detached(priority: .utility) { Storage.save(saved, "player.json") }
         savePosition()
     }
@@ -1075,8 +1097,13 @@ final class Player: NSObject, ObservableObject {
         guard let saved: Saved = Storage.load("player.json"), !saved.queue.isEmpty else { return }
         queue = saved.queue
         contextName = saved.name
-        context = .various(saved.name)
-        mark("various", nil, saved.name)
+        let kind = saved.kind.flatMap { $0.isEmpty ? nil : $0 } ?? "various"
+        context = PlayContext(kind: kind, item: saved.item, name: saved.name)
+        mark(kind, saved.item, saved.name)
+        if kind == "radio", let session = saved.session {
+            wave = session
+            waveSeeds = saved.seeds ?? []
+        }
         index = min(max(UserDefaults.standard.integer(forKey: "playerIndex"), 0), saved.queue.count - 1)
         let position = UserDefaults.standard.double(forKey: "playerPosition")
         progress.position = position

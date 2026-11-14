@@ -199,7 +199,7 @@ final class Downloads: ObservableObject {
             }
             await ImageLoader.shared.pin(track.cover)
             // Текст песни скачивается вместе с треком: он пригодится без сети.
-            if track.hasLyrics { _ = try? await API.shared.lyrics(track: track.id) }
+            _ = try? await API.shared.lyrics(for: track)
             let bytes = Int64((try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
             entries.removeAll { $0.track.id == track.id }
             entries.insert(Entry(track: track, file: file.lastPathComponent, bytes: bytes, date: Date()), at: 0)

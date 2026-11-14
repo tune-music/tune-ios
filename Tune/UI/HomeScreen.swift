@@ -194,8 +194,14 @@ struct HomeScreen: View {
                         player.tapWave(seeds: wave.seeds, name: wave.title)
                     } label: {
                         HStack(spacing: 7) {
-                            Image(systemName: active ? (now.playing ? "waveform" : "pause.fill") : "dot.radiowaves.left.and.right")
-                                .font(.system(size: 12, weight: .bold))
+                            if active {
+                                PlayingBars(playing: now.playing, size: 13, color: .black)
+                            } else if let cover = wave.cover {
+                                CoverView(uri: cover, size: 24, round: true)
+                            } else {
+                                Image(systemName: "dot.radiowaves.left.and.right")
+                                    .font(.system(size: 12, weight: .bold))
+                            }
                             Text(wave.title)
                                 .font(.scaled(size: 15, weight: .semibold))
                                 .lineLimit(1)
@@ -311,7 +317,7 @@ private struct WaveHero: View {
             VStack(spacing: 18) {
                 if let other {
                     HStack(spacing: 7) {
-                        Image(systemName: now.playing ? "waveform" : "pause.fill")
+                        PlayingBars(playing: now.playing, size: 13)
                             .font(.system(size: 12, weight: .bold))
                             .foregroundStyle(Theme.accentText)
                         Text("Сейчас играет: \(other)")

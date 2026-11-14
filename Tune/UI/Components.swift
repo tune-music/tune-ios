@@ -354,22 +354,14 @@ struct TrackRow: View {
                 HStack(spacing: 12) {
                     lead(playing)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(track.fullTitle)
-                            .font(.scaled(size: 16, weight: .medium))
-                            .foregroundStyle(playing ? Theme.accentText : Theme.text)
-                            .lineLimit(1)
+                        HStack(spacing: 6) {
+                            Text(track.fullTitle)
+                                .font(.scaled(size: 16, weight: .medium))
+                                .foregroundStyle(playing ? Theme.accentText : Theme.text)
+                                .lineLimit(1)
+                            TrackMarks(track: track)
+                        }
                         HStack(spacing: 5) {
-                            if track.uncensored {
-                                Image(systemName: "lock.open.fill")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(Theme.accentText)
-                            } else if track.explicit {
-                                Text("E")
-                                    .font(.scaled(size: 9, weight: .heavy))
-                                    .foregroundStyle(.black)
-                                    .frame(width: 13, height: 13)
-                                    .background(Theme.dim, in: RoundedRectangle(cornerRadius: 3, style: .continuous))
-                            }
                             if downloads.has(track.id) {
                                 Image(systemName: "arrow.down.circle.fill")
                                     .font(.system(size: 11))
@@ -452,9 +444,7 @@ extension TrackRow {
     /// Слева обложка, а в альбоме — номер трека. У играющего трека вместо них значок.
     @ViewBuilder
     fileprivate func lead(_ playing: Bool) -> some View {
-        let mark = Image(systemName: now.playing ? "waveform" : "pause.fill")
-            .font(.system(size: 17, weight: .semibold))
-            .foregroundStyle(Theme.accentText)
+        let mark = PlayingBars(playing: now.playing, size: 18)
         if let number {
             ZStack {
                 if playing {
@@ -546,13 +536,73 @@ struct PlayingBadge: View {
             .shadow(color: .black.opacity(0.35), radius: 6, y: 2)
     }
 
-    @ViewBuilder private var mark: some View {
-        let image = Image(systemName: playing ? "waveform" : "pause.fill")
-        if #available(iOS 17.0, *) {
-            image.symbolEffect(.variableColor.iterative, isActive: playing && !ProcessInfo.processInfo.isLowPowerModeEnabled)
-        } else {
-            image
+    private var mark: some View {
+        PlayingBars(playing: playing, size: size * 0.46, color: .black)
+    }
+}
+
+/// Значки у названия трека, как в Tune Native: «E» — ненормативная лексика, открытый замок —
+/// играет версия без цензуры, перечёркнутый глаз — свой загруженный трек, его слышите только вы.
+struct TrackMarks: View {
+    let track: Track
+    var size: CGFloat = 14
+    /// Тёмный фон (полноэкранный плеер): значки светлые в любой теме.
+    var onDark = false
+
+    var body: some View {
+        if track.explicit || track.uncensored || track.ugc == true {
+            HStack(spacing: 4) {
+                if track.explicit {
+                    badge(Text("E").font(.system(size: size * 0.68, weight: .heavy)))
+                }
+                if track.uncensored {
+                    badge(Image(systemName: "lock.open.fill").font(.system(size: size * 0.6, weight: .bold)))
+                        .accessibilityLabel("Без цензуры")
+                }
+                if track.ugc == true {
+                    Image(systemName: "eye.slash.fill")
+                        .font(.system(size: size * 0.8))
+                        .foregroundStyle(onDark ? Color.white.opacity(0.6) : Theme.dim)
+                        .accessibilityLabel("Этот трек можете слушать только вы")
+                }
+            }
+            .fixedSize()
         }
+    }
+
+    private func badge<Content: View>(_ content: Content) -> some View {
+        content
+            .foregroundStyle(onDark ? Color.black : Theme.background)
+            .frame(width: size, height: size)
+            .background(onDark ? Color.white.opacity(0.75) : Theme.dim, in: RoundedRectangle(cornerRadius: 3, style: .continuous))
+    }
+}
+
+/// Живые полоски играющего трека: прыгают, пока звук идёт, и замирают на паузе.
+struct PlayingBars: View {
+    let playing: Bool
+    var size: CGFloat = 16
+    var color: Color = Theme.accentText
+
+    private static let speeds: [Double] = [2.4, 3.3, 2.8, 3.8]
+    private static let phases: [Double] = [0, 1.3, 2.2, 0.6]
+    private static let rest: [Double] = [0.45, 0.85, 0.6, 0.35]
+
+    var body: some View {
+        let still = !playing || ProcessInfo.processInfo.isLowPowerModeEnabled
+        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: still)) { context in
+            let time = context.date.timeIntervalSinceReferenceDate
+            HStack(alignment: .bottom, spacing: size * 0.12) {
+                ForEach(0..<4, id: \.self) { bar in
+                    let level = still ? Self.rest[bar] : 0.3 + 0.7 * abs(sin(time * Self.speeds[bar] + Self.phases[bar]))
+                    Capsule()
+                        .fill(color)
+                        .frame(width: size * 0.16, height: max(size * 0.18, size * level))
+                }
+            }
+            .frame(width: size, height: size, alignment: .bottom)
+        }
+        .accessibilityLabel(playing ? "Играет" : "Пауза")
     }
 }
 
@@ -657,17 +707,18 @@ struct WaveTile: View {
         VStack(spacing: 8) {
             ZStack {
                 Circle()
-                    .fill(Theme.surface)
-                Circle()
-                    .strokeBorder(color.opacity(0.75), lineWidth: 2)
+                    .fill(color)
+                if let cover = wave.cover {
+                    CoverView(uri: cover, size: size, round: true)
+                }
                 if let playing {
                     Circle()
                         .strokeBorder(Theme.accent, lineWidth: 3)
                     PlayingBadge(playing: playing, size: 52)
-                } else {
+                } else if wave.cover == nil {
                     Image(systemName: "play.fill")
                         .font(.system(size: 26))
-                        .foregroundStyle(Theme.text)
+                        .foregroundStyle(.white)
                 }
             }
             .frame(width: size, height: size)
@@ -890,21 +941,43 @@ struct RoundButton: View {
 /// Главная кнопка страницы: жёлтая «Слушать».
 struct PlayButton: View {
     var title = "Слушать"
+    /// Откуда играет список: если сейчас звучит он, кнопка ставит на паузу и продолжает.
+    var context: PlayContext?
     let action: () -> Void
 
+    @ObservedObject private var now = Player.shared.now
+
+    private var active: Bool {
+        guard let context else { return false }
+        return now.kind == context.kind && now.item == context.item && (context.item != nil || now.name == context.name)
+    }
+
     var body: some View {
-        Button(action: action) {
+        let on = active
+        Button {
+            if on { Player.shared.toggle() } else { action() }
+        } label: {
             HStack(spacing: 8) {
-                Image(systemName: "play.fill")
-                Text(title)
+                if on, now.playing {
+                    PlayingBars(playing: true, size: 17, color: .black)
+                        .transition(.scale.combined(with: .opacity))
+                } else {
+                    PlayGlyph(playing: false, size: 17)
+                        .transition(.scale.combined(with: .opacity))
+                }
+                Text(on ? (now.playing ? "Пауза" : "Продолжить") : title)
+                    .contentTransition(.identity)
             }
             .font(.system(size: 17, weight: .semibold))
             .foregroundStyle(.black)
             .frame(maxWidth: .infinity)
             .frame(height: 50)
             .background(Theme.accent, in: Capsule())
+            .animation(.spring(response: 0.35, dampingFraction: 0.8), value: on)
+            .animation(.spring(response: 0.35, dampingFraction: 0.8), value: now.playing)
+            .contentShape(Capsule())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressStyle())
     }
 }
 

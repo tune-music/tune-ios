@@ -88,8 +88,9 @@ struct WaveGrid: View {
                 } label: {
                     HStack(spacing: 8) {
                         if active {
-                            Image(systemName: now.playing ? "waveform" : "pause.fill")
-                                .font(.system(size: 13, weight: .bold))
+                            PlayingBars(playing: now.playing, size: 14, color: .black)
+                        } else if let cover = wave.cover {
+                            CoverView(uri: cover, size: 26, round: true)
                         }
                         Text(wave.title)
                             .font(.scaled(size: 15, weight: .semibold))

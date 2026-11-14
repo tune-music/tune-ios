@@ -141,7 +141,8 @@ final class API {
             peak: value["r128"]["tp"].double,
             // Точки перехода есть только у музыки: у подкастов и книг их нет.
             fade: value["type"].string == "music" ? FadePoints.parse(value["fade"]) : nil,
-            mixFade: value["type"].string == "music" ? FadePoints.parse(value["mixFade"]) : nil)
+            mixFade: value["type"].string == "music" ? FadePoints.parse(value["mixFade"]) : nil,
+            ugc: value["trackSource"].string == "UGC")
     }
 
     private static func parsePlaylist(_ value: JSON, owner: String) -> Playlist? {
@@ -523,6 +524,17 @@ final class API {
         _ = try await post("users/\(uid)/playlists/\(kind)/name?value=\(Self.encode(title))")
     }
 
+    /// «Меньше ИИ»: Яндекс реже ставит в рекомендации музыку, созданную с помощью ИИ.
+    func aiReduction() async throws -> Bool {
+        if Demo.on { return false }
+        return result(try await get("account/settings"))["aiContentReductionEnabled"].bool ?? false
+    }
+
+    func setAIReduction(_ enabled: Bool) async throws {
+        if Demo.on { return }
+        _ = try await post("account/settings?aiContentReductionEnabled=\(enabled)")
+    }
+
     func setPlaylistOpen(uid: String, kind: String, _ open: Bool) async throws {
         _ = try await post("users/\(uid)/playlists/\(kind)/visibility?value=\(open ? "public" : "private")")
     }
@@ -703,7 +715,8 @@ final class API {
         for item in value.array {
             let station = item["station"]
             guard let type = station["id"]["type"].string, let tag = station["id"]["tag"].string, let name = station["name"].string else { continue }
-            found[type, default: []].append(WaveCard(title: name, seeds: ["\(type):\(tag)"], cover: nil, color: station["icon"]["backgroundColor"].string))
+            let icon = station["icon"]["imageUrl"].string
+            found[type, default: []].append(WaveCard(title: name, seeds: ["\(type):\(tag)"], cover: (icon?.isEmpty ?? true) ? nil : icon, color: station["icon"]["backgroundColor"].string))
         }
         return StationGroup.known.compactMap { group in
             guard let waves = found[group.id], !waves.isEmpty else { return nil }
@@ -782,14 +795,18 @@ final class API {
         return FileInfo(url: url, key: (key?.isEmpty ?? true) ? nil : key, codec: info["codec"].string ?? "mp3")
     }
 
-    /// Сначала синхронный текст, потом обычный.
-    func lyrics(track id: String) async throws -> [LyricLine] {
+    /// Текст трека: Яндекс, LRCLIB и NetEase — в порядке из настроек.
+    func lyrics(for track: Track) async throws -> [LyricLine] {
         if Demo.on { return Demo.lyrics }
         // Однажды полученный текст лежит на устройстве: он есть и без сети.
         _ = Storage.lyrics
-        let name = "Lyrics/\(Storage.hash(id)).json"
+        let name = "Lyrics/\(Storage.hash(track.id)).json"
         if let saved = Storage.load(name, as: [LyricLine].self), !Self.isStub(saved) { return saved }
-        let lines = try await fetchLyrics(track: id)
+        let lines = try await ExternalLyrics.find(track) { id in
+            // Просьба подключить подписку вместо текста — не текст: ищем в других базах.
+            let own = try await self.fetchLyrics(track: id)
+            return Self.isStub(own) ? [] : own
+        }
         // Аккаунту без Плюса Яндекс вместо текста отдаёт просьбу подключить подписку.
         // Её нельзя сохранять: иначе она останется и после входа в аккаунт с Плюсом.
         if Self.isStub(lines) {
@@ -824,7 +841,7 @@ final class API {
         return []
     }
 
-    private static func parseLRC(_ text: String) -> [LyricLine] {
+    static func parseLRC(_ text: String) -> [LyricLine] {
         var out: [LyricLine] = []
         for raw in text.components(separatedBy: .newlines) {
             let line = raw.trimmingCharacters(in: .whitespaces)

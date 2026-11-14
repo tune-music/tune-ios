@@ -88,6 +88,8 @@ struct Track: Codable, Hashable, Identifiable {
     var fade: FadePoints?
     /// Точки перехода для волны-сета: в ней треки сведены плотнее, чем обычно.
     var mixFade: FadePoints?
+    /// Загружен самим пользователем: слушать его может только он.
+    var ugc: Bool?
 
     var duration: Double { Double(durationMs) / 1000 }
 

@@ -72,10 +72,29 @@ final class TrackPage: UIView {
         }
     }
 
+    /// Название со значками, как в Tune Native: «E», без цензуры, только для вас.
+    private static func marked(_ track: Track) -> NSAttributedString {
+        let text = NSMutableAttributedString(string: track.fullTitle)
+        let size: CGFloat = 12
+        func add(_ symbol: String, _ color: UIColor) {
+            let config = UIImage.SymbolConfiguration(pointSize: size, weight: .semibold)
+            guard let image = UIImage(systemName: symbol, withConfiguration: config)?.withTintColor(color, renderingMode: .alwaysOriginal) else { return }
+            let attachment = NSTextAttachment(image: image)
+            attachment.bounds = CGRect(x: 0, y: -1.5, width: image.size.width, height: image.size.height)
+            text.append(NSAttributedString(string: "  "))
+            text.append(NSAttributedString(attachment: attachment))
+        }
+        let mark = UIColor(white: 1, alpha: 0.65)
+        if track.explicit { add("e.square.fill", mark) }
+        if track.uncensored { add("lock.open.fill", mark) }
+        if track.ugc == true { add("eye.slash.fill", mark) }
+        return text
+    }
+
     func show(_ track: Track?) {
         guard track?.id != self.track?.id || track?.cover != self.track?.cover else { return }
         self.track = track
-        title.text = track?.fullTitle
+        title.attributedText = track.map(Self.marked)
         artist.text = track?.artists
         request += 1
         let mine = request

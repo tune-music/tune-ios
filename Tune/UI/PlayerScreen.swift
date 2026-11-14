@@ -240,11 +240,7 @@ private struct PlayerBody: View {
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    if track.uncensored {
-                        Image(systemName: "lock.open.fill")
-                            .font(.system(size: 13))
-                            .foregroundStyle(Theme.accent)
-                    }
+                    TrackMarks(track: track, size: 16, onDark: true)
                 }
                 // Нажатие на исполнителя ведёт на его страницу.
                 Button {
@@ -701,10 +697,13 @@ private struct QueueSheet: View {
                             HStack(spacing: 12) {
                                 CoverView(uri: track.cover, size: 46, corner: 8)
                                 VStack(alignment: .leading, spacing: 3) {
-                                    Text(track.fullTitle)
-                                        .font(.scaled(size: 16, weight: .medium))
-                                        .foregroundStyle(index == player.index ? Theme.accent : Color.white)
-                                        .lineLimit(1)
+                                    HStack(spacing: 6) {
+                                        Text(track.fullTitle)
+                                            .font(.scaled(size: 16, weight: .medium))
+                                            .foregroundStyle(index == player.index ? Theme.accent : Color.white)
+                                            .lineLimit(1)
+                                        TrackMarks(track: track, onDark: true)
+                                    }
                                     Text(track.artists)
                                         .font(.scaled(size: 14))
                                         .foregroundStyle(Theme.dim)
@@ -712,8 +711,7 @@ private struct QueueSheet: View {
                                 }
                                 Spacer(minLength: 0)
                                 if index == player.index {
-                                    Image(systemName: "waveform")
-                                        .foregroundStyle(Theme.accent)
+                                    PlayingBars(playing: player.isPlaying, size: 18, color: Theme.accent)
                                 }
                             }
                           }
@@ -805,7 +803,7 @@ private struct LyricsPane: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task(id: track.id) {
             lines = nil
-            lines = (try? await API.shared.lyrics(track: track.id)) ?? []
+            lines = (try? await API.shared.lyrics(for: track)) ?? []
         }
     }
 

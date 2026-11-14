@@ -907,7 +907,7 @@ struct TrackListScreen: View {
                         session.show("Скачиваем: \(plural(all.count, "трек", "трека", "треков"))")
                     }
                 }
-                PlayButton {
+                PlayButton(context: context) {
                     player.play(all, context: context)
                 }
                 RoundButton(symbol: "shuffle") {
@@ -1120,7 +1120,7 @@ struct ArtistScreen: View {
                         RoundButton(symbol: session.likedArtists.contains(id) ? "heart.fill" : "heart", active: session.likedArtists.contains(id)) {
                             session.toggleArtist(id)
                         }
-                        PlayButton {
+                        PlayButton(context: PlayContext(kind: "artist", item: id, name: page.name)) {
                             player.play(page.popular, context: PlayContext(kind: "artist", item: id, name: page.name))
                         }
                         RoundButton(symbol: "dot.radiowaves.left.and.right") {

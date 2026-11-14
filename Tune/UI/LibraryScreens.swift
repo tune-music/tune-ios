@@ -442,6 +442,13 @@ struct SettingsScreen: View {
     @State private var uncensor = Settings.uncensor
     @State private var appearance = Settings.appearance
     @State private var crossfade = Settings.crossfade
+    @State private var lyricsExternal = Settings.lyricsExternal
+    @State private var lyricsAlways = Settings.lyricsAlways
+    @State private var lyricsLRCLIB = Settings.lyricsLRCLIB
+    @State private var lyricsNetEase = Settings.lyricsNetEase
+    @State private var lyricsNetEaseFirst = Settings.lyricsNetEaseFirst
+    /// nil — ещё не знаем, что сейчас в аккаунте.
+    @State private var aiLess: Bool?
     @State private var normalize = Settings.normalize
     @State private var streamQuality = Settings.streamQuality
     @State private var downloadQuality = Settings.downloadQuality
@@ -551,6 +558,29 @@ struct SettingsScreen: View {
             } footer: {
                 Text("«Авто» — как в Tune Native: переход по точкам, которые Яндекс размечает для каждого трека, не дольше 6 секунд; в волнах-сетах — по их сведению. Треки без разметки, в том числе свои и без цензуры, перетекают ровно за 6 секунд. Выравнивание приводит треки к одной громкости по данным Яндекса, а у скачанных без них — по самому файлу.")
             }
+            Section {
+                Toggle("Меньше ИИ", isOn: Binding(get: { aiLess ?? false }, set: { setAILess($0) }))
+                    .disabled(aiLess == nil)
+            } header: {
+                Text("Рекомендации")
+            } footer: {
+                Text("В рекомендациях будет реже встречаться музыка, созданная с помощью ИИ")
+            }
+            .tint(Theme.accentText)
+            Section {
+                Toggle("Синхронный текст из LRCLIB и NetEase", isOn: $lyricsExternal)
+                if lyricsExternal {
+                    Toggle("LRCLIB", isOn: $lyricsLRCLIB)
+                    Toggle("NetEase Cloud Music", isOn: $lyricsNetEase)
+                    Toggle("Сначала NetEase", isOn: $lyricsNetEaseFirst)
+                    Toggle("Искать и там, где у Яндекса есть свой текст", isOn: $lyricsAlways)
+                }
+            } header: {
+                Text("Текст песен")
+            } footer: {
+                Text("Когда у Яндекса нет текста со временем строк, Tune ищет его в открытых базах — только у того же трека. LRCLIB — открытая база синхронных текстов, у NetEase много синхронных текстов, в том числе русских.")
+            }
+            .tint(Theme.accentText)
             Section("Качество звука") {
                 Picker("При прослушивании", selection: $streamQuality) {
                     qualities
@@ -628,6 +658,12 @@ struct SettingsScreen: View {
             Appearance.apply()
         }
         .onChange(of: crossfade) { Settings.crossfade = $0 }
+        .onChange(of: lyricsExternal) { Settings.lyricsExternal = $0 }
+        .onChange(of: lyricsAlways) { Settings.lyricsAlways = $0 }
+        .onChange(of: lyricsLRCLIB) { Settings.lyricsLRCLIB = $0 }
+        .onChange(of: lyricsNetEase) { Settings.lyricsNetEase = $0 }
+        .onChange(of: lyricsNetEaseFirst) { Settings.lyricsNetEaseFirst = $0 }
+        .task { if aiLess == nil { aiLess = try? await API.shared.aiReduction() } }
         .onChange(of: normalize) { value in
             Settings.normalize = value
             Player.shared.settingsChanged()
@@ -660,6 +696,19 @@ struct SettingsScreen: View {
         .alert("Удалить всю скачанную музыку?", isPresented: $confirmRemove) {
             Button("Отмена", role: .cancel) {}
             Button("Удалить", role: .destructive) { downloads.removeAll() }
+        }
+    }
+
+    private func setAILess(_ value: Bool) {
+        let before = aiLess
+        aiLess = value
+        Task {
+            do {
+                try await API.shared.setAIReduction(value)
+            } catch {
+                aiLess = before
+                session.show("Не удалось изменить настройку")
+            }
         }
     }
 

@@ -88,6 +88,33 @@ enum Settings {
         set { defaults.set(newValue, forKey: "crossfade") }
     }
 
+    /// Синхронный текст из LRCLIB и NetEase, когда у Яндекса нет текста со временем строк.
+    static var lyricsExternal: Bool {
+        get { defaults.object(forKey: "lyricsExternal") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "lyricsExternal") }
+    }
+
+    /// Искать в LRCLIB и NetEase и там, где у Яндекса есть свой текст.
+    static var lyricsAlways: Bool {
+        get { defaults.bool(forKey: "lyricsAlways") }
+        set { defaults.set(newValue, forKey: "lyricsAlways") }
+    }
+
+    static var lyricsLRCLIB: Bool {
+        get { defaults.object(forKey: "lyricsLRCLIB") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "lyricsLRCLIB") }
+    }
+
+    static var lyricsNetEase: Bool {
+        get { defaults.object(forKey: "lyricsNetEase") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "lyricsNetEase") }
+    }
+
+    static var lyricsNetEaseFirst: Bool {
+        get { defaults.bool(forKey: "lyricsNetEaseFirst") }
+        set { defaults.set(newValue, forKey: "lyricsNetEaseFirst") }
+    }
+
     /// Громкие записи приглушаются до общего уровня.
     static var normalize: Bool {
         get { defaults.bool(forKey: "normalize") }
