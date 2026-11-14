@@ -40,20 +40,32 @@ struct HomeScreen: View {
     @EnvironmentObject private var player: Player
     @EnvironmentObject private var downloads: Downloads
     @Environment(\.navigate) private var navigate
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject private var model = HomeModel()
     @ObservedObject private var now = Player.shared.now
+    @ObservedObject private var words = WaveWords.shared
     @State private var tuning = Demo.screen == "wave"
     /// Страница прокручена: под часами нужна дымка, иначе полки сливаются с ними.
     @State private var scrolled = false
     @State private var origin: CGFloat?
 
     var body: some View {
+        let track = player.current
+        let card = wordCard(for: track)
+        let cardIdentity = card.flatMap { card in
+            track.map { WordCardView.Identity(cardID: card.id, trackID: $0.id) }
+        }
         ScrollViewReader { proxy in
         ScrollView {
             VStack(alignment: .leading, spacing: 28) {
                 WaveHero(tune: { tuning = true })
-                if Settings.waveWords {
-                    WordCardView()
+                if let card, let track, let cardIdentity {
+                    ZStack {
+                        WordCardView(card: card, track: track)
+                            .id(cardIdentity)
+                            .transition(.identity)
+                    }
+                    .transition(.opacity)
                 }
                 if Settings.waveWheel {
                     WheelStrip(tune: { tuning = true })
@@ -77,6 +89,7 @@ struct HomeScreen: View {
                     HomeSkeleton()
                 }
             }
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.34), value: cardIdentity)
             .padding(.bottom, 24)
             .background(alignment: .top) {
                 GeometryReader { geometry in
@@ -131,6 +144,14 @@ struct HomeScreen: View {
                 await Updater.shared.check()
             }.value
         }
+    }
+
+    private func wordCard(for track: Track?) -> WordCard? {
+        guard Settings.waveWords, let track else { return nil }
+        if Demo.on {
+            return WordCard(id: "demo", text: "Этот трек записали за одну ночь в домашней студии", big: "big", feedback: "neutral")
+        }
+        return player.isWave ? words.cards[track.id] : nil
     }
 
     /// Быстрый доступ: своё любимое в одно нажатие, не заходя в коллекцию.
@@ -570,35 +591,25 @@ private struct WheelStrip: View {
 
 /// «Слова в волне»: факт о звучащем треке, рассказ подробнее и оценка.
 private struct WordCardView: View {
-    @EnvironmentObject private var player: Player
-    @ObservedObject private var words = WaveWords.shared
-    @State private var open: String?
+    struct Identity: Hashable {
+        let cardID: String
+        let trackID: String
+    }
+
+    let card: WordCard
+    let track: Track
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var expanded = false
     @State private var story: WordBig?
     @State private var loading = false
 
-    private var card: WordCard? {
-        if Demo.on { return WordCard(id: "demo", text: "Этот трек записали за одну ночь в домашней студии", big: "big", feedback: "neutral") }
-        guard player.isWave, let track = player.current else { return nil }
-        return words.cards[track.id]
+    private var disclosureAnimation: Animation? {
+        reduceMotion ? nil : .easeInOut(duration: 0.34)
     }
 
     var body: some View {
-        Group {
-            if let card, let track = player.current {
-                content(card, track)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
-            }
-        }
-        .animation(.spring(response: 0.4, dampingFraction: 0.85), value: card?.id)
-        .onChange(of: player.current?.id) { _ in
-            open = nil
-            story = nil
-            loading = false
-        }
-    }
-
-    private func content(_ card: WordCard, _ track: Track) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 0) {
             HStack {
                 HStack(spacing: 6) {
                     Image(systemName: "waveform")
@@ -615,11 +626,42 @@ private struct WordCardView: View {
                     .font(.scaled(size: 12))
                     .foregroundStyle(Theme.dim)
             }
+            .padding(.bottom, 14)
             Text(card.text)
                 .font(.scaled(size: 19, weight: .medium))
                 .foregroundStyle(Theme.text)
                 .fixedSize(horizontal: false, vertical: true)
-            if open == card.id, let story {
+            if card.big != nil {
+                storyDisclosure
+            }
+            HStack(spacing: 8) {
+                pill(card.feedback == "like" ? "heart.fill" : "heart", "Больше такого", card.feedback == "like") {
+                    WaveWords.shared.rate(track, "like")
+                }
+                pill("hand.thumbsdown", "Мимо", card.feedback == "dislike") {
+                    WaveWords.shared.rate(track, "dislike")
+                }
+                Spacer(minLength: 0)
+                if card.big != nil {
+                    more
+                        .lineLimit(1)
+                        .layoutPriority(-1)
+                }
+            }
+            .padding(.top, 14)
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 18)
+        .background(Theme.surface, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .padding(.horizontal, 16)
+        .task(id: loading) {
+            if loading { await loadStory() }
+        }
+    }
+
+    private var storyDisclosure: some View {
+        WordStoryLayout(progress: expanded ? 1 : 0) {
+            if let story {
                 VStack(alignment: .leading, spacing: 10) {
                     Text(story.text)
                         .font(.scaled(size: 15))
@@ -637,53 +679,34 @@ private struct WordCardView: View {
                         }
                     }
                 }
-                .transition(.opacity.combined(with: .move(edge: .top)))
-            }
-            HStack(spacing: 8) {
-                pill(card.feedback == "like" ? "heart.fill" : "heart", "Больше такого", card.feedback == "like") { words.rate(track, "like") }
-                pill("hand.thumbsdown", "Мимо", card.feedback == "dislike") { words.rate(track, "dislike") }
-                Spacer(minLength: 0)
-                more(card, track)
-                    .lineLimit(1)
-                    .layoutPriority(-1)
+                .padding(.top, 14)
+                .transition(.identity)
             }
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 18)
-        .background(Theme.surface, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .padding(.horizontal, 16)
-        .animation(.spring(response: 0.4, dampingFraction: 0.85), value: open)
-        .animation(.spring(response: 0.4, dampingFraction: 0.85), value: story)
+        .clipped()
+        .opacity(expanded ? 1 : 0)
+        .allowsHitTesting(expanded)
+        .accessibilityHidden(!expanded)
     }
 
-    @ViewBuilder private func more(_ card: WordCard, _ track: Track) -> some View {
-        if loading {
-            Text(WaveWords.loading[card.id.unicodeScalars.reduce(0) { $0 + Int($1.value) } % WaveWords.loading.count] + "…")
-                .font(.scaled(size: 13))
-                .foregroundStyle(Theme.dim)
-                .lineLimit(1)
-        } else if open == card.id, story != nil {
-            Button("Свернуть") { open = nil }
-                .font(.scaled(size: 13, weight: .medium))
-                .foregroundStyle(Theme.dim)
-        } else if card.big != nil {
-            Button {
+    private var more: some View {
+        Button {
+            if story != nil {
+                withAnimation(disclosureAnimation) { expanded.toggle() }
+            } else {
                 loading = true
-                Task {
-                    defer { loading = false }
-                    if Demo.on {
-                        story = WordBig(text: "Подробный рассказ о треке появляется здесь.", actionTitle: nil, actionURL: nil)
-                        open = card.id
-                        return
-                    }
-                    do {
-                        story = try await words.big(for: track)
-                        open = story == nil ? nil : card.id
-                    } catch {
-                        Session.shared.show("Яндекс не рассказал подробнее")
-                    }
-                }
-            } label: {
+            }
+        } label: {
+            if loading {
+                let index = card.id.unicodeScalars.reduce(0) { $0 + Int($1.value) } % WaveWords.loading.count
+                Text(WaveWords.loading[index] + "…")
+                    .font(.scaled(size: 13))
+                    .foregroundStyle(Theme.dim)
+            } else if expanded {
+                Text("Свернуть")
+                    .font(.scaled(size: 13, weight: .medium))
+                    .foregroundStyle(Theme.dim)
+            } else {
                 HStack(spacing: 2) {
                     Text("Подробнее")
                     Image(systemName: "chevron.right")
@@ -691,6 +714,31 @@ private struct WordCardView: View {
                 .font(.scaled(size: 13, weight: .medium))
                 .foregroundStyle(Theme.accentText)
             }
+        }
+        .disabled(loading)
+    }
+
+    private func loadStory() async {
+        do {
+            let detail: WordBig?
+            if Demo.on {
+                detail = WordBig(
+                    text: "Музыканты оставили в записи лёгкий шум комнаты. Его можно услышать в паузе перед последним припевом, когда стихают гитары.",
+                    actionTitle: nil, actionURL: nil
+                )
+            } else {
+                detail = try await WaveWords.shared.big(for: track)
+            }
+            guard !Task.isCancelled else { return }
+            withAnimation(disclosureAnimation) {
+                story = detail
+                expanded = detail != nil
+                loading = false
+            }
+        } catch {
+            guard !Task.isCancelled else { return }
+            loading = false
+            Session.shared.show("Яндекс не рассказал подробнее")
         }
     }
 
@@ -709,5 +757,29 @@ private struct WordCardView: View {
             .background(active ? Theme.accent : Theme.raised, in: Capsule())
         }
         .buttonStyle(PressStyle(scale: 0.94))
+    }
+}
+
+/// Текст остаётся на месте, пока меняется доступная для него высота.
+private struct WordStoryLayout: Layout {
+    var progress: CGFloat
+
+    var animatableData: CGFloat {
+        get { progress }
+        set { progress = newValue }
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let story = subviews.first else { return .zero }
+        let size = story.sizeThatFits(ProposedViewSize(width: proposal.width, height: nil))
+        return CGSize(width: size.width, height: size.height * progress)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(
+            at: CGPoint(x: bounds.minX, y: bounds.minY),
+            anchor: .topLeading,
+            proposal: ProposedViewSize(width: bounds.width, height: nil)
+        )
     }
 }
