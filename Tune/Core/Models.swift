@@ -259,6 +259,7 @@ enum SearchBest {
     case artist(Card)
     case album(Card)
     case playlist(Playlist)
+    case podcast(Card)
 }
 
 struct SearchResult {
@@ -267,8 +268,28 @@ struct SearchResult {
     var albums: [Card] = []
     var artists: [Card] = []
     var playlists: [Playlist] = []
+    var podcasts: [Card] = []
+    var episodes: [Track] = []
+    var hasMore = false
 
-    var isEmpty: Bool { tracks.isEmpty && albums.isEmpty && artists.isEmpty && playlists.isEmpty }
+    var isEmpty: Bool {
+        tracks.isEmpty && albums.isEmpty && artists.isEmpty && playlists.isEmpty && podcasts.isEmpty && episodes.isEmpty
+    }
+
+    mutating func append(_ page: SearchResult) {
+        tracks = Self.merging(tracks, page.tracks)
+        albums = Self.merging(albums, page.albums)
+        artists = Self.merging(artists, page.artists)
+        playlists = Self.merging(playlists, page.playlists)
+        podcasts = Self.merging(podcasts, page.podcasts)
+        episodes = Self.merging(episodes, page.episodes)
+        hasMore = page.hasMore
+    }
+
+    private static func merging<Item: Identifiable>(_ previous: [Item], _ next: [Item]) -> [Item] {
+        var ids = Set<Item.ID>()
+        return (previous + next).filter { ids.insert($0.id).inserted }
+    }
 }
 
 struct Wave {

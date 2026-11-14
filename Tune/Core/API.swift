@@ -305,7 +305,7 @@ final class API {
 
     func album(id: String) async throws -> AlbumPage {
         if Demo.on {
-            let all = Demo.data.albums + Demo.data.releases
+            let all = Demo.data.albums + Demo.data.releases + Demo.podcasts
             guard let card = all.first(where: { $0.id == id }) ?? all.first else { throw APIError.server("Нет демо-данных") }
             var page = AlbumPage(card: card, year: 2024, tracks: Demo.data.tracks)
             page.artist = Demo.data.artists.first.map { ArtistRef(id: $0.id, name: $0.title) }
@@ -402,7 +402,6 @@ final class API {
         return value["tracks"].array.compactMap(Self.parseTrack)
     }
 
-    /// `types` — что искать через запятую: track, album, artist, playlist.
     /// Подсказки: как Яндекс предлагает закончить запрос.
     func suggest(_ text: String) async throws -> [String] {
         if Demo.on { return ["queen bohemian rhapsody", "queen of the damned", "queens of the stone age", "queencard"] }
@@ -410,26 +409,33 @@ final class API {
         return value["suggestions"].array.compactMap { $0.string }
     }
 
-    func search(_ text: String, types: String = "track,album,artist,playlist", size: Int = 36) async throws -> SearchResult {
+    func search(_ text: String, types: String, filter: String?, page: Int, size: Int) async throws -> SearchResult {
         if Demo.on {
-            var demo = SearchResult(tracks: Demo.data.tracks, albums: Demo.data.albums, artists: Demo.data.artists, playlists: Demo.data.playlists)
-            demo.best = Demo.data.artists.first.map { .artist($0) }
-            return demo
+            return Demo.search(types: types, filter: filter, page: page, size: size)
         }
-        let value = result(try await get("search/instant/mixed", [("text", text), ("type", types), ("page", "0"), ("pageSize", "\(size)")]))
+        var query = [("text", text), ("type", types), ("page", "\(page)"), ("pageSize", "\(size)")]
+        if let filter { query.append(("filter", filter)) }
+        let value = result(try await get("search/instant/mixed", query))
+        guard value["results"].isArray else { throw APIError.server("Яндекс не прислал результаты поиска") }
         var found = SearchResult()
+        found.hasMore = value["lastPage"].bool == false && !value["results"].array.isEmpty
         // Результаты идут по убыванию точности: первый из них и есть лучший.
         for item in value["results"].array {
             switch item["type"].string {
             case "track":
                 if let track = Self.parseTrack(item["track"]) {
                     if found.best == nil { found.best = .track(track) }
-                    found.tracks.append(track)
+                    if filter == "podcast" { found.episodes.append(track) } else { found.tracks.append(track) }
                 }
             case "album":
                 if let card = Self.albumCard(item["album"]) {
-                    if found.best == nil { found.best = .album(card) }
-                    found.albums.append(card)
+                    if filter == "podcast", item["album"]["type"].string == "podcast" {
+                        if found.best == nil { found.best = .podcast(card) }
+                        found.podcasts.append(card)
+                    } else {
+                        if found.best == nil { found.best = .album(card) }
+                        found.albums.append(card)
+                    }
                 }
             case "artist":
                 if let card = Self.artistCard(item["artist"]) {
@@ -442,11 +448,70 @@ final class API {
                     if found.best == nil { found.best = .playlist(playlist) }
                     found.playlists.append(playlist)
                 }
+            case "podcast":
+                if var card = Self.albumCard(item["podcast"]) {
+                    if card.subtitle.isEmpty { card.subtitle = "Подкаст" }
+                    if found.best == nil { found.best = .podcast(card) }
+                    found.podcasts.append(card)
+                }
+            case "podcast_episode":
+                if let track = Self.parseTrack(item["podcast_episode"]) {
+                    if found.best == nil { found.best = .track(track) }
+                    found.episodes.append(track)
+                }
             default:
                 break
             }
         }
-        return found
+        var unique = SearchResult(best: found.best)
+        unique.append(found)
+        return unique
+    }
+
+    /// Последний доступный текст, в том числе сохранённый ранними версиями Tune.
+    private static func savedLyrics(for track: Track) -> LyricsText? {
+        let name = "Lyrics/\(Storage.hash(track.id)).json"
+        var saved = Storage.load(name, as: LyricsText.self)
+        if saved == nil, let lines = Storage.load(name, as: [LyricLine].self) {
+            saved = LyricsText(lines: lines, authors: nil, source: LyricsText.yandex)
+        }
+        if let saved, !isStub(saved.lines) { return saved }
+        return nil
+    }
+
+    static func searchSavedLyrics(_ text: String, in tracks: [Track]) -> [Track] {
+        func words(_ text: String) -> String {
+            text.lowercased().replacingOccurrences(of: "ё", with: "е")
+                .split { !$0.isLetter && !$0.isNumber }.joined(separator: " ")
+        }
+        let phrase = words(text)
+        guard phrase.count >= 3 else { return [] }
+        let needle = " \(phrase) "
+        var seen = Set<String>()
+        return tracks.filter { track in
+            guard !Task.isCancelled, seen.insert(track.id).inserted,
+                  let lyrics = savedLyrics(for: track) else { return false }
+            return (" " + words(lyrics.lines.map(\.text).joined(separator: " ")) + " ").contains(needle)
+        }
+    }
+
+    /// NetEase находит название по строке, Яндекс даёт доступный для воспроизведения трек.
+    func searchTracksByLine(_ text: String) async throws -> [Track] {
+        if Demo.on { return Demo.data.tracks.filter { _ in text == "Здесь звучит припев" } }
+        let hits = try await ExternalLyrics.searchByLine(text)
+        return try await withThrowingTaskGroup(of: (Int, Track?).self) { group in
+            for (index, hit) in hits.enumerated() {
+                group.addTask {
+                    let matches = try await self.search("\(hit.artist) \(hit.title)", types: "track", filter: nil, page: 0, size: 12)
+                    return (index, matches.tracks.first { ExternalLyrics.matches($0, lyricHit: hit) })
+                }
+            }
+            var tracks: [(Int, Track)] = []
+            for try await (index, track) in group {
+                if let track { tracks.append((index, track)) }
+            }
+            return tracks.sorted { $0.0 < $1.0 }.map { $0.1 }
+        }
     }
 
     /// Альбомы и исполнители, которые нравятся пользователю.
@@ -879,12 +944,7 @@ final class API {
         _ = Storage.lyrics
         let name = "Lyrics/\(Storage.hash(track.id)).json"
         let key = ExternalLyrics.settingsKey
-        // Сохранённый текст (и текст прошлых версий — только строки Яндекса).
-        var saved = Storage.load(name, as: LyricsText.self)
-        if saved == nil, let old = Storage.load(name, as: [LyricLine].self) {
-            saved = LyricsText(lines: old, authors: nil, source: LyricsText.yandex)
-        }
-        if let text = saved, Self.isStub(text.lines) { saved = nil }
+        let saved = Self.savedLyrics(for: track)
         // Искали с теми же настройками — второй раз в сеть не идём.
         if let saved, saved.searched == key { return saved }
         let ask: (String) async throws -> LyricsText = { id in

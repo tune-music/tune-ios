@@ -167,6 +167,24 @@ enum ExternalLyrics {
         return nil
     }
 
+    static func searchByLine(_ line: String) async throws -> [(title: String, artist: String, seconds: Int)] {
+        guard Settings.lyricsExternal, Settings.lyricsNetEase, line.split(whereSeparator: \.isWhitespace).count >= 2 else { return [] }
+        let headers = ["Referer": "https://music.163.com/"]
+        let payload = try await get(
+            "/api/search/get?s=\(enc(line))&type=1006&limit=5", hosts: neteaseHosts, headers: headers
+        )
+        let found = JSON(payload)
+        guard found["code"].int == 200 else { throw URLError(.badServerResponse) }
+        return found["result"]["songs"].array.compactMap { song in
+            guard let title = song["name"].string, let artist = song["artists"][0]["name"].string else { return nil }
+            return (title, artist, (song["duration"].int ?? 0) / 1000)
+        }
+    }
+
+    static func matches(_ track: Track, lyricHit: (title: String, artist: String, seconds: Int)) -> Bool {
+        same(track, title: lyricHit.title, artist: lyricHit.artist, seconds: lyricHit.seconds)
+    }
+
     /// Текст трека: Яндекс, LRCLIB и NetEase — в порядке из настроек.
     /// Есть ли смысл открывать текст: у Яндекса он есть или его можно поискать в других базах.
     static func available(_ track: Track) -> Bool {

@@ -37,6 +37,31 @@ enum Demo {
         ]
     }
 
+    static let podcasts = [Card(id: "demo-podcast", title: "Как устроена музыка", subtitle: "Подкаст", cover: nil)]
+
+    static func search(types: String, filter: String?, page: Int, size: Int) -> SearchResult {
+        let types = Set(types.split(separator: ","))
+        let size = types.count == 1 ? min(size, 8) : size
+        func slice<T>(_ items: [T]) -> [T] {
+            Array(items.dropFirst(page * size).prefix(size))
+        }
+        if filter == "podcast" {
+            var episode = data.tracks.first
+            episode?.title = "Почему припев запоминается"
+            return page == 0 ? SearchResult(podcasts: podcasts, episodes: episode.map { [$0] } ?? []) : SearchResult()
+        }
+        let tracks = types.contains("track") ? data.tracks : []
+        let albums = types.contains("album") ? data.albums : []
+        let artists = types.contains("artist") ? data.artists : []
+        let playlists = types.contains("playlist") ? data.playlists : []
+        return SearchResult(
+            best: types.count > 1 ? artists.first.map { .artist($0) } : nil,
+            tracks: slice(tracks), albums: slice(albums), artists: slice(artists), playlists: slice(playlists),
+            podcasts: types.contains("podcast") ? slice(podcasts) : [],
+            hasMore: [tracks.count, albums.count, artists.count, playlists.count].contains { $0 > (page + 1) * size }
+        )
+    }
+
     static let lyrics: [LyricLine] = (0..<24).map { index in
         LyricLine(id: index, time: Double(index) * 6, text: ["Первая строка песни", "И вторая, чуть длиннее первой", "Здесь звучит припев", "И ещё одна строка"][index % 4])
     }
