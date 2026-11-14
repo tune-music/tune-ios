@@ -167,6 +167,7 @@ struct Card: Codable, Hashable, Identifiable {
     var title: String
     var subtitle: String
     var cover: String?
+    var kind: String? = nil
 }
 
 /// Волна по жанру, настроению или занятию.
@@ -206,6 +207,8 @@ struct HomeBlock: Identifiable, Hashable, Codable {
 struct HomePage: Codable {
     var waves: [WaveCard] = []
     var blocks: [HomeBlock] = []
+    var recent: [Track]? = nil
+    var trends: [HomeBlock]? = nil
 }
 
 struct Profile: Codable {
@@ -215,7 +218,7 @@ struct Profile: Codable {
     var plus: Bool
 }
 
-struct AlbumPage {
+struct AlbumPage: Codable {
     var card: Card
     var year: Int?
     var tracks: [Track]
@@ -244,6 +247,7 @@ struct ArtistPage: Codable {
     /// Слушателей за месяц.
     var listeners: Int?
     var about = ""
+    var latestRelease: Card?
 }
 
 /// «1,2 млн», «34 тыс.»: число слушателей коротко.

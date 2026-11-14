@@ -337,6 +337,7 @@ struct TrackRow: View {
     /// Приглушать ли трек с дизлайком. В самом списке «Не нравится» — нет.
     var fadesDisliked = true
     var onRemove: (() -> Void)?
+    var historySource: String? = nil
     let action: () -> Void
 
     @ObservedObject fileprivate var now = Player.shared.now
@@ -372,6 +373,12 @@ struct TrackRow: View {
                             }
                             Text(track.artists.isEmpty ? track.albumTitle : track.artists)
                                 .font(.scaled(size: 14))
+                                .foregroundStyle(Theme.dim)
+                                .lineLimit(1)
+                        }
+                        if let historySource {
+                            Text(historySource)
+                                .font(.scaled(size: 12))
                                 .foregroundStyle(Theme.dim)
                                 .lineLimit(1)
                         }
@@ -715,6 +722,16 @@ struct HomeCard: View {
         }
         .buttonStyle(.plain)
         .contextMenu { menu }
+    }
+}
+
+extension HomeItem {
+    var coverURI: String? {
+        switch self {
+        case .album(let card), .artist(let card): return card.cover
+        case .playlist(let playlist): return playlist.cover
+        case .wave(let wave): return wave.cover
+        }
     }
 }
 

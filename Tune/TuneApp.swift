@@ -111,6 +111,7 @@ enum Route: Hashable {
     case downloads
     case history
     case disliked
+    case dislikedArtists
     case playlist(Playlist)
     case album(String)
     case artist(String, String)
@@ -118,6 +119,8 @@ enum Route: Hashable {
     case block(HomeBlock)
     case likedAlbums
     case likedArtists
+    case likedPodcasts
+    case likedBooks
     case settings
     case log
     case stats
@@ -177,7 +180,13 @@ struct RootView: View {
             }
         }
         .onChange(of: phase) { now in
-            if now == .active { Task { await Updater.shared.check() } }
+            if now == .active {
+                Task {
+                    async let update: Void = Updater.shared.check()
+                    if !Demo.on, !Settings.offlineMode { await session.refresh() }
+                    await update
+                }
+            }
         }
         .onOpenURL { url in
             if session.token != nil { Links.open(url) }
@@ -267,6 +276,7 @@ struct TabRoot<Content: View>: View {
         case .downloads: TrackListScreen(kind: .downloads)
         case .history: TrackListScreen(kind: .history)
         case .disliked: TrackListScreen(kind: .disliked)
+        case .dislikedArtists: DislikedArtistsScreen()
         case .playlist(let playlist): TrackListScreen(kind: .playlist(playlist))
         case .album(let id): TrackListScreen(kind: .album(id))
         case .artistTracks(let id, let name): TrackListScreen(kind: .artist(id, name))
@@ -274,6 +284,8 @@ struct TabRoot<Content: View>: View {
         case .block(let block): ItemGridScreen(title: block.title, items: block.items)
         case .likedAlbums: CardGridScreen(kind: .albums)
         case .likedArtists: CardGridScreen(kind: .artists)
+        case .likedPodcasts: CardGridScreen(kind: .podcasts)
+        case .likedBooks: CardGridScreen(kind: .books)
         case .settings: SettingsScreen()
         case .log: LogScreen()
         case .stats: StatsScreen()

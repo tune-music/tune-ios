@@ -45,6 +45,7 @@ struct HomeScreen: View {
     @ObservedObject private var now = Player.shared.now
     @ObservedObject private var words = WaveWords.shared
     @State private var tuning = Demo.screen == "wave"
+    @State private var trending = false
     /// Страница прокручена: под часами нужна дымка, иначе полки сливаются с ними.
     @State private var scrolled = false
     @State private var origin: CGFloat?
@@ -58,37 +59,46 @@ struct HomeScreen: View {
         let cardIdentity = visibleCard.map { WordCardView.Identity(cardID: $0.card.id, trackID: $0.track.id) }
         ScrollViewReader { proxy in
         ScrollView {
-            VStack(alignment: .leading, spacing: 28) {
-                WaveHero(tune: { tuning = true })
-                if let visibleCard, let cardIdentity {
-                    ZStack {
-                        WordCardView(card: visibleCard.card, track: visibleCard.track)
-                            .id(cardIdentity)
-                            .transition(.identity)
+            LazyVStack(alignment: .leading, spacing: 28) {
+                if model.page.trends?.isEmpty == false {
+                    Picker("Главная", selection: $trending) {
+                        Text("Для вас").tag(false)
+                        Text("Тренды").tag(true)
                     }
-                    .opacity(activeCard == nil ? 0 : 1)
-                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: activeCard == nil)
-                    .allowsHitTesting(activeCard != nil)
-                    .accessibilityHidden(activeCard == nil)
-                    .transition(.opacity)
+                    .pickerStyle(.segmented)
+                    .padding(.horizontal, 16)
                 }
-                if Settings.waveWheel {
-                    WheelStrip(tune: { tuning = true })
-                }
-                if session.offline || model.failed || Settings.offlineMode {
-                    offline
-                }
-                if !model.page.waves.isEmpty {
-                    stations
-                }
-                quick
-                    .id("quick")
-                ForEach(Demo.screen == "skeleton" ? [] : model.page.blocks) { block in
-                    Shelf(block.title, more: block.items.count > 3 ? { navigate(.block(block)) } : nil) {
-                        ForEach(block.items) { item in
-                            HomeCard(item: item)
+                if !trending {
+                    WaveHero(tune: { tuning = true })
+                    if let visibleCard, let cardIdentity {
+                        ZStack {
+                            WordCardView(card: visibleCard.card, track: visibleCard.track)
+                                .id(cardIdentity)
+                                .transition(.identity)
                         }
+                        .opacity(activeCard == nil ? 0 : 1)
+                        .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: activeCard == nil)
+                        .allowsHitTesting(activeCard != nil)
+                        .accessibilityHidden(activeCard == nil)
+                        .transition(.opacity)
                     }
+                    if Settings.waveWheel {
+                        WheelStrip(tune: { tuning = true })
+                    }
+                    if session.offline || model.failed || Settings.offlineMode {
+                        offline
+                    }
+                    if !model.page.waves.isEmpty {
+                        stations
+                    }
+                    quick.id("quick")
+                    if let tracks = model.page.recent, !tracks.isEmpty {
+                        recentShelf(tracks)
+                    }
+                }
+                let blocks = trending ? model.page.trends ?? [] : model.page.blocks
+                ForEach(Demo.screen == "skeleton" ? [] : blocks) { block in
+                    homeShelf(block)
                 }
                 if (model.loading && model.page.blocks.isEmpty) || Demo.screen == "skeleton" {
                     HomeSkeleton()
@@ -141,6 +151,9 @@ struct HomeScreen: View {
             WaveSettingsSheet()
         }
         .task { await model.load() }
+        .onChange(of: model.page.trends?.isEmpty ?? true) { empty in
+            if empty { trending = false }
+        }
         .task(id: card) {
             if let activeCard {
                 lastWordCard = activeCard
@@ -160,6 +173,36 @@ struct HomeScreen: View {
                 await session.refresh()
                 await Updater.shared.check()
             }.value
+        }
+    }
+
+    private func recentShelf(_ tracks: [Track]) -> some View {
+        Shelf("Вы недавно слушали", more: { navigate(.history) }) {
+            ForEach(Array(tracks.enumerated()), id: \.offset) { index, track in
+                Button {
+                    player.play(tracks, at: index, context: .various("История"))
+                } label: {
+                    CardView(title: track.fullTitle, subtitle: track.artists, cover: track.cover, size: 116)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private func homeShelf(_ block: HomeBlock) -> some View {
+        Shelf(block.title, more: block.items.count > 3 ? { navigate(.block(block)) } : nil) {
+            ForEach(block.items) { item in
+                HomeCard(item: item)
+            }
+        }
+        .task(id: block.items) {
+            guard !Demo.on, !Settings.offlineMode, !ProcessInfo.processInfo.isLowPowerModeEnabled else { return }
+            let side = ImageLoader.side(for: 148)
+            let covers = block.items.dropFirst(3).prefix(4).compactMap(\.coverURI)
+            for cover in covers {
+                if Task.isCancelled { return }
+                _ = await ImageLoader.shared.load(cover, side: side)
+            }
         }
     }
 

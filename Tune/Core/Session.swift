@@ -138,6 +138,8 @@ final class Session: ObservableObject {
 
     /// Убирает всё, что относится к текущему аккаунту. Скачанная музыка остаётся.
     private func reset() {
+        refreshTask?.cancel()
+        refreshTask = nil
         Player.shared.stop()
         profile = nil
         likedIds = []
@@ -176,15 +178,18 @@ final class Session: ObservableObject {
             await task.value
             return
         }
+        let requestedToken = token
         let task = Task { await load() }
         refreshTask = task
         await task.value
-        refreshTask = nil
+        if token == requestedToken { refreshTask = nil }
     }
 
     private func load() async {
+        let requestedToken = token
         do {
             let profile = try await API.shared.profile()
+            guard !Task.isCancelled, token == requestedToken else { return }
             self.profile = profile
             remember(profile)
             offline = false
@@ -195,17 +200,20 @@ final class Session: ObservableObject {
             async let albumsTask = API.shared.likedAlbumIds(uid: uid)
             async let artistsTask = API.shared.likedArtistIds(uid: uid)
             async let dislikedTask = API.shared.dislikedIds(uid: uid)
-            if let ids = try? await likedTask { setLiked(ids) }
-            if let lists = try? await listsTask { playlists = lists }
-            if let lists = try? await likedListsTask { likedPlaylists = lists }
-            if let ids = try? await albumsTask { likedAlbums = Set(ids) }
-            if let ids = try? await artistsTask { likedArtists = Set(ids) }
-            if let ids = try? await dislikedTask { disliked = Set(ids) }
+            let snapshot = (try? await likedTask, try? await listsTask, try? await likedListsTask,
+                            try? await albumsTask, try? await artistsTask, try? await dislikedTask)
+            guard !Task.isCancelled, token == requestedToken else { return }
+            if let ids = snapshot.0 { setLiked(ids) }
+            if let lists = snapshot.1, lists != playlists { playlists = lists }
+            if let lists = snapshot.2, lists != likedPlaylists { likedPlaylists = lists }
+            if let ids = snapshot.3, Set(ids) != likedAlbums { likedAlbums = Set(ids) }
+            if let ids = snapshot.4, Set(ids) != likedArtists { likedArtists = Set(ids) }
+            if let ids = snapshot.5, Set(ids) != disliked { disliked = Set(ids) }
             save()
         } catch APIError.needLogin {
-            logout()
+            if !Task.isCancelled, token == requestedToken { logout() }
         } catch {
-            offline = true
+            if !Task.isCancelled, token == requestedToken { offline = true }
         }
     }
 
@@ -333,6 +341,11 @@ final class Session: ObservableObject {
                 fail("Не удалось сохранить")
             }
         }
+    }
+
+    func clearBlocked(_ id: String) {
+        blockedArtists.remove(id)
+        UserDefaults.standard.set(Array(blockedArtists), forKey: "blockedArtists")
     }
 
     func togglePlaylist(_ playlist: Playlist) {

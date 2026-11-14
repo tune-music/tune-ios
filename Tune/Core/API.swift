@@ -166,7 +166,8 @@ final class API {
         if let year = value["year"].int {
             subtitle = subtitle.isEmpty ? "\(year)" : "\(subtitle) · \(year)"
         }
-        return Card(id: id, title: title, subtitle: subtitle, cover: value["coverUri"].string ?? value["cover"]["uri"].string)
+        return Card(id: id, title: title, subtitle: subtitle, cover: value["coverUri"].string ?? value["cover"]["uri"].string,
+                    kind: value["type"].string)
     }
 
     /// Новинка с главной: альбом и исполнители лежат рядом.
@@ -407,6 +408,7 @@ final class API {
             guard let card = Demo.data.artists.first(where: { $0.id == id }) ?? Demo.data.artists.first else { throw APIError.server("Нет демо-данных") }
             var page = ArtistPage(id: card.id, name: card.title, cover: card.cover, popular: Demo.data.tracks, albums: Demo.data.albums, similar: Demo.data.artists)
             page.singles = Demo.data.releases
+            page.latestRelease = Demo.data.releases.first
             page.playlists = Demo.data.playlists
             page.listeners = 12_400_000
             page.about = "Британская рок-группа, добившаяся широчайшей известности в середине 1970-х годов, и одна из наиболее успешных групп в истории рок-музыки."
@@ -438,6 +440,13 @@ final class API {
         page.playlists = playlists
         page.listeners = value["stats"]["lastMonthListeners"].int
         page.about = artist["description"]["text"].string ?? ""
+        let today = String(ISO8601DateFormatter().string(from: Date()).prefix(10))
+        page.latestRelease = releases.compactMap { release -> (String, Card)? in
+            guard let stamp = release["releaseDate"].string, stamp.count >= 10,
+                  let card = Self.albumCard(release) else { return nil }
+            let day = String(stamp.prefix(10))
+            return day <= today ? (day, card) : nil
+        }.max { $0.0 < $1.0 }?.1
         return page
     }
 
@@ -582,7 +591,11 @@ final class API {
 
     /// Альбомы и исполнители, которые нравятся пользователю.
     func likedAlbums(uid: String) async throws -> [Card] {
-        if Demo.on { return Demo.data.albums }
+        if Demo.on { return Demo.data.albums + Demo.podcasts.map { card in
+            var podcast = card
+            podcast.kind = "podcast"
+            return podcast
+        } }
         let value = result(try await get("users/\(uid)/likes/albums", [("rich", "true")]))
         return value.array.compactMap { Self.albumCard($0["album"]) }
     }
@@ -592,6 +605,12 @@ final class API {
         let value = result(try await get("users/\(uid)/likes/artists", [("with-timestamps", "false")]))
         // Исполнитель приходит то сам по себе, то внутри artist.
         return value.array.compactMap { Self.artistCard($0) ?? Self.artistCard($0["artist"]) }
+    }
+
+    func dislikedArtists(uid: String) async throws -> [Card] {
+        if Demo.on { return [] }
+        let value = result(try await get("users/\(uid)/dislikes/artists"))
+        return value.array.compactMap { Self.artistCard($0["artist"]) ?? Self.artistCard($0) }
     }
 
     func likedPlaylists(uid: String) async throws -> [Playlist] {
@@ -731,25 +750,28 @@ final class API {
 
     /// Последние прослушанные треки, новые сначала и без повторов.
     /// История и дни: у первого трека каждого дня — подпись «Сегодня», «Вчера» или дата.
-    func history(limit: Int = 200) async throws -> (tracks: [Track], days: [String: String]) {
+    func history(limit: Int = 200, includeSources: Bool = true) async throws -> (tracks: [Track], days: [String: String], sources: [String: String]) {
         if Demo.on {
             let list = Array(Demo.data.tracks.reversed())
             var days: [String: String] = [:]
             if let first = list.first { days[first.id] = "Сегодня" }
             if list.count > 4 { days[list[4].id] = "Вчера" }
-            return (list, days)
+            return (list, days, list.first.map { [$0.id: "Моя волна"] } ?? [:])
         }
-        let value = result(try await get("music-history", [("fullModelsCount", "0")]))
+        let value = result(try await get("music-history", [("fullModelsCount", includeSources ? "\(limit)" : "0")]))
         var ids: [String] = []
         var dayOf: [String: String] = [:]
+        var sources: [String: String] = [:]
         var seen = Set<String>()
         for tab in value["historyTabs"].array {
             let day = Self.dayName(tab["date"].string ?? "")
             for item in tab["items"].array {
+                let source = Self.historySource(item["context"])
                 for track in item["tracks"].array {
                     if let id = track["data"]["itemId"]["trackId"].idText, seen.insert(id).inserted {
                         ids.append(id)
                         dayOf[id] = day
+                        sources[id] = source
                     }
                 }
             }
@@ -765,7 +787,19 @@ final class API {
             if !day.isEmpty, day != last { days[track.id] = day }
             if !day.isEmpty { last = day }
         }
-        return (out, days)
+        return (out, days, sources)
+    }
+
+    private static func historySource(_ context: JSON) -> String? {
+        let model = context["data"]["fullModel"]
+        switch context["type"].string {
+        case "wave": return model["wave"]["title"].string ?? "Моя волна"
+        case "playlist": return model["playlist"]["title"].string ?? "Плейлист"
+        case "album": return model["album"]["title"].string ?? "Альбом"
+        case "artist": return model["artist"]["name"].string ?? "Исполнитель"
+        case "search": return "Поиск"
+        default: return nil
+        }
     }
 
     /// «2026-11-12» → «Сегодня», «Вчера» или «12 ноября».
@@ -789,17 +823,32 @@ final class API {
     /// Полки главной, как у официального клиента: скелет страницы и блоки первой вкладки.
     /// Блоки грузятся одновременно, порядок сохраняется.
     func home() async throws -> HomePage {
-        if Demo.on { return HomePage(waves: Demo.data.waves, blocks: Demo.home) }
+        if Demo.on {
+            return HomePage(waves: Demo.data.waves, blocks: Demo.home, recent: Array(Demo.data.tracks.prefix(5)),
+                            trends: Demo.home.filter { $0.id == "releases" || $0.id == "albums" })
+        }
         let skeleton = result(try await get("landing/skeleton/main"))
         let tabs = skeleton["blocks"].array.map { $0["data"]["tabs"] }.first { $0.isArray } ?? JSON(nil)
+        async let recent = try? history(limit: 8, includeSources: false)
+        async let personal = homePage(blocks: tabs[0]["blocks"].array)
+        async let trending = homePage(blocks: tabs[1]["blocks"].array)
+        var page = await personal
+        page.recent = (await recent)?.tracks
+        let trends = await trending
+        if !trends.blocks.isEmpty { page.trends = trends.blocks }
+        return page
+    }
+
+    private func homePage(blocks: [JSON]) async -> HomePage {
         // Эти блоки ведут в разделы, которых в приложении нет.
-        let skipped: Set<String> = ["LIKES_AND_HISTORY", "SPECIAL", "CONCERTS_PERSONAL", "DONATIONS", "ALBUM_PROMO"]
+        let skipped: Set<String> = ["LIKES_AND_HISTORY", "SPECIAL", "CONCERTS_PERSONAL", "DONATIONS"]
         var kinds: [String] = []
         var titles: [String] = []
         var paths: [String] = []
-        for block in tabs[0]["blocks"].array {
+        for block in blocks {
             let kind = block["type"].string ?? ""
-            guard !skipped.contains(kind), let uri = block["data"]["source"]["uri"].string else { continue }
+            guard !skipped.contains(kind), let uri = block["data"]["source"]["uri"].string,
+                  !uri.hasPrefix("//"), !uri.contains("://") else { continue }
             kinds.append(kind)
             titles.append(block["data"]["title"].string ?? "")
             paths.append(uri.hasPrefix("/") ? String(uri.dropFirst()) : uri)
@@ -857,7 +906,8 @@ final class API {
 
     /// «Не рекомендовать исполнителя»: его треки перестают попадаться в волнах.
     func setBlocked(uid: String, artist: String, blocked: Bool) async throws {
-        _ = try await post("users/\(uid)/dislikes/artists/" + (blocked ? "add-multiple" : "remove"), form: "artist-ids=" + artist)
+        let path = blocked ? "users/\(uid)/dislikes/artists/add?artist-id=\(artist)" : "users/\(uid)/dislikes/artists/\(artist)/remove"
+        _ = try await post(path)
     }
 
     func waveNew(seeds: [String]) async throws -> Wave {

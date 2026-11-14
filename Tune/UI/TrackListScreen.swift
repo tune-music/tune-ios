@@ -43,6 +43,7 @@ final class TrackListModel: ObservableObject {
     @Published var info: PlaylistPage?
     /// История: подпись дня у первого трека, который слушали в этот день.
     @Published var days: [String: String] = [:]
+    @Published var historySources: [String: String] = [:]
     private var loaded = false
 
     /// Сохранённая копия списка: с неё страница открывается мгновенно и без сети.
@@ -51,6 +52,9 @@ final class TrackListModel: ObservableObject {
         var subtitle: String
         var cover: String?
         var tracks: [Track]
+        var days: [String: String]? = nil
+        var historySources: [String: String]? = nil
+        var album: AlbumPage? = nil
     }
 
     private static func cacheName(_ kind: ListKind) -> String? {
@@ -74,6 +78,9 @@ final class TrackListModel: ObservableObject {
             let saved = await Task.detached(priority: .userInitiated) { Storage.load(name, as: Cached.self) }.value
             if let saved, tracks.isEmpty {
                 tracks = saved.tracks
+                days = saved.days ?? [:]
+                historySources = saved.historySources ?? [:]
+                album = saved.album
                 if title.isEmpty { title = saved.title }
                 if subtitle.isEmpty { subtitle = saved.subtitle }
                 if cover == nil { cover = saved.cover }
@@ -91,6 +98,7 @@ final class TrackListModel: ObservableObject {
                 let page = try await API.shared.history()
                 tracks = page.tracks
                 days = page.days
+                historySources = page.sources
             case .disliked:
                 if Session.shared.profile == nil { await Session.shared.refresh() }
                 var found: [Track] = []
@@ -125,7 +133,9 @@ final class TrackListModel: ObservableObject {
             }
             loaded = true
             if !Demo.on, !tracks.isEmpty, let name = Self.cacheName(kind) {
-                let snapshot = Cached(title: title, subtitle: subtitle, cover: cover, tracks: tracks)
+                let snapshot = Cached(title: title, subtitle: subtitle, cover: cover, tracks: tracks,
+                                      days: kind == .history ? days : nil, historySources: kind == .history ? historySources : nil,
+                                      album: album)
                 Task.detached(priority: .utility) { Storage.save(snapshot, name) }
             }
             if case .playlist(let playlist) = kind { Downloads.shared.autoPlaylist(playlist, tracks) }
@@ -390,9 +400,7 @@ struct TrackListScreen: View {
                                 if selected.contains(track.id) { selected.remove(track.id) } else { selected.insert(track.id) }
                             }
                         } else {
-                            TrackRow(track: track, number: number(index), fadesDisliked: kind != .disliked, onRemove: own ? { remove(track) } : nil) {
-                                player.play(tracks, at: index, context: context)
-                            }
+                            regularRow(track, index: index, tracks: tracks)
                         }
                     }
                     .id(index)
@@ -515,6 +523,13 @@ struct TrackListScreen: View {
                 }
             }
             Button("Отмена", role: .cancel) {}
+        }
+    }
+
+    private func regularRow(_ track: Track, index: Int, tracks: [Track]) -> some View {
+        TrackRow(track: track, number: number(index), fadesDisliked: kind != .disliked,
+                 onRemove: own ? { remove(track) } : nil, historySource: model.historySources[track.id]) {
+            player.play(tracks, at: index, context: context)
         }
     }
 
@@ -656,6 +671,9 @@ struct TrackListScreen: View {
                 Text(facts)
             }
             Text("\(plural(model.tracks.count, "трек", "трека", "треков")) · \(lengthText(model.tracks))")
+            if model.tracks.contains(where: \.uncensored) {
+                Label("Есть треки без цензуры", systemImage: "checkmark.shield")
+            }
         }
         .font(.system(size: 13))
         .foregroundStyle(Theme.dim)
@@ -1177,6 +1195,9 @@ struct ArtistScreen: View {
                 .listRowSeparator(.hidden)
                 .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 14, trailing: 16))
 
+                if let release = page.latestRelease {
+                    shelf("Последний релиз", [.album(release)])
+                }
                 if !page.popular.isEmpty {
                     heading("Популярные треки", more: .artistTracks(id, page.name))
                     let top = Array(page.popular.prefix(5))

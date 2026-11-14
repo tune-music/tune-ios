@@ -65,11 +65,14 @@ struct LibraryScreen: View {
                 entry("arrow.down.circle.fill", "Скачанные треки", downloadsValue, .downloads)
                 entry("square.stack.fill", "Альбомы", session.likedAlbums.isEmpty ? "" : "\(session.likedAlbums.count)", .likedAlbums)
                 entry("music.mic", "Исполнители", session.likedArtists.isEmpty ? "" : "\(session.likedArtists.count)", .likedArtists)
+                entry("mic", "Подкасты", "", .likedPodcasts)
+                entry("book", "Аудиокниги", "", .likedBooks)
                 entry("clock.arrow.circlepath", "История", "", .history)
                 entry("chart.bar.fill", "Статистика", "", .stats)
                 if !session.disliked.isEmpty {
                     entry("hand.thumbsdown.fill", "Не нравится", "\(session.disliked.count)", .disliked)
                 }
+                entry("person.crop.circle.badge.minus", "Скрытые исполнители", "", .dislikedArtists)
 
                 HStack {
                     Text("Плейлисты")
@@ -219,6 +222,84 @@ struct LibraryScreen: View {
     }
 }
 
+struct DislikedArtistsScreen: View {
+    @EnvironmentObject private var session: Session
+    @Environment(\.navigate) private var navigate
+    @State private var artists: [Card]?
+    @State private var error: String?
+    @State private var restoring = Set<String>()
+
+    var body: some View {
+        List {
+            if let artists, !artists.isEmpty {
+                ForEach(artists) { artist in
+                    HStack(spacing: 14) {
+                        Button {
+                            navigate(.artist(artist.id, artist.title))
+                        } label: {
+                            HStack(spacing: 12) {
+                                CoverView(uri: artist.cover, size: 48, round: true)
+                                Text(artist.title)
+                                    .foregroundStyle(Theme.text)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        Spacer()
+                        Button("Вернуть") { Task { await restore(artist) } }
+                            .buttonStyle(.borderless)
+                            .foregroundStyle(Theme.accentText)
+                            .disabled(restoring.contains(artist.id))
+                    }
+                    .listRowBackground(Color.clear)
+                }
+            } else if let error {
+                Placeholder(icon: "wifi.slash", title: "Не удалось загрузить", text: error) { Task { await load() } }
+            } else if artists != nil {
+                Placeholder(icon: "person.crop.circle.badge.minus", title: "Нет скрытых исполнителей")
+            } else {
+                RowsSkeleton(count: 5)
+            }
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .background(Theme.background)
+        .navigationTitle("Скрытые исполнители")
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await load() }
+        .refreshable { await load() }
+    }
+
+    private func load() async {
+        error = nil
+        if session.profile == nil { await session.refresh() }
+        guard let uid = session.profile?.uid else {
+            error = "Войдите в аккаунт"
+            return
+        }
+        do {
+            let found = try await API.shared.dislikedArtists(uid: uid)
+            guard !Task.isCancelled else { return }
+            artists = found.filter { !restoring.contains($0.id) }
+        } catch {
+            if !Task.isCancelled { self.error = error.localizedDescription }
+        }
+    }
+
+    private func restore(_ artist: Card) async {
+        guard let uid = session.profile?.uid, restoring.insert(artist.id).inserted else { return }
+        defer { restoring.remove(artist.id) }
+        do {
+            try await API.shared.setBlocked(uid: uid, artist: artist.id, blocked: false)
+            guard session.profile?.uid == uid else { return }
+            session.clearBlocked(artist.id)
+            artists?.removeAll { $0.id == artist.id }
+            session.show("\(artist.title) снова в рекомендациях")
+        } catch {
+            session.show("Не удалось вернуть исполнителя")
+        }
+    }
+}
+
 /// Выбор плейлиста, в который добавить трек.
 struct PlaylistPicker: View {
     let tracks: [Track]
@@ -317,7 +398,34 @@ struct PlaylistPicker: View {
 
 struct CardGridScreen: View {
     enum Kind {
-        case albums, artists
+        case albums, artists, podcasts, books
+
+        var title: String {
+            switch self {
+            case .albums: return "Альбомы"
+            case .artists: return "Исполнители"
+            case .podcasts: return "Подкасты"
+            case .books: return "Аудиокниги"
+            }
+        }
+
+        var icon: String {
+            switch self {
+            case .albums: return "square.stack"
+            case .artists: return "music.mic"
+            case .podcasts: return "mic"
+            case .books: return "book"
+            }
+        }
+
+        func includes(_ card: Card) -> Bool {
+            switch self {
+            case .albums: return card.kind != "podcast" && card.kind != "audiobook"
+            case .artists: return true
+            case .podcasts: return card.kind == "podcast"
+            case .books: return card.kind == "audiobook"
+            }
+        }
     }
 
     let kind: Kind
@@ -329,14 +437,15 @@ struct CardGridScreen: View {
     @AppStorage("albumSort") private var albumSort = 0
     @AppStorage("artistSort") private var artistSort = 0
 
-    private var order: Int { kind == .albums ? albumSort : artistSort }
+    private var order: Int { kind == .artists ? artistSort : albumSort }
 
     private var sorted: [Card]? {
         guard let cards else { return nil }
+        let shown = cards.filter(kind.includes)
         switch order {
-        case 1: return cards.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
-        case 2: return cards.sorted { $0.subtitle.localizedCaseInsensitiveCompare($1.subtitle) == .orderedAscending }
-        default: return cards
+        case 1: return shown.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        case 2: return shown.sorted { $0.subtitle.localizedCaseInsensitiveCompare($1.subtitle) == .orderedAscending }
+        default: return shown
         }
     }
 
@@ -344,11 +453,11 @@ struct CardGridScreen: View {
         ScrollView {
             if let cards = sorted {
                 if cards.isEmpty {
-                    Placeholder(icon: kind == .albums ? "square.stack" : "music.mic", title: "Здесь пока пусто", text: kind == .albums ? "Нажмите на сердечко на странице альбома, чтобы добавить его сюда." : "Нажмите на сердечко на странице исполнителя, чтобы добавить его сюда.")
+                    Placeholder(icon: kind.icon, title: "Здесь пока пусто", text: "Нажмите на сердечко на странице, чтобы добавить её в коллекцию.")
                 } else {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 16, alignment: .top)], spacing: 20) {
                         ForEach(cards) { card in
-                            HomeCard(item: kind == .albums ? .album(card) : .artist(card), size: 160)
+                            HomeCard(item: kind == .artists ? .artist(card) : .album(card), size: 160)
                         }
                     }
                     .padding(16)
@@ -363,15 +472,15 @@ struct CardGridScreen: View {
             }
         }
         .background(Theme.background)
-        .navigationTitle(kind == .albums ? "Альбомы" : "Исполнители")
+        .navigationTitle(kind.title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 Menu {
-                    Picker("Сортировка", selection: kind == .albums ? $albumSort : $artistSort) {
+                    Picker("Сортировка", selection: kind == .artists ? $artistSort : $albumSort) {
                         Text("Недавно добавленные").tag(0)
-                        Text(kind == .albums ? "По названию" : "По имени").tag(1)
-                        if kind == .albums {
+                        Text(kind == .artists ? "По имени" : "По названию").tag(1)
+                        if kind != .artists {
                             Text("По исполнителю").tag(2)
                         }
                     }
@@ -386,7 +495,7 @@ struct CardGridScreen: View {
 
     private func load() async {
         error = nil
-        let file = kind == .albums ? "liked-albums.json" : "liked-artists.json"
+        let file = kind == .artists ? "liked-artists.json" : "liked-albums.json"
         if cards == nil, !Demo.on {
             let saved = await Task.detached(priority: .userInitiated) { Storage.load(file, as: [Card].self) }.value
             if cards == nil { cards = saved }
@@ -399,7 +508,8 @@ struct CardGridScreen: View {
             return
         }
         do {
-            let fresh = kind == .albums ? try await API.shared.likedAlbums(uid: uid) : try await API.shared.likedArtists(uid: uid)
+            let fresh = kind == .artists ? try await API.shared.likedArtists(uid: uid) : try await API.shared.likedAlbums(uid: uid)
+            guard !Task.isCancelled else { return }
             cards = fresh
             if !Demo.on {
                 Task.detached(priority: .utility) { Storage.save(fresh, file) }

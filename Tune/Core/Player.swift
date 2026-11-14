@@ -1084,6 +1084,22 @@ final class Player: NSObject, ObservableObject {
             Task { @MainActor [weak self] in self?.previous() }
             return .success
         }
+        center.likeCommand.localizedTitle = "Нравится"
+        center.dislikeCommand.localizedTitle = "Не нравится"
+        center.likeCommand.addTarget { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let track = self?.current, !Session.shared.isLiked(track.id) else { return }
+                Session.shared.toggleLike(track)
+            }
+            return .success
+        }
+        center.dislikeCommand.addTarget { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, let track = self.current, !Session.shared.disliked.contains(track.id) else { return }
+                self.dislikeCurrent()
+            }
+            return .success
+        }
         center.changePlaybackPositionCommand.addTarget { [weak self] event in
             guard let event = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
             let seconds = event.positionTime
