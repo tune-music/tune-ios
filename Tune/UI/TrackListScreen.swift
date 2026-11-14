@@ -453,9 +453,6 @@ struct TrackListScreen: View {
             if kind != .downloads, Settings.offlineMode || session.offline { onlyDownloaded = true }
         }
         .task { await model.load(kind) }
-        .onChange(of: sortOptions) { options in
-            if !options.contains(sort) { sort = .original }
-        }
         .task(id: cover) {
             switch kind {
             case .disliked, .likes, .downloads, .history: tone = Theme.tone
@@ -779,6 +776,9 @@ struct TrackListScreen: View {
                 ForEach(sortOptions) { item in
                     Text(item.name).tag(item)
                 }
+            }
+            .onChange(of: sortOptions) { options in
+                if !options.contains(sort) { sort = .original }
             }
         } label: {
             Label("Сортировка", systemImage: "arrow.up.arrow.down")
