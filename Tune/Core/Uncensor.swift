@@ -18,6 +18,7 @@ final class Uncensor {
         var tracks: [String: [String: Any]] = [:]
         var albums: [String: [String: Any]] = [:]
         var inserts: [String: (tracks: [String], albums: [String])] = [:]
+        var trackAlbums: [String: [String: Any]] = [:]
     }
 
     private let lock = NSLock()
@@ -154,6 +155,63 @@ final class Uncensor {
         current?.inserts[id] ?? ([], [])
     }
 
+    func search(_ query: String, tracks: Bool, albums: Bool) -> (tracks: [JSON], albums: [JSON]) {
+        guard let list = current else { return ([], []) }
+        func words(_ text: String) -> [String] {
+            text.lowercased().replacingOccurrences(of: "ё", with: "е")
+                .split { !$0.isLetter && !$0.isNumber }.map(String.init)
+        }
+        let terms = words(query)
+        guard !terms.isEmpty else { return ([], []) }
+
+        func matches(_ entries: [JSON]) -> [JSON] {
+            entries.compactMap { entry -> (JSON, Bool)? in
+                guard let title = entry["title"].string, !title.isEmpty else { return nil }
+                let names = entry["artists"].array + entry["albums"][0]["artists"].array
+                let fields = [title, entry["version"].string, entry["albums"][0]["title"].string].compactMap { $0 }
+                    + names.compactMap { $0["name"].string }
+                let tokens = fields.flatMap(words)
+                guard terms.allSatisfy({ term in tokens.contains { $0.hasPrefix(term) } }) else { return nil }
+                return (entry, words(title) == terms)
+            }.sorted { lhs, rhs in
+                if lhs.1 != rhs.1 { return lhs.1 }
+                return (lhs.0["title"].string ?? "", lhs.0["id"].idText ?? "")
+                    < (rhs.0["title"].string ?? "", rhs.0["id"].idText ?? "")
+            }.map { $0.0 }
+        }
+
+        return (
+            tracks ? matches(list.tracks.keys.filter { list.files[$0] != nil }.map { Self.catalogTrack($0, in: list) }) : [],
+            albums ? matches(list.albums.map { Self.catalogEntry($0.key, $0.value) }) : []
+        )
+    }
+
+    func catalogTrack(_ id: String) -> JSON? {
+        guard let list = current, list.files[id] != nil else { return nil }
+        let track = Self.catalogTrack(id, in: list)
+        return track["title"].string?.isEmpty == false ? track : nil
+    }
+
+    func catalogAlbum(_ id: String) -> JSON? {
+        guard let fields = current?.albums[id], let title = fields["title"] as? String, !title.isEmpty else { return nil }
+        return Self.catalogEntry(id, fields)
+    }
+
+    private static func catalogEntry(_ id: String, _ metadata: [String: Any]) -> JSON {
+        var fields: [String: Any] = ["id": id]
+        apply(&fields, metadata)
+        return JSON(fields)
+    }
+
+    private static func catalogTrack(_ id: String, in list: List) -> JSON {
+        var fields = list.tracks[id] ?? [:]
+        if let album = list.trackAlbums[id] {
+            fields["albums"] = [album]
+            if fields["artists"] == nil { fields["artists"] = album["artists"] }
+        }
+        return catalogEntry(id, fields)
+    }
+
     private static func apply(_ target: inout [String: Any], _ spoof: [String: Any]) {
         for (key, value) in spoof {
             if skip.contains(key) || value is NSNull { continue }
@@ -230,12 +288,13 @@ final class Uncensor {
             }
         }
         // Треки подменённого альбома без своей обложки берут обложку альбома.
-        for album in list.albums.values {
-            guard let cover = album["coverUri"] as? String, !cover.isEmpty, let volumes = album["volumes"] as? [Any] else { continue }
-            for case let disk as [Any] in volumes {
+        for (albumID, album) in list.albums.sorted(by: { $0.key < $1.key }) {
+            let fields = catalogEntry(albumID, album).dict
+            for case let disk as [Any] in (album["volumes"] as? [Any]) ?? [] {
                 for item in disk {
-                    guard let id = JSON((item as? [String: Any])?["id"] ?? item).idText, isId(id) else { continue }
-                    if list.tracks[id]?["coverUri"] == nil {
+                    guard let id = Self.id(of: item) else { continue }
+                    if list.trackAlbums[id] == nil { list.trackAlbums[id] = fields }
+                    if list.tracks[id]?["coverUri"] == nil, let cover = album["coverUri"] as? String, !cover.isEmpty {
                         list.tracks[id, default: [:]]["coverUri"] = cover
                     }
                 }

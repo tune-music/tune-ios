@@ -274,7 +274,9 @@ final class API {
         for track in value["result"].array.compactMap(Self.parseTrack) where found[track.id] == nil {
             found[track.id] = track
         }
-        return ids.compactMap { found[$0] }
+        return ids.compactMap { id in
+            found[id] ?? Uncensor.shared.catalogTrack(id).flatMap(Self.parseTrack)
+        }
     }
 
     func playlists(uid: String) async throws -> [Playlist] {
@@ -315,16 +317,32 @@ final class API {
             page.versions = Array(all.filter { $0.id != card.id }.prefix(2))
             return page
         }
-        let value = result(try await get("albums/\(id)/with-tracks"))
-        if value["error"].string == "not-found" { throw APIError.server("Альбом не найден") }
+        let value: JSON
+        do {
+            let remote = result(try await get("albums/\(id)/with-tracks"))
+            if remote["error"].exists || remote["id"].idText == nil {
+                guard let local = Uncensor.shared.catalogAlbum(id) else { throw APIError.server("Альбом не найден") }
+                value = local
+            } else {
+                value = remote
+            }
+        } catch {
+            try Task.checkCancellation()
+            guard let local = Uncensor.shared.catalogAlbum(id) else { throw error }
+            value = local
+        }
         var disks: [[Track]] = value["volumes"].array.map { $0.array.compactMap(Self.parseTrack) }
         // Без цензуры: треки по дискам, как в списке FckCensor, с удалёнными Яндексом.
         if let want = Uncensor.shared.volumes(album: id) {
             var have: [String: Track] = [:]
             for track in disks.flatMap({ $0 }) { have[track.id] = track }
             let missing = want.flatMap { $0 }.filter { have[$0] == nil }
-            if !missing.isEmpty, let extra = try? await tracks(ids: missing) {
-                for track in extra { have[track.id] = track }
+            if !missing.isEmpty {
+                let extra = try? await tracks(ids: missing)
+                try Task.checkCancellation()
+                let restored = missing.compactMap(Uncensor.shared.catalogTrack).compactMap(Self.parseTrack)
+                for track in restored { have[track.id] = track }
+                for track in extra ?? [] { have[track.id] = track }
             }
             var listed = Set<String>()
             var rebuilt: [[Track]] = want.map { disk in
@@ -415,8 +433,23 @@ final class API {
         }
         var query = [("text", text), ("type", types), ("page", "\(page)"), ("pageSize", "\(size)")]
         if let filter { query.append(("filter", filter)) }
-        let value = result(try await get("search/instant/mixed", query))
-        guard value["results"].isArray else { throw APIError.server("Яндекс не прислал результаты поиска") }
+        let types = Set(types.split(separator: ","))
+        var local = SearchResult()
+        if page == 0, filter == nil {
+            let matches = Uncensor.shared.search(text, tracks: types.contains("track"), albums: types.contains("album"))
+            local.tracks = matches.tracks.compactMap(Self.parseTrack).filter(\.uncensored)
+            local.albums = matches.albums.compactMap(Self.albumCard)
+            local.best = local.tracks.first.map { .track($0) } ?? local.albums.first.map { .album($0) }
+        }
+        let value: JSON
+        do {
+            value = result(try await get("search/instant/mixed", query))
+            guard value["results"].isArray else { throw APIError.server("Яндекс не прислал результаты поиска") }
+        } catch {
+            try Task.checkCancellation()
+            if local.isEmpty { throw error }
+            return local
+        }
         var found = SearchResult()
         found.hasMore = value["lastPage"].bool == false && !value["results"].array.isEmpty
         // Результаты идут по убыванию точности: первый из них и есть лучший.
@@ -463,7 +496,13 @@ final class API {
                 break
             }
         }
-        var unique = SearchResult(best: found.best)
+        // Если Яндекс тоже нашёл запись, сохраняем её полные метаданные.
+        let remoteTracks = Set(found.tracks.map(\.id))
+        let remoteAlbums = Set(found.albums.map(\.id))
+        local.tracks.removeAll { remoteTracks.contains($0.id) }
+        local.albums.removeAll { remoteAlbums.contains($0.id) }
+        var unique = SearchResult(best: found.best ?? local.best)
+        unique.append(local)
         unique.append(found)
         return unique
     }
