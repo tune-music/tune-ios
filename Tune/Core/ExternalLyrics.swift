@@ -148,7 +148,8 @@ enum ExternalLyrics {
         }
         // Синхронного нет нигде — текст Яндекса, хоть и простой, лучше простого из LRCLIB.
         if track.hasLyrics {
-            let mine = try await (own ?? yandex(track.id))
+            let mine: [LyricLine]
+            if let own { mine = own } else { mine = try await yandex(track.id) }
             if !mine.isEmpty { return mine }
         }
         return fallback ?? []
