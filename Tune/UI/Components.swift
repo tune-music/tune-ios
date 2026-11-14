@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 
 enum Theme {
@@ -1036,10 +1037,13 @@ struct ToastView: View {
 
 /// Место под мини-плеер внизу страницы.
 struct MiniPlayerSpace: View {
-    @EnvironmentObject private var player: Player
+    @State private var hasTrack = Player.shared.now.id != nil
 
     var body: some View {
-        Color.clear.frame(height: player.current == nil ? 0 : 68)
+        Color.clear.frame(height: hasTrack ? 68 : 0)
+            .onReceive(Player.shared.now.$id.map { $0 != nil }.removeDuplicates()) { visible in
+                hasTrack = visible
+            }
     }
 }
 
@@ -1055,9 +1059,6 @@ struct MiniPlayer: View {
     @State private var tone = Theme.tone
     /// Сдвиг названия под пальцем.
     @StateObject private var drag = TrackDrag()
-    @State private var origin: CGFloat = 0
-    /// Направление жеста определяется в его начале и до конца не меняется.
-    @State private var axis: Axis?
 
     var body: some View {
         if let track = player.current {
@@ -1105,13 +1106,15 @@ struct MiniPlayer: View {
                     shape.fill(Color(white: 0.1).opacity(0.8))
                 }
                 Color.clear.glass(in: shape, tint: tone.opacity(0.75))
+                    .animation(.easeInOut(duration: 0.3), value: tone)
             }
             .contentShape(shape)
             .padding(.horizontal, 10)
             .padding(.bottom, 6)
             .task(id: track.cover) {
                 let color = await ImageLoader.shared.tone(track.cover)
-                withAnimation(.easeInOut(duration: 0.3)) { tone = color ?? Theme.tone }
+                guard !Task.isCancelled else { return }
+                tone = color ?? Theme.tone
             }
         }
     }

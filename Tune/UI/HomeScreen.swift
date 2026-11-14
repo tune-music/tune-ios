@@ -48,23 +48,28 @@ struct HomeScreen: View {
     /// Страница прокручена: под часами нужна дымка, иначе полки сливаются с ними.
     @State private var scrolled = false
     @State private var origin: CGFloat?
+    @State private var lastWordCard: (card: WordCard, track: Track)?
 
     var body: some View {
         let track = player.current
         let card = wordCard(for: track)
-        let cardIdentity = card.flatMap { card in
-            track.map { WordCardView.Identity(cardID: card.id, trackID: $0.id) }
-        }
+        let activeCard = card.flatMap { card in track.map { (card: card, track: $0) } }
+        let visibleCard = activeCard ?? (player.isWave && Settings.waveWords && !reduceMotion ? lastWordCard : nil)
+        let cardIdentity = visibleCard.map { WordCardView.Identity(cardID: $0.card.id, trackID: $0.track.id) }
         ScrollViewReader { proxy in
         ScrollView {
             VStack(alignment: .leading, spacing: 28) {
                 WaveHero(tune: { tuning = true })
-                if let card, let track, let cardIdentity {
+                if let visibleCard, let cardIdentity {
                     ZStack {
-                        WordCardView(card: card, track: track)
+                        WordCardView(card: visibleCard.card, track: visibleCard.track)
                             .id(cardIdentity)
                             .transition(.identity)
                     }
+                    .opacity(activeCard == nil ? 0 : 1)
+                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: activeCard == nil)
+                    .allowsHitTesting(activeCard != nil)
+                    .accessibilityHidden(activeCard == nil)
                     .transition(.opacity)
                 }
                 if Settings.waveWheel {
@@ -136,6 +141,18 @@ struct HomeScreen: View {
             WaveSettingsSheet()
         }
         .task { await model.load() }
+        .task(id: card) {
+            if let activeCard {
+                lastWordCard = activeCard
+            } else if player.isWave, Settings.waveWords, !reduceMotion, lastWordCard != nil {
+                // Короткая пауза даёт карточке следующего трека прийти без скачка высоты.
+                do { try await Task.sleep(nanoseconds: 280_000_000) } catch { return }
+                guard !Task.isCancelled else { return }
+                lastWordCard = nil
+            } else {
+                lastWordCard = nil
+            }
+        }
         .refreshable {
             // Отдельная задача: жест обновления отменяет свою, и запрос обрывался на полпути.
             await Task {
