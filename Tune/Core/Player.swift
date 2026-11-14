@@ -142,6 +142,10 @@ final class Player: NSObject, ObservableObject {
     /// Семена играющей волны: по ним видно волну-сет, у неё свои точки перехода.
     private var waveSeeds: [String] = []
     private var extendTask: Task<Void, Never>?
+    /// Волна, что продолжит очередь после последнего трека: её треки дописаны в конец очереди,
+    /// а источник сменится на волну, когда до них дойдёт очередь.
+    private var continuation: (from: Int, wave: PlayContext, waveId: String, before: PlayContext)?
+    private var continueTask: Task<Void, Never>?
     /// Порядок очереди до перемешивания.
     private var original: [Track]?
     /// Растёт с каждой сменой трека: ответ на устаревший запрос отбрасывается.
@@ -214,6 +218,7 @@ final class Player: NSObject, ObservableObject {
         endCurrent(.skipped)
         wave = nil
         waveSeeds = []
+        continuation = nil
         shuffle = shuffled
         self.context = context
         contextName = context.name
@@ -251,6 +256,7 @@ final class Player: NSObject, ObservableObject {
                 self.endCurrent(.skipped)
                 self.wave = started.session
                 self.waveSeeds = seeds
+                self.continuation = nil
                 self.original = nil
                 self.shuffle = false
                 self.context = PlayContext(kind: "radio", item: seeds.first, name: name)
@@ -274,6 +280,15 @@ final class Player: NSObject, ObservableObject {
         guard queue.indices.contains(target) else { return }
         movedBack = target < index
         index = target
+        // Дошли до дописанной волны — играет уже она; вернулись назад — снова альбом или плейлист.
+        if let next = continuation {
+            let source = target >= next.from ? next.wave : next.before
+            if context.kind != source.kind || context.item != source.item {
+                context = source
+                contextName = source.name
+                mark(source.kind, target >= next.from ? next.waveId : source.item, source.name)
+            }
+        }
         generation += 1
         let turn = generation
         let track = queue[target]
@@ -398,6 +413,38 @@ final class Player: NSObject, ObservableObject {
         }
         learnLoudness(track)
         preloadNext()
+        prepareContinuation()
+    }
+
+    /// Заиграл последний трек очереди: заранее просим волну по нему и дописываем её в конец.
+    /// Музыка не обрывается, даже если телефон заблокирован (после тишины iOS усыпляет
+    /// приложение, и запрос в последний момент уже не уйдёт), а прошлые треки остаются в очереди.
+    private func prepareContinuation() {
+        guard wave == nil, continuation == nil, continueTask == nil, repeatMode != .all, !sleepAfterTrack,
+              let last = current, index == queue.count - 1 else { return }
+        let seed = "track:\(last.id)"
+        let name = "Волна по треку «\(last.title)»"
+        let before = context
+        continueTask = Task { [weak self] in
+            let started = try? await API.shared.waveNew(seeds: [seed])
+            guard let self else { return }
+            self.continueTask = nil
+            guard let started, self.wave == nil, self.continuation == nil, self.current?.id == last.id, self.index == self.queue.count - 1 else { return }
+            let known = Set(self.queue.map(\.id))
+            let more = started.tracks.filter { !known.contains($0.id) }
+            guard !more.isEmpty else { return }
+            self.continuation = (self.queue.count, PlayContext(kind: "radio", item: seed, name: name), seed, before)
+            self.wave = started.session
+            self.waveSeeds = [seed]
+            self.queue.append(contentsOf: more)
+            if self.original != nil { self.original?.append(contentsOf: more) }
+            self.saveQueue()
+            let session = started.session
+            Task.detached(priority: .utility) {
+                try? await API.shared.waveFeedback(session: session, kind: "radioStarted", track: nil, played: nil)
+            }
+            self.preloadNext()
+        }
     }
 
     private func itemChanged(_ item: AVPlayerItem) {
@@ -682,6 +729,7 @@ final class Player: NSObject, ObservableObject {
         index = 0
         wave = nil
         waveSeeds = []
+        continuation = nil
         original = nil
         preloaded = nil
         isPlaying = false
@@ -868,11 +916,26 @@ final class Player: NSObject, ObservableObject {
     /// Очередь кончилась сама: музыка не обрывается, а продолжается волной по последнему
     /// треку — так же, как в приложении Яндекса.
     private func continueAfterQueue() {
-        guard let last = current, !sleepAfterTrack else {
+        guard current != nil, !sleepAfterTrack else {
             finishQueue()
             return
         }
-        playWave(seeds: ["track:\(last.id)"], name: "Волна по треку «\(last.title)»")
+        // Обычно волна уже дописана заранее; не успела (не было сети) — просим сейчас.
+        prepareContinuation()
+        guard let task = continueTask else {
+            finishQueue()
+            return
+        }
+        isBuffering = true
+        Task { [weak self] in
+            await task.value
+            guard let self else { return }
+            if self.index + 1 < self.queue.count {
+                self.load(self.index + 1, autoplay: true)
+            } else {
+                self.finishQueue()
+            }
+        }
     }
 
     private func finishQueue() {

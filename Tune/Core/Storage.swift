@@ -115,6 +115,12 @@ enum Settings {
         set { defaults.set(newValue, forKey: "lyricsNetEaseFirst") }
     }
 
+    /// Своё зеркало LRCLIB: адрес сервера с тем же API.
+    static var lyricsMirror: String {
+        get { defaults.string(forKey: "lyricsMirror") ?? "" }
+        set { defaults.set(newValue, forKey: "lyricsMirror") }
+    }
+
     /// Громкие записи приглушаются до общего уровня.
     static var normalize: Bool {
         get { defaults.bool(forKey: "normalize") }

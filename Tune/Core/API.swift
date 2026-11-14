@@ -801,24 +801,42 @@ final class API {
         // Однажды полученный текст лежит на устройстве: он есть и без сети.
         _ = Storage.lyrics
         let name = "Lyrics/\(Storage.hash(track.id)).json"
-        if let saved = Storage.load(name, as: LyricsText.self), !Self.isStub(saved.lines) { return saved }
-        // Текст из прошлых версий: только строки Яндекса.
-        if let old = Storage.load(name, as: [LyricLine].self), !Self.isStub(old), ExternalLyrics.synced(old) || !Settings.lyricsExternal {
-            return LyricsText(lines: old, authors: nil, source: LyricsText.yandex)
+        let key = ExternalLyrics.settingsKey
+        // Сохранённый текст (и текст прошлых версий — только строки Яндекса).
+        var saved = Storage.load(name, as: LyricsText.self)
+        if saved == nil, let old = Storage.load(name, as: [LyricLine].self) {
+            saved = LyricsText(lines: old, authors: nil, source: LyricsText.yandex)
         }
-        let found = try await ExternalLyrics.find(track) { id in
-            // Просьба подключить подписку вместо текста — не текст: ищем в других базах.
-            let own = try await self.fetchLyrics(track: id)
-            return Self.isStub(own.lines) ? LyricsText(lines: [], authors: nil, source: nil) : own
+        if let text = saved, Self.isStub(text.lines) { saved = nil }
+        // Искали с теми же настройками — второй раз в сеть не идём.
+        if let saved, saved.searched == key { return saved }
+        let found: LyricsText
+        let complete: Bool
+        do {
+            let answer = try await ExternalLyrics.find(track) { id in
+                // Просьба подключить подписку вместо текста — не текст: ищем в других базах.
+                let own = try await self.fetchLyrics(track: id)
+                return Self.isStub(own.lines) ? LyricsText(lines: [], authors: nil, source: nil) : own
+            }
+            found = answer.0
+            complete = answer.complete
+        } catch {
+            // Нет сети — выручает сохранённый текст.
+            if let saved { return saved }
+            throw error
         }
         // Аккаунту без Плюса Яндекс вместо текста отдаёт просьбу подключить подписку.
         // Её нельзя сохранять: иначе она останется и после входа в аккаунт с Плюсом.
         if Self.isStub(found.lines) || found.lines.isEmpty {
+            if let saved { return saved }
             Storage.remove(name)
             return LyricsText(lines: [], authors: nil, source: nil)
         }
-        Storage.save(found, name)
-        return found
+        var result = found
+        // Какая-то база не ответила: найденное сохраним, но в следующий раз спросим снова.
+        result.searched = complete ? key : nil
+        Storage.save(result, name)
+        return result
     }
 
     /// Вместо текста пришла заглушка про подписку: пара строк со словом «подписка».

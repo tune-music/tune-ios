@@ -9,14 +9,55 @@ import Foundation
 enum ExternalLyrics {
     private static let agent = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)"
 
-    private static func get(_ address: String, headers: [String: String]) async throws -> Any? {
-        guard let url = URL(string: address) else { return nil }
-        var request = URLRequest(url: url, timeoutInterval: 10)
-        request.setValue(agent, forHTTPHeaderField: "User-Agent")
-        for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { return nil }
-        return try? JSONSerialization.jsonObject(with: data)
+    /// Адреса NetEase: один и тот же API, но у разных адресов разные пути в сети —
+    /// где-то один открывается без VPN, а другой только с ним.
+    static let neteaseHosts = ["https://music.163.com", "https://interface.music.163.com", "https://interface3.music.163.com"]
+
+    /// Адреса LRCLIB: своё зеркало из настроек (LRCLIB можно поднять у себя), затем основной.
+    static var lrclibHosts: [String] {
+        var hosts = ["https://lrclib.net"]
+        if let mirror = mirror(Settings.lyricsMirror) { hosts.insert(mirror, at: 0) }
+        return hosts
+    }
+
+    /// Адрес зеркала из настроек: без пробелов и косой черты в конце, с https://, если её забыли.
+    static func mirror(_ text: String) -> String? {
+        var value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        while value.hasSuffix("/") { value.removeLast() }
+        if value.isEmpty { return nil }
+        if !value.contains("://") { value = "https://" + value }
+        return URL(string: value)?.host == nil ? nil : value
+    }
+
+    /// Адрес, что ответил последним: с него и начинаем, чтобы не ждать мёртвые.
+    private static let memory = HostMemory()
+
+    /// Запрос к базе: по очереди к каждому адресу, пока какой-то не ответит.
+    /// Ответ «не нашлось» — тоже ответ: дальше по адресам не идём.
+    private static func get(_ path: String, hosts: [String], headers: [String: String]) async throws -> Any? {
+        var failure: Error = URLError(.cannotConnectToHost)
+        for host in await memory.order(hosts) {
+            guard let url = URL(string: host + path) else { continue }
+            var request = URLRequest(url: url, timeoutInterval: 6)
+            request.setValue(agent, forHTTPHeaderField: "User-Agent")
+            for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
+            do {
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let http = response as? HTTPURLResponse else { continue }
+                // Заглушка провайдера или защита от ботов вместо ответа — пробуем другой адрес.
+                if http.statusCode == 403 || http.statusCode == 429 || http.statusCode >= 500 {
+                    failure = URLError(.badServerResponse)
+                    continue
+                }
+                await memory.worked(host, among: hosts)
+                guard (200..<300).contains(http.statusCode) else { return nil }
+                return try? JSONSerialization.jsonObject(with: data)
+            } catch {
+                if Task.isCancelled { throw error }
+                failure = error
+            }
+        }
+        throw failure
     }
 
     private static func enc(_ text: String) -> String {
@@ -88,13 +129,14 @@ enum ExternalLyrics {
         var query = "track_name=\(enc(track.title))&artist_name=\(enc(artist))"
         if !track.albumTitle.isEmpty { query += "&album_name=\(enc(track.albumTitle))" }
         if track.duration > 0 { query += "&duration=\(Int(track.duration))" }
-        let exact = try await get("https://lrclib.net/api/get?\(query)", headers: headers) as? [String: Any]
+        let hosts = lrclibHosts
+        let exact = try await get("/api/get?\(query)", hosts: hosts, headers: headers) as? [String: Any]
         func pick(_ value: [String: Any]) -> LyricsText? {
             guard let text = string(value["syncedLyrics"]) ?? string(value["plainLyrics"]) else { return nil }
             return external(text, "LRCLIB")
         }
         if let exact, string(exact["syncedLyrics"]) != nil, let found = pick(exact) { return found }
-        let list = try await get("https://lrclib.net/api/search?track_name=\(enc(track.title))&artist_name=\(enc(artist))", headers: headers) as? [[String: Any]] ?? []
+        let list = try await get("/api/search?track_name=\(enc(track.title))&artist_name=\(enc(artist))", hosts: hosts, headers: headers) as? [[String: Any]] ?? []
         let matching = list.filter {
             same(track, title: $0["trackName"] as? String ?? "", artist: $0["artistName"] as? String ?? "", seconds: Int(((($0["duration"] as? NSNumber)?.doubleValue) ?? 0).rounded()))
         }
@@ -106,7 +148,7 @@ enum ExternalLyrics {
     private static func netease(_ track: Track) async throws -> LyricsText? {
         let headers = ["Referer": "https://music.163.com/"]
         let query = "\(firstArtist(track)) \(track.title)".trimmingCharacters(in: .whitespaces)
-        guard let found = try await get("https://music.163.com/api/search/get?s=\(enc(query))&type=1&limit=10", headers: headers) as? [String: Any] else { return nil }
+        guard let found = try await get("/api/search/get?s=\(enc(query))&type=1&limit=10", hosts: neteaseHosts, headers: headers) as? [String: Any] else { return nil }
         let songs = ((found["result"] as? [String: Any])?["songs"] as? [[String: Any]]) ?? []
         let matching = songs.filter { song in
             let artist = ((song["artists"] as? [[String: Any]]) ?? []).compactMap { $0["name"] as? String }.joined(separator: " ")
@@ -115,7 +157,7 @@ enum ExternalLyrics {
         }
         for song in matching.prefix(3) {
             guard let id = (song["id"] as? NSNumber)?.int64Value else { continue }
-            guard let lyric = try await get("https://music.163.com/api/song/lyric?id=\(id)&lv=1", headers: headers) as? [String: Any] else { continue }
+            guard let lyric = try await get("/api/song/lyric?id=\(id)&lv=1", hosts: neteaseHosts, headers: headers) as? [String: Any] else { continue }
             let lrc = ((lyric["lrc"] as? [String: Any])?["lyric"] as? String) ?? ""
             // Хотя бы несколько строк со временем — иначе это пустышка или «纯音乐».
             if lrc.components(separatedBy: .newlines).filter({ $0.hasPrefix("[") && $0.count > 11 }).count >= 4 {
@@ -131,33 +173,67 @@ enum ExternalLyrics {
         track.hasLyrics || (Settings.lyricsExternal && (Settings.lyricsLRCLIB || Settings.lyricsNetEase))
     }
 
-    static func find(_ track: Track, yandex: (String) async throws -> LyricsText) async throws -> LyricsText {
+    /// Настройки, с которыми искали текст: поменялись — сохранённый текст ищется заново.
+    static var settingsKey: String {
+        guard Settings.lyricsExternal else { return "yandex" }
+        return [Settings.lyricsAlways, Settings.lyricsLRCLIB, Settings.lyricsNetEase, Settings.lyricsNetEaseFirst]
+            .map { $0 ? "1" : "0" }.joined() + (mirror(Settings.lyricsMirror) ?? "")
+    }
+
+    /// Ответ одной базы: текст или nil, и смогли ли до неё достучаться.
+    private struct Answer {
+        var text: LyricsText?
+        var reached: Bool
+    }
+
+    private static func ask(_ on: Bool, _ search: @escaping (Track) async throws -> LyricsText?, _ track: Track) async -> Answer {
+        guard on else { return Answer(text: nil, reached: true) }
+        do {
+            let found = try await search(track)
+            return Answer(text: (found?.lines.isEmpty ?? true) ? nil : found, reached: true)
+        } catch {
+            return Answer(text: nil, reached: false)
+        }
+    }
+
+    /// Текст трека и все ли базы ответили. Не ответила какая-то — найденное не окончательно,
+    /// в следующий раз спросим снова.
+    static func find(_ track: Track, yandex: (String) async throws -> LyricsText) async throws -> (LyricsText, complete: Bool) {
         let empty = LyricsText(lines: [], authors: nil, source: nil)
         let enabled = Settings.lyricsExternal
         var own: LyricsText?
         if track.hasLyrics, !enabled || !Settings.lyricsAlways {
             let found = try await yandex(track.id)
-            if !enabled || found.synced { return found }
+            if !enabled || found.synced { return (found, true) }
             own = found
         }
-        guard enabled else { return empty }
-        typealias Search = (Track) async throws -> LyricsText?
-        let lrc: (Bool, Search) = (Settings.lyricsLRCLIB, lrclib)
-        let net: (Bool, Search) = (Settings.lyricsNetEase, netease)
-        let order = Settings.lyricsNetEaseFirst ? [net, lrc] : [lrc, net]
-        var fallback: LyricsText?
-        for (on, search) in order where on {
-            // Чужая база не ответила — не беда, есть другие.
-            guard let found = try? await search(track), !found.lines.isEmpty else { continue }
-            if found.synced { return found }
-            if fallback == nil { fallback = found }
-        }
+        guard enabled else { return (empty, true) }
+        // Обе базы спрашиваем одновременно: медленная или недоступная не задерживает другую.
+        async let lrc = ask(Settings.lyricsLRCLIB, lrclib, track)
+        async let net = ask(Settings.lyricsNetEase, netease, track)
+        let answers = Settings.lyricsNetEaseFirst ? [await net, await lrc] : [await lrc, await net]
+        let complete = answers.allSatisfy(\.reached)
+        if let synced = answers.compactMap(\.text).first(where: \.synced) { return (synced, complete) }
         // Синхронного нет нигде — текст Яндекса, хоть и простой, лучше простого из LRCLIB.
         if track.hasLyrics {
             let mine: LyricsText
             if let own { mine = own } else { mine = try await yandex(track.id) }
-            if !mine.lines.isEmpty { return mine }
+            if !mine.lines.isEmpty { return (mine, complete) }
         }
-        return fallback ?? empty
+        return (answers.compactMap(\.text).first ?? empty, complete)
+    }
+}
+
+/// Какой адрес базы ответил последним.
+private actor HostMemory {
+    private var last: [String: String] = [:]
+
+    func order(_ hosts: [String]) -> [String] {
+        guard let key = hosts.last, let good = last[key], hosts.contains(good) else { return hosts }
+        return [good] + hosts.filter { $0 != good }
+    }
+
+    func worked(_ host: String, among hosts: [String]) {
+        if let key = hosts.last { last[key] = host }
     }
 }

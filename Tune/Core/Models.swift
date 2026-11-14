@@ -45,6 +45,8 @@ struct LyricsText: Codable {
     var authors: [String]?
     /// «Яндекс Музыка», «LRCLIB» или «NetEase».
     var source: String?
+    /// С какими настройками искали: поменялись — ищем заново.
+    var searched: String?
 
     static let yandex = "Яндекс Музыка"
     var synced: Bool { lines.contains { $0.time != nil } }

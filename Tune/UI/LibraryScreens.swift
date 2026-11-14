@@ -447,6 +447,7 @@ struct SettingsScreen: View {
     @State private var lyricsLRCLIB = Settings.lyricsLRCLIB
     @State private var lyricsNetEase = Settings.lyricsNetEase
     @State private var lyricsNetEaseFirst = Settings.lyricsNetEaseFirst
+    @State private var lyricsMirror = Settings.lyricsMirror
     /// nil — ещё не знаем, что сейчас в аккаунте.
     @State private var aiLess: Bool?
     @State private var normalize = Settings.normalize
@@ -574,11 +575,18 @@ struct SettingsScreen: View {
                     Toggle("NetEase Cloud Music", isOn: $lyricsNetEase)
                     Toggle("Сначала NetEase", isOn: $lyricsNetEaseFirst)
                     Toggle("Искать и там, где у Яндекса есть свой текст", isOn: $lyricsAlways)
+                    if lyricsLRCLIB {
+                        TextField("Зеркало LRCLIB", text: $lyricsMirror, prompt: Text("Зеркало LRCLIB, например lrclib.example.com"))
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .keyboardType(.URL)
+                            .submitLabel(.done)
+                    }
                 }
             } header: {
                 Text("Текст песен")
             } footer: {
-                Text("Когда у Яндекса нет текста со временем строк, Tune ищет его в открытых базах — только у того же трека. LRCLIB — открытая база синхронных текстов, у NetEase много синхронных текстов, в том числе русских.")
+                Text("Когда у Яндекса нет текста со временем строк, Tune ищет его в открытых базах — только у того же трека. LRCLIB — открытая база синхронных текстов, у NetEase много синхронных текстов, в том числе русских. Обе базы спрашиваются сразу; у NetEase несколько адресов — если один не открывается, Tune пробует другой. Зеркало LRCLIB — свой сервер с тем же API: его спросят первым, а не ответит — основной.")
             }
             .tint(Theme.accentText)
             Section("Качество звука") {
@@ -663,6 +671,7 @@ struct SettingsScreen: View {
         .onChange(of: lyricsLRCLIB) { Settings.lyricsLRCLIB = $0 }
         .onChange(of: lyricsNetEase) { Settings.lyricsNetEase = $0 }
         .onChange(of: lyricsNetEaseFirst) { Settings.lyricsNetEaseFirst = $0 }
+        .onChange(of: lyricsMirror) { Settings.lyricsMirror = $0 }
         .task { if aiLess == nil { aiLess = try? await API.shared.aiReduction() } }
         .onChange(of: normalize) { value in
             Settings.normalize = value
