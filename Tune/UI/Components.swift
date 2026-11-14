@@ -552,7 +552,7 @@ struct TrackMarks: View {
     var onDark = false
 
     var body: some View {
-        if track.explicit || track.uncensored || track.ugc == true {
+        if track.explicit || track.uncensored || track.isPrivate {
             HStack(spacing: 4) {
                 if track.explicit {
                     badge(Text("E").font(.system(size: size * 0.68, weight: .heavy)))
@@ -561,7 +561,7 @@ struct TrackMarks: View {
                     badge(Image(systemName: "lock.open.fill").font(.system(size: size * 0.6, weight: .bold)))
                         .accessibilityLabel("Без цензуры")
                 }
-                if track.ugc == true {
+                if track.isPrivate {
                     Image(systemName: "eye.slash.fill")
                         .font(.system(size: size * 0.8))
                         .foregroundStyle(onDark ? Color.white.opacity(0.6) : Theme.dim)

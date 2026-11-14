@@ -104,6 +104,12 @@ struct Track: Codable, Hashable, Identifiable {
     /// Загружен самим пользователем: слушать его может только он.
     var ugc: Bool?
 
+    /// Свой загруженный трек. Яндекс отмечает его полем trackSource, а у треков, сохранённых
+    /// прошлыми версиями, этого поля нет — тогда узнаём по номеру: он не из одних цифр.
+    var isPrivate: Bool {
+        ugc ?? !id.allSatisfy(\.isNumber)
+    }
+
     var duration: Double { Double(durationMs) / 1000 }
 
     /// Так трек называют волна и отчёты: id:альбом.

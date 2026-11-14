@@ -87,7 +87,7 @@ final class TrackPage: UIView {
         let mark = UIColor(white: 1, alpha: 0.65)
         if track.explicit { add("e.square.fill", mark) }
         if track.uncensored { add("lock.open.fill", mark) }
-        if track.ugc == true { add("eye.slash.fill", mark) }
+        if track.isPrivate { add("eye.slash.fill", mark) }
         return text
     }
 

@@ -111,7 +111,7 @@ final class WaveWords: ObservableObject {
     /// Просит карточки к ближайшим трекам. У своих загруженных треков карточек нет.
     func load(queue: [Track], from index: Int) {
         guard Settings.waveWords, !Demo.on, queue.indices.contains(index) else { return }
-        let ids = queue[index...].prefix(Self.ahead).filter { $0.ugc != true && !asked.contains($0.id) }.map(\.id)
+        let ids = queue[index...].prefix(Self.ahead).filter { !$0.isPrivate && !asked.contains($0.id) }.map(\.id)
         guard !ids.isEmpty else { return }
         asked.formUnion(ids)
         let seen = viewed
