@@ -274,7 +274,7 @@ final class Player: NSObject, ObservableObject {
         progress.duration = track.duration
         itemObservation = nil
         let smooth = blend
-        blend = false
+        blend = 0
         endFade()
         UserDefaults.standard.set(target, forKey: "playerIndex")
 
@@ -288,8 +288,8 @@ final class Player: NSObject, ObservableObject {
             spare = old
             watch()
             let level = Self.level(for: track)
-            let seconds = Double(Settings.crossfade)
-            if smooth, autoplay, seconds > 0, old.rate > 0 {
+            let seconds = smooth
+            if autoplay, seconds > 0, old.rate > 0 {
                 av.volume = 0
                 // Переход не длиннее того, что осталось играть прежнему треку.
                 let left = (old.currentItem?.duration.seconds ?? .nan) - old.currentTime().seconds
@@ -380,6 +380,7 @@ final class Player: NSObject, ObservableObject {
         if wave != nil, queue.count - index <= 2 {
             Task { [weak self] in await self?.extendWave() }
         }
+        learnLoudness(track)
         preloadNext()
     }
 
@@ -439,7 +440,10 @@ final class Player: NSObject, ObservableObject {
         let track = queue[next]
         let turn = generation
         Task { [weak self] in
-            guard let self, let item = try? await self.makeItem(track), turn == self.generation else { return }
+            guard let self else { return }
+            // Громкость следующего трека узнаём заранее: он начнётся сразу на нужном уровне.
+            if Settings.normalize { _ = await Loudness.shared.resolve(track) }
+            guard let item = try? await self.makeItem(track), turn == self.generation else { return }
             // Запасной проигрыватель ещё доигрывает затихающий трек: ждём конца перехода.
             await self.fadeTask?.value
             guard turn == self.generation else { return }
@@ -453,12 +457,12 @@ final class Player: NSObject, ObservableObject {
     // MARK: - Громкость и плавный переход
 
     /// Плавный переход разрешён только когда трек кончается сам, а не по нажатию.
-    private var blend = false
+    private var blend: Double = 0
 
     /// Громкость для трека. С выравниванием громкие записи приглушаются до −14 LUFS;
     /// тихие остаются как есть: усиливать звук проигрыватель не умеет.
     private static func level(for track: Track) -> Float {
-        guard Settings.normalize, let loudness = track.loudness else { return 1 }
+        guard Settings.normalize, let loudness = Loudness.shared.value(track) else { return 1 }
         let gain = min(0, -14 - loudness)
         return Float(pow(10, max(gain, -12) / 20))
     }
@@ -467,6 +471,35 @@ final class Player: NSObject, ObservableObject {
     func settingsChanged() {
         guard fadeTask == nil, let track = current else { return }
         av.volume = Self.level(for: track)
+        learnLoudness(track)
+    }
+
+    /// Сколько секунд длится переход от одного трека к другому. В режиме «Авто» треки одного
+    /// альбома идут подряд без наложения (в альбомах песни часто перетекают одна в другую),
+    /// короткие треки смешиваются 3 секунды, остальные — 6.
+    private static func overlap(from track: Track, to next: Track?) -> Double {
+        let setting = Settings.crossfade
+        if setting >= 0 { return Double(setting) }
+        if let album = track.albumId, album == next?.albumId { return 0 }
+        return track.duration < 120 ? 3 : 6
+    }
+
+    /// Громкость трека неизвестна (скачан или сохранён до того, как она стала приходить):
+    /// узнаём её и плавно подводим звук к нужному уровню.
+    private func learnLoudness(_ track: Track) {
+        guard Settings.normalize, Loudness.shared.value(track) == nil else { return }
+        Task { [weak self] in
+            guard await Loudness.shared.resolve(track) != nil, let self else { return }
+            guard self.current?.id == track.id, self.fadeTask == nil else { return }
+            let player = self.av
+            let from = player.volume
+            let to = Self.level(for: track)
+            for step in 1...30 {
+                try? await Task.sleep(nanoseconds: 50_000_000)
+                guard self.current?.id == track.id, self.fadeTask == nil, self.av === player else { return }
+                player.volume = from + (to - from) * Float(step) / 30
+            }
+        }
     }
 
     private func fade(from old: AVPlayer, to level: Float, seconds: Double) {
@@ -735,9 +768,9 @@ final class Player: NSObject, ObservableObject {
             finishQueue()
             return
         }
-        blend = true
+        blend = current.map { Self.overlap(from: $0, to: queue.indices.contains(index + 1) ? queue[index + 1] : nil) } ?? 0
         if repeatMode == .one, let track = current {
-            blend = false
+            blend = 0
             av.seek(to: .zero)
             av.play()
             listen = Listen(track: track, context: context, session: wave)
@@ -772,7 +805,7 @@ final class Player: NSObject, ObservableObject {
     }
 
     private func finishQueue() {
-        blend = false
+        blend = 0
         isPlaying = false
         isBuffering = false
         av.pause()
@@ -844,7 +877,7 @@ final class Player: NSObject, ObservableObject {
             listen?.played += 0.5
         }
         // Плавный переход: следующий трек вступает за несколько секунд до конца текущего.
-        let overlap = Double(Settings.crossfade)
+        let overlap = current.map { Self.overlap(from: $0, to: queue.indices.contains(index + 1) ? queue[index + 1] : nil) } ?? 0
         if overlap > 0, av.rate > 0, repeatMode != .one, !sleepAfterTrack, let track = current, fadedFor != track.id,
            let ready = preloaded, queue.indices.contains(index + 1), queue[index + 1].id == ready.id,
            ready.item.status == .readyToPlay, progress.duration > overlap * 4, seconds > overlap,
