@@ -771,6 +771,8 @@ private struct LyricsPane: View {
     let track: Track
     @ObservedObject var progress: PlaybackProgress
     @State private var lines: [LyricLine]?
+    /// Когда текст последний раз листали пальцем: в это время он сам не прокручивается.
+    @State private var touched = Date.distantPast
 
     /// Строка, которая сейчас звучит. У текста без времени её нет.
     private var active: Int? {
@@ -841,8 +843,14 @@ private struct LyricsPane: View {
             .onAppear {
                 if let current { proxy.scrollTo(current, anchor: .center) }
             }
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 4)
+                    .onChanged { _ in touched = Date() }
+                    .onEnded { _ in touched = Date() }
+            )
             .onChange(of: current) { line in
-                guard let line else { return }
+                // Пока текст листают и ещё три секунды после, он не убегает к звучащей строке.
+                guard let line, Date().timeIntervalSince(touched) > 3 else { return }
                 withAnimation(.spring(response: 0.55, dampingFraction: 0.85)) {
                     proxy.scrollTo(line, anchor: .center)
                 }
