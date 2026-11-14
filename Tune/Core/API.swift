@@ -254,9 +254,26 @@ final class API {
 
     /// Номера треков из «Мне нравится», сначала новые.
     func likedIds(uid: String) async throws -> [String] {
-        if Demo.on { return Demo.data.tracks.map(\.id) }
+        try await likedEntries(uid: uid).map(\.id)
+    }
+
+    func likedEntries(uid: String) async throws -> [(id: String, addedAt: Date?)] {
+        if Demo.on { return Demo.data.tracks.enumerated().map { ($0.element.id, Date(timeIntervalSince1970: Double($0.offset))) } }
         let value = result(try await get("users/\(uid)/likes/tracks"))
-        return value["library"]["tracks"].array.compactMap { $0["id"].idText }
+        let parseDate = Self.listDateParser()
+        return value["library"]["tracks"].array.compactMap { item in
+            item["id"].idText.map { ($0, parseDate(item["timestamp"])) }
+        }
+    }
+
+    private static func listDateParser() -> (JSON) -> Date? {
+        let standard = ISO8601DateFormatter()
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return { value in
+            guard let date = value.string, !date.isEmpty else { return nil }
+            return fractional.date(from: date) ?? standard.date(from: date)
+        }
     }
 
     func setLiked(uid: String, track: String, liked: Bool) async throws {
@@ -291,11 +308,21 @@ final class API {
 
     func playlist(_ playlist: Playlist) async throws -> PlaylistPage {
         if Demo.on {
-            return PlaylistPage(tracks: Demo.data.tracks, author: "Демо", about: "Музыка в дорогу: от спокойного к бодрому, чтобы не уснуть за рулём.")
+            let tracks = Demo.data.tracks.enumerated().map { index, track in
+                var track = track
+                track.addedAt = Date(timeIntervalSince1970: Double(index))
+                return track
+            }
+            return PlaylistPage(tracks: tracks, author: "Демо", about: "Музыка в дорогу: от спокойного к бодрому, чтобы не уснуть за рулём.")
         }
         let value = result(try await get("users/\(playlist.owner)/playlists/\(playlist.kind)", [("rich-tracks", "true")]))
+        let parseDate = Self.listDateParser()
         return PlaylistPage(
-            tracks: value["tracks"].array.compactMap { Self.parseTrack($0["track"]) },
+            tracks: value["tracks"].array.compactMap { entry in
+                guard var track = Self.parseTrack(entry["track"]) else { return nil }
+                track.addedAt = parseDate(entry["timestamp"])
+                return track
+            },
             author: value["owner"]["name"].string ?? "",
             about: value["description"].string ?? "",
             title: value["title"].string ?? "",

@@ -12,7 +12,7 @@ enum ListKind: Hashable {
 
 /// Порядок треков на странице.
 enum TrackSort: String, CaseIterable, Identifiable {
-    case original, title, artist
+    case original, title, artist, newest, oldest
 
     var id: String { rawValue }
 
@@ -21,6 +21,8 @@ enum TrackSort: String, CaseIterable, Identifiable {
         case .original: return "Как в списке"
         case .title: return "По названию"
         case .artist: return "По исполнителю"
+        case .newest: return "Сначала новые"
+        case .oldest: return "Сначала старые"
         }
     }
 }
@@ -148,16 +150,24 @@ final class TrackListModel: ObservableObject {
             await Session.shared.refresh()
         }
         guard let uid = Session.shared.profile?.uid else { throw APIError.network("") }
-        let ids = try await API.shared.likedIds(uid: uid)
+        let entries = try await API.shared.likedEntries(uid: uid)
+        let ids = entries.map(\.id)
         Session.shared.setLiked(ids)
         var known: [String: Track] = [:]
         for track in tracks { known[track.id] = track }
         let missing = ids.filter { known[$0] == nil }
+        func orderedTracks() -> [Track] {
+            entries.compactMap { entry in
+                guard var track = known[entry.id] else { return nil }
+                track.addedAt = entry.addedAt ?? track.addedAt
+                return track
+            }
+        }
         for chunk in missing.chunked(150) {
             for track in try await API.shared.tracks(ids: chunk) { known[track.id] = track }
-            tracks = ids.compactMap { known[$0] }
+            tracks = orderedTracks()
         }
-        let ordered = ids.compactMap { known[$0] }
+        let ordered = orderedTracks()
         if ordered != tracks { tracks = ordered }
         Downloads.shared.auto(ordered)
         if !Demo.on {
@@ -218,8 +228,36 @@ struct TrackListScreen: View {
         case .original: break
         case .title: list.sort { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
         case .artist: list.sort { $0.artists.localizedCaseInsensitiveCompare($1.artists) == .orderedAscending }
+        case .newest, .oldest:
+            var downloadDates: [String: Date] = [:]
+            if kind == .downloads {
+                for entry in downloads.entries { downloadDates[entry.track.id] = entry.date }
+            }
+            let dated = list.enumerated().map { index, track in
+                (index: index, track: track, date: kind == .downloads ? downloadDates[track.id] : track.addedAt)
+            }
+            list = dated.sorted { a, b in
+                switch (a.date, b.date) {
+                case let (left?, right?) where left != right: return sort == .newest ? left > right : left < right
+                case (_?, nil): return true
+                case (nil, _?): return false
+                default: return a.index < b.index
+                }
+            }.map(\.track)
         }
         return list
+    }
+
+    private var sortOptions: [TrackSort] {
+        let basic: [TrackSort] = [.original, .title, .artist]
+        switch kind {
+        case .downloads:
+            return basic + [.newest, .oldest]
+        case .playlist, .likes:
+            return all.contains { $0.addedAt != nil } ? basic + [.newest, .oldest] : basic
+        default:
+            return basic
+        }
     }
 
     /// Список показан как есть: без фильтра и своей сортировки.
@@ -415,6 +453,9 @@ struct TrackListScreen: View {
             if kind != .downloads, Settings.offlineMode || session.offline { onlyDownloaded = true }
         }
         .task { await model.load(kind) }
+        .onChange(of: sortOptions) { options in
+            if !options.contains(sort) { sort = .original }
+        }
         .task(id: cover) {
             switch kind {
             case .disliked, .likes, .downloads, .history: tone = Theme.tone
@@ -735,7 +776,7 @@ struct TrackListScreen: View {
         }
         Menu {
             Picker("Сортировка", selection: $sort) {
-                ForEach(TrackSort.allCases) { item in
+                ForEach(sortOptions) { item in
                     Text(item.name).tag(item)
                 }
             }
