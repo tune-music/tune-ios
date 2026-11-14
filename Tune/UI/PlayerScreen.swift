@@ -110,6 +110,7 @@ private struct PlayerBody: View {
                 ZStack {
                     if lyrics, let track = player.current {
                         LyricsPane(track: track, progress: player.progress)
+                            .id(track.id)
                             .transition(.opacity)
                     } else {
                         PlayerCover(side: side)
@@ -266,17 +267,7 @@ private struct PlayerBody: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(PressStyle())
-            let liked = session.isLiked(track.id)
-            Button {
-                session.toggleLike(track)
-            } label: {
-                Image(systemName: liked ? "heart.fill" : "heart")
-                    .font(.system(size: 26))
-                    .foregroundStyle(liked ? Theme.accent : Color.white)
-                    .frame(width: 44, height: 48)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(PressStyle())
+            TrackFavoriteButton(track: track)
         }
     }
 
@@ -764,6 +755,27 @@ private struct QueueSheet: View {
     }
 }
 
+private struct TrackFavoriteButton: View {
+    let track: Track
+    @EnvironmentObject private var session: Session
+
+    var body: some View {
+        let liked = session.isLiked(track.id)
+        Button {
+            session.toggleLike(track)
+        } label: {
+            Image(systemName: liked ? "heart.fill" : "heart")
+                .font(.system(size: 26))
+                .foregroundStyle(liked ? Theme.accent : Color.white)
+                .frame(width: 44, height: 48)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(PressStyle())
+        .accessibilityLabel(liked ? "Убрать из «Мне нравится»" : "Добавить в «Мне нравится»")
+        .accessibilityAddTraits(liked ? .isSelected : [])
+    }
+}
+
 /// Текст песни на месте обложки: звучащая строка подсвечена, нажатие на строку перематывает.
 private struct LyricsPane: View {
     let track: Track
@@ -817,6 +829,11 @@ private struct LyricsPane: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task(id: "\(track.id)#\(attempt)") {
+            if attempt == 0, let cached = API.cachedLyrics(for: track) {
+                info = cached
+                lines = cached.lines
+                return
+            }
             lines = nil
             info = nil
             let found = try? await API.shared.lyrics(for: track)

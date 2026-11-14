@@ -37,6 +37,8 @@ final class Session: ObservableObject {
     /// Растёт при смене аккаунта: по нему страницы строятся заново.
     @Published private(set) var epoch = 0
     private var likedSet: Set<String> = []
+    private var pendingLikes = Set<String>()
+    private var likesRevision = 0
     private var refreshTask: Task<Void, Never>?
     private var toastTask: Task<Void, Never>?
 
@@ -144,6 +146,8 @@ final class Session: ObservableObject {
         profile = nil
         likedIds = []
         likedSet = []
+        pendingLikes.removeAll()
+        likesRevision += 1
         playlists = []
         likedPlaylists = []
         likedAlbums = []
@@ -194,6 +198,7 @@ final class Session: ObservableObject {
             remember(profile)
             offline = false
             let uid = profile.uid
+            let revision = likesRevision
             async let likedTask = API.shared.likedIds(uid: uid)
             async let listsTask = API.shared.playlists(uid: uid)
             async let likedListsTask = API.shared.likedPlaylists(uid: uid)
@@ -203,7 +208,7 @@ final class Session: ObservableObject {
             let snapshot = (try? await likedTask, try? await listsTask, try? await likedListsTask,
                             try? await albumsTask, try? await artistsTask, try? await dislikedTask)
             guard !Task.isCancelled, token == requestedToken else { return }
-            if let ids = snapshot.0 { setLiked(ids) }
+            if let ids = snapshot.0, revision == likesRevision { setLiked(ids) }
             if let lists = snapshot.1, lists != playlists { playlists = lists }
             if let lists = snapshot.2, lists != likedPlaylists { likedPlaylists = lists }
             if let ids = snapshot.3, Set(ids) != likedAlbums { likedAlbums = Set(ids) }
@@ -220,14 +225,16 @@ final class Session: ObservableObject {
     // MARK: - Лайки и дизлайки
 
     func setLiked(_ ids: [String]) {
-        guard ids != likedIds else { return }
-        likedIds = ids
+        guard pendingLikes.isEmpty, ids != likedIds else { return }
         likedSet = Set(ids)
+        likedIds = ids
         save()
     }
 
     func toggleLike(_ track: Track) {
-        guard let uid = profile?.uid else { return }
+        guard let uid = profile?.uid, pendingLikes.insert(track.id).inserted else { return }
+        let requestedToken = token
+        likesRevision += 1
         let liked = !isLiked(track.id)
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         if Player.shared.isWave, Player.shared.current?.id == track.id {
@@ -239,10 +246,18 @@ final class Session: ObservableObject {
             Downloads.shared.auto([track])
         }
         Task {
+            defer {
+                if token == requestedToken {
+                    pendingLikes.remove(track.id)
+                    likesRevision += 1
+                }
+            }
             do {
                 try await API.shared.setLiked(uid: uid, track: track.id, liked: liked)
+                guard token == requestedToken else { return }
                 save()
             } catch {
+                guard token == requestedToken else { return }
                 apply(track.id, !liked)
                 fail("Не удалось сохранить лайк")
             }

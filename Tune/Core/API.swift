@@ -278,9 +278,13 @@ final class API {
     }
 
     func setLiked(uid: String, track: String, liked: Bool) async throws {
+        if Demo.on { return }
         let path = liked ? "users/\(uid)/likes/tracks/add?track-id=\(track)" : "users/\(uid)/likes/tracks/\(track)/remove"
         let value = result(try await post(path))
-        if !value["revision"].exists { throw APIError.server("Яндекс не сохранил лайк") }
+        if value["revision"].exists { return }
+        // Успешное изменение иногда возвращается без номера ревизии.
+        let ids = try await likedIds(uid: uid)
+        guard ids.contains(track) == liked else { throw APIError.server("Яндекс не сохранил отметку") }
     }
 
     /// Сведения о треках в том же порядке, что и номера.
@@ -550,8 +554,21 @@ final class API {
         if saved == nil, let lines = Storage.load(name, as: [LyricLine].self) {
             saved = LyricsText(lines: lines, authors: nil, source: LyricsText.yandex)
         }
-        if let saved, !isStub(saved.lines) { return saved }
+        if let saved, !saved.lines.isEmpty, !isStub(saved.lines) { return saved }
         return nil
+    }
+
+    static func cachedLyrics(for track: Track) -> LyricsText? {
+        guard let saved = savedLyrics(for: track) else { return nil }
+        let key = ExternalLyrics.settingsKey
+        if saved.searched == key { return saved }
+        // Старый кэш мог остаться без ключа, если один источник не ответил.
+        guard saved.searched == nil else { return nil }
+        switch saved.source {
+        case "LRCLIB" where !Settings.lyricsExternal || !Settings.lyricsLRCLIB: return nil
+        case "NetEase" where !Settings.lyricsExternal || !Settings.lyricsNetEase: return nil
+        default: return saved
+        }
     }
 
     static func searchSavedLyrics(_ text: String, in tracks: [Track]) -> [Track] {
@@ -1060,9 +1077,8 @@ final class API {
         _ = Storage.lyrics
         let name = "Lyrics/\(Storage.hash(track.id)).json"
         let key = ExternalLyrics.settingsKey
-        let saved = Self.savedLyrics(for: track)
         // Искали с теми же настройками — второй раз в сеть не идём.
-        if let saved, saved.searched == key { return saved }
+        if let saved = Self.cachedLyrics(for: track) { return saved }
         let ask: (String) async throws -> LyricsText = { id in
             // Просьба подключить подписку вместо текста — не текст: ищем в других базах.
             let own = try await self.fetchLyrics(track: id)
@@ -1072,20 +1088,17 @@ final class API {
         // Ни один источник не ответил (первое соединение не успело, сеть мигнула) — ещё раз,
         // а не сразу «Текста нет».
         if found.lines.isEmpty, !complete, !Task.isCancelled {
-            try? await Task.sleep(nanoseconds: 700_000_000)
+            try await Task.sleep(nanoseconds: 700_000_000)
             (found, complete) = await ExternalLyrics.find(track, yandex: ask)
         }
-        if found.lines.isEmpty, !complete, let saved { return saved }
+        try Task.checkCancellation()
         // Аккаунту без Плюса Яндекс вместо текста отдаёт просьбу подключить подписку.
         // Её нельзя сохранять: иначе она останется и после входа в аккаунт с Плюсом.
         if Self.isStub(found.lines) || found.lines.isEmpty {
-            if let saved { return saved }
-            Storage.remove(name)
             return LyricsText(lines: [], authors: nil, source: nil)
         }
         var result = found
-        // Какая-то база не ответила: найденное сохраним, но в следующий раз спросим снова.
-        result.searched = complete ? key : nil
+        result.searched = key
         Storage.save(result, name)
         return result
     }
