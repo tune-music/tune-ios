@@ -257,6 +257,8 @@ final class Player: NSObject, ObservableObject {
                 self.wave = started.session
                 self.waveSeeds = seeds
                 self.continuation = nil
+                WaveMix.shared.started()
+                WaveWords.shared.reset()
                 self.original = nil
                 self.shuffle = false
                 self.context = PlayContext(kind: "radio", item: seeds.first, name: name)
@@ -414,6 +416,10 @@ final class Player: NSObject, ObservableObject {
         learnLoudness(track)
         preloadNext()
         prepareContinuation()
+        if wave != nil {
+            WaveWords.shared.load(queue: queue, from: target)
+            WaveWords.shared.shown(track)
+        }
     }
 
     /// Заиграл последний трек очереди: заранее просим волну по нему и дописываем её в конец.
@@ -860,6 +866,10 @@ final class Player: NSObject, ObservableObject {
         let position = reason == .finished ? finished.track.duration : progress.position
         let report = finished.report(position: position, first: false)
         let kind = reason == .finished ? "trackFinished" : "skip"
+        // Реакции в волне — вкус по исполнителям для удалённых треков.
+        if finished.session != nil {
+            WaveTaste.shared.react(kind, track: finished.track, played: finished.played)
+        }
         Task.detached(priority: .utility) {
             try? await API.shared.plays([report])
             if let session = finished.session {
@@ -956,12 +966,19 @@ final class Player: NSObject, ObservableObject {
         }
         guard let session = wave else { return }
         let shown = queue.map(\.fullId)
+        WaveMix.shared.refill(queue: queue)
         let task = Task { [weak self] in
             let more = try? await API.shared.waveMore(session: session, queue: shown)
             guard let self, let more, self.wave == session else { return }
             let known = Set(self.queue.map(\.id))
-            self.queue.append(contentsOf: more.filter { !known.contains($0.id) })
+            var fresh = more.filter { !known.contains($0.id) }
+            // Удалённый трек по вкусу, иначе иногда — свой.
+            if let extra = WaveMix.shared.pick(known: known, count: fresh.count, queue: self.queue) {
+                fresh.insert(extra, at: 0)
+            }
+            self.queue.append(contentsOf: fresh)
             self.saveQueue()
+            WaveWords.shared.load(queue: self.queue, from: self.index)
         }
         extendTask = task
         await task.value

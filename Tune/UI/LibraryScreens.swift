@@ -443,6 +443,10 @@ struct SettingsScreen: View {
     @State private var appearance = Settings.appearance
     @State private var crossfade = Settings.crossfade
     @State private var lyricsExternal = Settings.lyricsExternal
+    @State private var waveWheel = Settings.waveWheel
+    @State private var waveWords = Settings.waveWords
+    @State private var ownInWave = Settings.ownInWave
+    @State private var restoredInWave = Settings.restoredInWave
     @State private var lyricsAlways = Settings.lyricsAlways
     @State private var lyricsLRCLIB = Settings.lyricsLRCLIB
     @State private var lyricsNetEase = Settings.lyricsNetEase
@@ -560,6 +564,23 @@ struct SettingsScreen: View {
                 Text("«Авто» — как в Tune Native: переход по точкам, которые Яндекс размечает для каждого трека, не дольше 6 секунд; в волнах-сетах — по их сведению. Треки без разметки, в том числе свои и без цензуры, перетекают ровно за 6 секунд. Выравнивание приводит треки к одной громкости по данным Яндекса, а у скачанных без них — по самому файлу.")
             }
             Section {
+                Toggle(isOn: $waveWheel) {
+                    setting("Колесо волны", "Подсказки волн по настроению, жанру и артистам под Моей волной")
+                }
+                Toggle(isOn: $waveWords) {
+                    setting("Слова в волне", "Короткие факты о треках от ИИ под Моей волной")
+                }
+                Toggle(isOn: $ownInWave) {
+                    setting("Свои треки в «Моей волне»", "Загруженные вами треки из «Мне нравится» иногда попадаются в волне, но не два раза подряд и без повторов")
+                }
+                Toggle(isOn: $restoredInWave) {
+                    setting("Удалённые треки в «Моей волне»", "Треки, которые Яндекс удалил, а «Без цензуры» вернул, попадаются в волне по вашему вкусу: Tune сам оценивает исполнителей по лайкам, пропускам и похожим. Не чаще одного на 10–15 треков, без повторов неделю")
+                }
+            } header: {
+                Text("Моя волна")
+            }
+            .tint(Theme.accentText)
+            Section {
                 Toggle("Меньше ИИ", isOn: Binding(get: { aiLess ?? false }, set: { setAILess($0) }))
                     .disabled(aiLess == nil)
             } header: {
@@ -667,6 +688,10 @@ struct SettingsScreen: View {
         }
         .onChange(of: crossfade) { Settings.crossfade = $0 }
         .onChange(of: lyricsExternal) { Settings.lyricsExternal = $0 }
+        .onChange(of: waveWheel) { Settings.waveWheel = $0 }
+        .onChange(of: waveWords) { Settings.waveWords = $0 }
+        .onChange(of: ownInWave) { Settings.ownInWave = $0 }
+        .onChange(of: restoredInWave) { Settings.restoredInWave = $0 }
         .onChange(of: lyricsAlways) { Settings.lyricsAlways = $0 }
         .onChange(of: lyricsLRCLIB) { Settings.lyricsLRCLIB = $0 }
         .onChange(of: lyricsNetEase) { Settings.lyricsNetEase = $0 }
@@ -705,6 +730,16 @@ struct SettingsScreen: View {
         .alert("Удалить всю скачанную музыку?", isPresented: $confirmRemove) {
             Button("Отмена", role: .cancel) {}
             Button("Удалить", role: .destructive) { downloads.removeAll() }
+        }
+    }
+
+    /// Переключатель с пояснением под названием, как в настройках Tune Native.
+    private func setting(_ title: String, _ detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+            Text(detail)
+                .font(.scaled(size: 13))
+                .foregroundStyle(Theme.dim)
         }
     }
 

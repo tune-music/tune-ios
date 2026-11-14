@@ -88,6 +88,30 @@ enum Settings {
         set { defaults.set(newValue, forKey: "crossfade") }
     }
 
+    /// Колесо волны: подсказки волн по настроению, жанру и артистам.
+    static var waveWheel: Bool {
+        get { defaults.object(forKey: "waveWheel") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "waveWheel") }
+    }
+
+    /// «Слова в волне»: короткие факты о треках от ИИ.
+    static var waveWords: Bool {
+        get { defaults.object(forKey: "waveWords") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "waveWords") }
+    }
+
+    /// Свои загруженные треки из «Мне нравится» иногда попадаются в волне.
+    static var ownInWave: Bool {
+        get { defaults.object(forKey: "ownInWave") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "ownInWave") }
+    }
+
+    /// Удалённые треки, которые вернул «Без цензуры», попадаются в волне по вкусу.
+    static var restoredInWave: Bool {
+        get { defaults.object(forKey: "restoredInWave") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "restoredInWave") }
+    }
+
     /// Синхронный текст из LRCLIB и NetEase, когда у Яндекса нет текста со временем строк.
     static var lyricsExternal: Bool {
         get { defaults.object(forKey: "lyricsExternal") as? Bool ?? true }

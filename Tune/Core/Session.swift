@@ -222,6 +222,9 @@ final class Session: ObservableObject {
         guard let uid = profile?.uid else { return }
         let liked = !isLiked(track.id)
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        if Player.shared.isWave, Player.shared.current?.id == track.id {
+            WaveTaste.shared.react(liked ? "like" : "unlike", track: track, played: nil)
+        }
         apply(track.id, liked)
         if liked {
             disliked.remove(track.id)
@@ -244,6 +247,9 @@ final class Session: ObservableObject {
         guard let uid = profile?.uid else { return false }
         let now = !disliked.contains(track.id)
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        if Player.shared.isWave, Player.shared.current?.id == track.id {
+            WaveTaste.shared.react(now ? "dislike" : "undislike", track: track, played: nil)
+        }
         if now {
             disliked.insert(track.id)
             apply(track.id, false)

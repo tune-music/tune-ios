@@ -52,6 +52,12 @@ struct HomeScreen: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 28) {
                 WaveHero(tune: { tuning = true })
+                if Settings.waveWords {
+                    WordCardView()
+                }
+                if Settings.waveWheel {
+                    WheelStrip(tune: { tuning = true })
+                }
                 if session.offline || model.failed || Settings.offlineMode {
                     offline
                 }
@@ -473,5 +479,231 @@ struct WaveSettingsSheet: View {
                 .background(on ? Theme.accent : Theme.raised, in: Capsule())
         }
         .buttonStyle(.plain)
+    }
+}
+
+/// Колесо волны: подсказки волн по настроению, жанру и артистам к тому, что играет.
+private struct WheelStrip: View {
+    let tune: () -> Void
+
+    @Environment(\.navigate) private var navigate
+    @ObservedObject private var wheel = WaveWheel.shared
+    @ObservedObject private var now = Player.shared.now
+
+    /// Колесо строится к играющей волне, без неё — к «Моей волне».
+    private var seeds: [String] {
+        if now.kind == "radio", let item = now.item, !item.isEmpty { return item.components(separatedBy: ",") }
+        return ["user:onyourwave"]
+    }
+
+    var body: some View {
+        let items = Demo.on ? Self.demo : wheel.items
+        Group {
+            if !items.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyHStack(alignment: .top, spacing: 14) {
+                        ForEach(items) { item in
+                            disc(item)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 6)
+                }
+                .padding(.vertical, -6)
+                .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.3), value: items.isEmpty)
+        .onAppear { wheel.load(seeds: seeds) }
+        .onChange(of: now.item) { _ in wheel.load(seeds: seeds) }
+    }
+
+    private func disc(_ item: WheelItem) -> some View {
+        let playing: Bool = {
+            if case .wave(let wave) = item.action { return now.kind == "radio" && now.item == wave.joined(separator: ",") }
+            return false
+        }()
+        return Button {
+            wheel.clicked(item)
+            switch item.action {
+            case .wave(let wave): Player.shared.tapWave(seeds: wave, name: item.title)
+            case .album(let id): navigate(.album(id))
+            case .setting: tune()
+            }
+        } label: {
+            VStack(spacing: 8) {
+                ZStack {
+                    Circle().fill(Color(hex: item.color) ?? Theme.raised)
+                    if let cover = item.cover {
+                        CoverView(uri: cover, size: 84, round: true, backdrop: nil)
+                    } else if item.action == .setting {
+                        Image(systemName: "slider.horizontal.3")
+                            .font(.system(size: 26, weight: .semibold))
+                            .foregroundStyle(.white)
+                    }
+                    if playing {
+                        Circle().strokeBorder(Theme.accent, lineWidth: 3)
+                        PlayingBadge(playing: now.playing, size: 34)
+                    }
+                }
+                .frame(width: 84, height: 84)
+                Text(item.title)
+                    .font(.scaled(size: 13, weight: .medium))
+                    .foregroundStyle(playing ? Theme.accentText : Theme.text)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .frame(width: 92)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PressStyle(scale: 0.92))
+    }
+
+    private static let demo: [WheelItem] = [
+        WheelItem(kind: "WAVE", id: "1", action: .wave(["mood:sad"]), title: "Прожить эту грусть", subtitle: "", cover: nil, color: "#00B2CC"),
+        WheelItem(kind: "WAVE", id: "2", action: .wave(["activity:workout"]), title: "Для тренировки", subtitle: "", cover: nil, color: "#E5484D"),
+        WheelItem(kind: "WAVE", id: "3", action: .wave(["genre:rock"]), title: "Рок", subtitle: "", cover: nil, color: "#7C5CFF"),
+        WheelItem(kind: "SETTING", id: "4", action: .setting, title: "Настроить Мою волну", subtitle: "", cover: nil, color: "#3A3A3C"),
+        WheelItem(kind: "WAVE", id: "5", action: .wave(["mood:calm"]), title: "Спокойное", subtitle: "", cover: nil, color: "#30A46C"),
+    ]
+}
+
+/// «Слова в волне»: факт о звучащем треке, рассказ подробнее и оценка.
+private struct WordCardView: View {
+    @EnvironmentObject private var player: Player
+    @ObservedObject private var words = WaveWords.shared
+    @State private var open: String?
+    @State private var story: WordBig?
+    @State private var loading = false
+
+    private var card: WordCard? {
+        if Demo.on { return WordCard(id: "demo", text: "Этот трек записали за одну ночь в домашней студии", big: "big", feedback: "neutral") }
+        guard player.isWave, let track = player.current else { return nil }
+        return words.cards[track.id]
+    }
+
+    var body: some View {
+        Group {
+            if let card, let track = player.current {
+                content(card, track)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .animation(.spring(response: 0.4, dampingFraction: 0.85), value: card?.id)
+        .onChange(of: player.current?.id) { _ in
+            open = nil
+            story = nil
+            loading = false
+        }
+    }
+
+    private func content(_ card: WordCard, _ track: Track) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                HStack(spacing: 6) {
+                    Image(systemName: "waveform")
+                        .font(.system(size: 12, weight: .bold))
+                    Text("Слова в волне")
+                        .font(.scaled(size: 12, weight: .semibold))
+                }
+                .foregroundStyle(Theme.accentText)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(Theme.accent.opacity(0.14), in: Capsule())
+                Spacer()
+                Text("ИИ")
+                    .font(.scaled(size: 12))
+                    .foregroundStyle(Theme.dim)
+            }
+            Text(card.text)
+                .font(.scaled(size: 19, weight: .medium))
+                .foregroundStyle(Theme.text)
+                .fixedSize(horizontal: false, vertical: true)
+            if open == card.id, let story {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(story.text)
+                        .font(.scaled(size: 15))
+                        .lineSpacing(4)
+                        .foregroundStyle(Theme.text.opacity(0.9))
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let title = story.actionTitle, let url = story.actionURL {
+                        Link(destination: url) {
+                            HStack(spacing: 2) {
+                                Text(title)
+                                Image(systemName: "chevron.right")
+                            }
+                            .font(.scaled(size: 13, weight: .medium))
+                            .foregroundStyle(Theme.accentText)
+                        }
+                    }
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+            HStack(spacing: 8) {
+                pill(card.feedback == "like" ? "heart.fill" : "heart", "Больше такого", card.feedback == "like") { words.rate(track, "like") }
+                pill("hand.thumbsdown", "Мимо", card.feedback == "dislike") { words.rate(track, "dislike") }
+                Spacer(minLength: 0)
+                more(card, track)
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 18)
+        .background(Theme.surface, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .padding(.horizontal, 16)
+        .animation(.spring(response: 0.4, dampingFraction: 0.85), value: open)
+        .animation(.spring(response: 0.4, dampingFraction: 0.85), value: story)
+    }
+
+    @ViewBuilder private func more(_ card: WordCard, _ track: Track) -> some View {
+        if loading {
+            Text(WaveWords.loading[card.id.unicodeScalars.reduce(0) { $0 + Int($1.value) } % WaveWords.loading.count] + "…")
+                .font(.scaled(size: 13))
+                .foregroundStyle(Theme.dim)
+                .lineLimit(1)
+        } else if open == card.id, story != nil {
+            Button("Свернуть") { open = nil }
+                .font(.scaled(size: 13, weight: .medium))
+                .foregroundStyle(Theme.dim)
+        } else if card.big != nil {
+            Button {
+                loading = true
+                Task {
+                    defer { loading = false }
+                    if Demo.on {
+                        story = WordBig(text: "Подробный рассказ о треке появляется здесь.", actionTitle: nil, actionURL: nil)
+                        open = card.id
+                        return
+                    }
+                    do {
+                        story = try await words.big(for: track)
+                        open = story == nil ? nil : card.id
+                    } catch {
+                        Session.shared.show("Яндекс не рассказал подробнее")
+                    }
+                }
+            } label: {
+                HStack(spacing: 2) {
+                    Text("Подробнее")
+                    Image(systemName: "chevron.right")
+                }
+                .font(.scaled(size: 13, weight: .medium))
+                .foregroundStyle(Theme.accentText)
+            }
+        }
+    }
+
+    private func pill(_ icon: String, _ title: String, _ active: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                Text(title)
+            }
+            .font(.scaled(size: 13, weight: .medium))
+            .foregroundStyle(active ? Color.black : Theme.text)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7)
+            .background(active ? Theme.accent : Theme.raised, in: Capsule())
+        }
+        .buttonStyle(PressStyle(scale: 0.94))
     }
 }

@@ -109,6 +109,12 @@ final class Uncensor {
         return out.compactMap { URL(string: $0) }
     }
 
+    /// Треки, у которых есть файл без цензуры.
+    func fileIds() -> [String] {
+        guard let files = current?.files else { return [] }
+        return Array(files.keys)
+    }
+
     func has(_ id: String) -> Bool {
         current?.files[id] != nil
     }

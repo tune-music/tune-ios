@@ -735,6 +735,83 @@ final class API {
         return Wave(session: session, tracks: Self.parseSequence(value))
     }
 
+    /// Номера похожих исполнителей.
+    func similarArtistIds(_ id: String) async throws -> [String] {
+        result(try await get("artists/\(id)/similar"))["similarArtists"].array.compactMap { $0["id"].idText }
+    }
+
+    /// Какие из треков Яндекс закрыл. Смотрим на ответ как есть, до подмены «Без цензуры».
+    func unavailableIds(_ ids: [String]) async throws -> [String] {
+        guard !ids.isEmpty else { return [] }
+        let value = try await post("tracks", form: "track-ids=" + ids.joined(separator: "%2C"))
+        return value["result"].array.filter { $0["available"].bool == false }.compactMap { $0["id"].idText }
+    }
+
+    /// Колесо волны: подсказки к тому, что играет. Ответ — номер колеса и подсказки.
+    func wheel(seeds: [String], feedbacks: [[String: Any]]) async throws -> (String, [WheelItem]) {
+        let value = result(try await post("wheel/new", json: ["context": ["type": "WAVE", "data": ["seeds": seeds]], "feedbacks": feedbacks]))
+        guard let id = value["wheelId"].string else { throw APIError.server("Яндекс не прислал колесо волны") }
+        return (id, value["items"].array.compactMap(Self.parseWheelItem))
+    }
+
+    func wheelFeedbacks(_ feedbacks: [[String: Any]]) async throws {
+        _ = try await post("wheel/feedbacks", json: ["feedbacks": feedbacks])
+    }
+
+    /// Ссылки и «Моя волна на двоих» не поддерживаются: такие подсказки пропускаются.
+    private static func parseWheelItem(_ value: JSON) -> WheelItem? {
+        guard let kind = value["type"].string, let id = value["id"].idText else { return nil }
+        let data = value["data"]
+        switch kind {
+        case "WAVE":
+            let seeds = data["wave"]["seeds"].array.compactMap(\.string)
+            guard !seeds.isEmpty, let title = data["wave"]["name"].string else { return nil }
+            let cover = data["agent"]["cover"]
+            return WheelItem(kind: kind, id: id, action: .wave(seeds), title: title, subtitle: data["wave"]["description"].string ?? "",
+                             cover: cover["uri"].string, color: cover["color"].string)
+        case "ALBUM":
+            let album = data["album"]
+            guard let albumId = album["id"].idText, let title = album["title"].string else { return nil }
+            let artists = data["artists"].array.compactMap { $0["name"].string }.joined(separator: ", ")
+            return WheelItem(kind: kind, id: id, action: .album(albumId), title: title, subtitle: artists,
+                             cover: album["cover"]["uri"].string ?? album["coverUri"].string, color: album["cover"]["color"].string)
+        case "SETTING":
+            guard let title = data["title"].string else { return nil }
+            return WheelItem(kind: kind, id: id, action: .setting, title: title, subtitle: "", cover: data["cover"]["uri"].string, color: nil)
+        default:
+            return nil
+        }
+    }
+
+    /// Карточки «Слов в волне» к трекам. Показанные с прошлого раза карточки и рассказы уходят
+    /// вместе с запросом: Яндекс не повторяет их.
+    func wordsCards(trackIds: [String], viewed: [String], viewedBig: [(String, [String])]) async throws -> [String: WordCard] {
+        let big = viewedBig.map { ["cardId": $0.0, "bigCardIds": $0.1] as [String: Any] }
+        let value = result(try await post("words/cards", json: ["trackIds": trackIds, "viewedCards": viewed, "viewedBigCards": big]))
+        var out: [String: WordCard] = [:]
+        for track in value.array {
+            let item = track["cards"][0]
+            let card = item["card"]
+            guard let trackId = track["id"].idText, let id = card["id"].string,
+                  let text = card["text"].string?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { continue }
+            out[trackId] = WordCard(id: id, text: text, big: card["bigCardIds"][0].string, feedback: item["feedbackState"].string ?? "neutral")
+        }
+        return out
+    }
+
+    func wordsBig(big: String, track: String, card: String) async throws -> WordBig {
+        let value = result(try await post("words/big-cards", json: ["bigCardIds": [big], "bigCardContexts": [["bigCardId": big, "trackId": track, "cardId": card]]]))[0]
+        guard let text = value["text"].string?.trimmingCharacters(in: .whitespacesAndNewlines) else { throw APIError.server("Яндекс не рассказал подробнее") }
+        let action = value["actions"].array.first { ($0["url"].string ?? "").hasPrefix("https://") && $0["title"].string != nil }
+        return WordBig(text: text, actionTitle: action?["title"].string, actionURL: action?["url"].string.flatMap(URL.init(string:)))
+    }
+
+    /// Оценка карточки: «Больше такого» — like, «Мимо» — dislike.
+    func wordsFeedback(card: String, state: String) async throws {
+        let body = try JSONSerialization.data(withJSONObject: ["feedback": [["id": card, "feedbackState": state]]])
+        _ = try await send("PUT", "words/cards/feedback", body: body, type: "application/json")
+    }
+
     /// Следующая пачка волны; queue — уже показанные треки.
     func waveMore(session: String, queue: [String]) async throws -> [Track] {
         let value = result(try await post("rotor/session/\(session)/tracks", json: ["queue": queue, "allowExplicit": true]))
