@@ -1088,11 +1088,20 @@ final class Player: NSObject, ObservableObject {
         center.dislikeCommand.localizedTitle = "Не нравится"
         center.likeCommand.addTarget { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let track = self?.current, !Session.shared.isLiked(track.id) else { return }
+                guard let track = self?.current else { return }
                 Session.shared.toggleLike(track)
             }
             return .success
         }
+        let session = Session.shared
+        now.$id.combineLatest(session.$likedIds, session.$profile)
+            .sink { id, likedIDs, profile in
+                let enabled = id != nil && profile != nil
+                let liked = id.map { likedIDs.contains($0) } ?? false
+                center.likeCommand.isEnabled = enabled
+                center.likeCommand.isActive = enabled && liked
+            }
+            .store(in: &bag)
         center.dislikeCommand.addTarget { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self, let track = self.current, !Session.shared.disliked.contains(track.id) else { return }
