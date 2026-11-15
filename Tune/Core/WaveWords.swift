@@ -16,6 +16,7 @@ struct WheelItem: Identifiable, Hashable {
     var subtitle: String
     var cover: String?
     var color: String?
+    var scrollID: String { "\(kind):\(id)" }
 }
 
 /// Карточка «Слов в волне»: короткий факт о треке и, если есть, рассказ подробнее.
@@ -44,35 +45,43 @@ final class WaveWheel: ObservableObject {
 
     @Published private(set) var items: [WheelItem] = []
     private var wheelId: String?
+    private var positions: [String: Int] = [:]
     private var key: [String]?
+    private var loading = false
     private var feedbacks: [[String: Any]] = []
 
     /// Колесо к играющей волне; без волны — к «Моей волне».
-    func load(seeds: [String]) {
-        guard Settings.waveWheel, !Demo.on, key != seeds else { return }
-        key = seeds
+    func load(seeds: [String], force: Bool = false) async {
+        guard Settings.waveWheel, !Demo.on, !loading, force || key != seeds else { return }
+        loading = true
+        defer { loading = false }
         let sent = feedbacks
         feedbacks = []
-        Task {
-            do {
-                let (id, items) = try await API.shared.wheel(seeds: seeds, feedbacks: sent)
-                guard self.key == seeds else { return }
-                self.wheelId = id
-                // Подсказки на экране сразу видны: о них Яндекс узнает со следующим колесом.
-                for (position, item) in items.prefix(Self.seen).enumerated() {
-                    self.feedbacks.append(Self.feedback(id, "VIEW", item, position))
-                }
-                self.items = items
-            } catch {
-                self.key = nil
-                Log.shared.add("колесо волны: \(error.localizedDescription)")
+        do {
+            let (id, items) = try await API.shared.wheel(seeds: seeds, feedbacks: sent)
+            guard !Task.isCancelled, !items.isEmpty else { return }
+            key = seeds
+            wheelId = id
+            positions.removeAll()
+            self.items = items.enumerated().compactMap { position, item in
+                guard positions[item.scrollID] == nil else { return nil }
+                positions[item.scrollID] = position
+                return item
             }
+            for item in self.items.prefix(Self.seen) {
+                if let position = positions[item.scrollID] {
+                    feedbacks.append(Self.feedback(id, "VIEW", item, position))
+                }
+            }
+        } catch {
+            feedbacks.insert(contentsOf: sent, at: 0)
+            if !Task.isCancelled { Log.shared.add("колесо волны: \(error.localizedDescription)") }
         }
     }
 
     /// Нажали на подсказку. Подсказка, которая ничего не включает, отправляет отзывы сразу.
     func clicked(_ item: WheelItem) {
-        guard let wheelId, let position = items.firstIndex(of: item) else { return }
+        guard let wheelId, let position = positions[item.scrollID] else { return }
         feedbacks.append(Self.feedback(wheelId, "CLICK", item, position))
         if item.action == .setting {
             let sent = feedbacks

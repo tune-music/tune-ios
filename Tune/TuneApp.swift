@@ -121,6 +121,7 @@ enum Route: Hashable {
     case likedArtists
     case likedPodcasts
     case likedBooks
+    case kids
     case settings
     case log
     case stats
@@ -286,6 +287,7 @@ struct TabRoot<Content: View>: View {
         case .likedArtists: CardGridScreen(kind: .artists)
         case .likedPodcasts: CardGridScreen(kind: .podcasts)
         case .likedBooks: CardGridScreen(kind: .books)
+        case .kids: KidsScreen()
         case .settings: SettingsScreen()
         case .log: LogScreen()
         case .stats: StatsScreen()

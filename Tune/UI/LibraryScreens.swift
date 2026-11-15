@@ -67,6 +67,7 @@ struct LibraryScreen: View {
                 entry("music.mic", "Исполнители", session.likedArtists.isEmpty ? "" : "\(session.likedArtists.count)", .likedArtists)
                 entry("mic", "Подкасты", "", .likedPodcasts)
                 entry("book", "Аудиокниги", "", .likedBooks)
+                entry("balloon", "Детям", "", .kids)
                 entry("clock.arrow.circlepath", "История", "", .history)
                 entry("chart.bar.fill", "Статистика", "", .stats)
                 if !session.disliked.isEmpty {
@@ -219,6 +220,55 @@ struct LibraryScreen: View {
         .buttonStyle(.plain)
         .padding(.horizontal, 16)
         .padding(.vertical, 7)
+    }
+}
+
+struct KidsScreen: View {
+    @Environment(\.navigate) private var navigate
+    @State private var blocks: [HomeBlock]?
+    @State private var error: String?
+
+    var body: some View {
+        ScrollView {
+            if let blocks, !blocks.isEmpty {
+                LazyVStack(alignment: .leading, spacing: 24) {
+                    ForEach(blocks) { block in
+                        Shelf(block.title, more: block.items.count > 3 ? { navigate(.block(block)) } : nil) {
+                            ForEach(block.items) { item in
+                                HomeCard(item: item)
+                            }
+                        }
+                    }
+                }
+                .padding(.vertical, 16)
+            } else if let error {
+                Placeholder(icon: "wifi.slash", title: "Не удалось загрузить раздел", text: error) {
+                    Task { await load() }
+                }
+            } else if blocks != nil {
+                Placeholder(icon: "balloon", title: "Подборок пока нет")
+            } else {
+                TilesSkeleton(height: 170)
+                    .padding(.top, 16)
+            }
+        }
+        .background(Theme.background)
+        .navigationTitle("Детям")
+        .navigationBarTitleDisplayMode(.inline)
+        .task { if blocks == nil { await load() } }
+        .refreshable { await load() }
+    }
+
+    private func load() async {
+        error = nil
+        do {
+            let fresh = try await API.shared.kids()
+            guard !Task.isCancelled else { return }
+            blocks = fresh
+        } catch {
+            guard !Task.isCancelled else { return }
+            self.error = error.localizedDescription
+        }
     }
 }
 

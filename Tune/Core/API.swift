@@ -896,6 +896,24 @@ final class API {
         return page
     }
 
+    func kids() async throws -> [HomeBlock] {
+        if Demo.on {
+            return [HomeBlock(id: "kids-playlists", title: "Детские плейлисты", items: Demo.data.playlists.prefix(4).map { .playlist($0) })]
+        }
+        let skeleton = result(try await get("landing/skeleton/kids"))
+        let direct = skeleton["blocks"].array
+        let tabs = direct.map { $0["data"]["tabs"] }.first { $0.isArray }
+        let blocks = tabs.map { $0.array.flatMap { $0["blocks"].array } } ?? direct
+        let page = await homePage(blocks: blocks)
+        try Task.checkCancellation()
+        var seen = Set<String>()
+        return page.blocks.filter { block in
+            // В разных вкладках Яндекс может вернуть одну и ту же полку.
+            let identity = block.items.map(\.id).joined(separator: "|")
+            return seen.insert(identity).inserted
+        }
+    }
+
     // MARK: - Волна
 
     /// Полный список волн Яндекса по группам: жанры, настроение, занятие, эпоха.

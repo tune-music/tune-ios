@@ -170,6 +170,7 @@ struct HomeScreen: View {
             // Отдельная задача: жест обновления отменяет свою, и запрос обрывался на полпути.
             await Task {
                 await model.load(force: true)
+                await WaveWheel.shared.load(seeds: WheelStrip.seeds(for: now), force: true)
                 await session.refresh()
                 await Updater.shared.check()
             }.value
@@ -572,31 +573,27 @@ private struct WheelStrip: View {
     @ObservedObject private var now = Player.shared.now
 
     /// Колесо строится к играющей волне, без неё — к «Моей волне».
-    private var seeds: [String] {
+    static func seeds(for now: NowPlaying) -> [String] {
         if now.kind == "radio", let item = now.item, !item.isEmpty { return item.components(separatedBy: ",") }
         return ["user:onyourwave"]
     }
 
     var body: some View {
-        let items = Demo.on ? Self.demo : wheel.items
-        Group {
-            if !items.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    LazyHStack(alignment: .top, spacing: 14) {
-                        ForEach(items) { item in
-                            disc(item)
-                        }
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 6)
+        let items = Demo.on ? Self.demo : wheel.items.isEmpty ? Self.fallback : wheel.items
+        ScrollView(.horizontal, showsIndicators: false) {
+            LazyHStack(alignment: .top, spacing: 14) {
+                ForEach(items, id: \.scrollID) { item in
+                    disc(item)
                 }
-                .padding(.vertical, -6)
-                .transition(.opacity)
             }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 6)
         }
-        .animation(.easeInOut(duration: 0.3), value: items.isEmpty)
-        .onAppear { wheel.load(seeds: seeds) }
-        .onChange(of: now.item) { _ in wheel.load(seeds: seeds) }
+        .padding(.vertical, -6)
+        .task {
+            guard wheel.items.isEmpty else { return }
+            await wheel.load(seeds: Self.seeds(for: now))
+        }
     }
 
     private func disc(_ item: WheelItem) -> some View {
@@ -639,6 +636,13 @@ private struct WheelStrip: View {
         }
         .buttonStyle(PressStyle(scale: 0.92))
     }
+
+    private static let fallback: [WheelItem] = [
+        WheelItem(kind: "WAVE", id: "fallback:my-wave", action: .wave(["user:onyourwave"]),
+                  title: "Моя волна", subtitle: "", cover: nil, color: "#E5A823"),
+        WheelItem(kind: "SETTING", id: "fallback:settings", action: .setting,
+                  title: "Настроить Мою волну", subtitle: "", cover: nil, color: "#3A3A3C"),
+    ]
 
     private static let demo: [WheelItem] = [
         WheelItem(kind: "WAVE", id: "1", action: .wave(["mood:sad"]), title: "Прожить эту грусть", subtitle: "", cover: nil, color: "#00B2CC"),
