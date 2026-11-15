@@ -22,11 +22,29 @@ struct TrackSource {
 }
 
 enum TrackFiles {
+    enum Version: String, CaseIterable {
+        case yandex, uncensored
+
+        var title: String {
+            switch self {
+            case .yandex: return "Версия Яндекса"
+            case .uncensored: return "Без цензуры"
+            }
+        }
+
+        func cacheID(_ id: String) -> String {
+            "version-\(rawValue)-\(id)"
+        }
+    }
+
     /// Версия без цензуры из списка, иначе файл Яндекса.
-    static func source(for track: Track, quality: String) async throws -> TrackSource {
-        let uncensored = Uncensor.shared.files(for: track.id)
-        if !uncensored.isEmpty {
-            return TrackSource(urls: uncensored, key: nil, needsFile: true)
+    static func source(for track: Track, quality: String, version: Version? = nil) async throws -> TrackSource {
+        if version != .yandex {
+            let uncensored = Uncensor.shared.files(for: track.id)
+            if !uncensored.isEmpty {
+                return TrackSource(urls: uncensored, key: nil, needsFile: true)
+            }
+            if version == .uncensored { throw TuneError("Версия без цензуры недоступна") }
         }
         do {
             let info = try await API.shared.fileInfo(track: track.id, quality: quality, transport: "raw")
@@ -43,6 +61,14 @@ enum TrackFiles {
         let info = try await API.shared.fileInfo(track: track.id, quality: quality, transport: "encraw")
         guard let url = URL(string: info.url) else { throw APIError.server("Яндекс не дал файл трека") }
         return TrackSource(urls: [url], key: info.key, needsFile: true, codec: info.codec)
+    }
+
+    static func versionFile(for track: Track, version: Version, quality: String) async throws -> URL {
+        let id = version.cacheID(track.id)
+        if let file = existing(id: id, in: Storage.stream) { return file }
+        if Settings.offlineMode { throw TuneError("Для этой версии нужно подключение к интернету") }
+        let source = try await source(for: track, quality: quality, version: version)
+        return try await download(id: id, from: source, to: Storage.stream)
     }
 
     /// Скачивает файл в папку и возвращает его путь: имя — номер трека, расширение — по содержимому.
@@ -72,6 +98,10 @@ enum TrackFiles {
                 guard let ext = format(of: file) else {
                     try? FileManager.default.removeItem(at: file)
                     throw TuneError("Файл трека не похож на аудио")
+                }
+                if Task.isCancelled {
+                    try? FileManager.default.removeItem(at: file)
+                    throw CancellationError()
                 }
                 remove(id: id, in: directory)
                 let target = directory.appendingPathComponent("\(id).\(ext)")

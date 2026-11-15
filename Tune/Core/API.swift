@@ -142,7 +142,8 @@ final class API {
             // Точки перехода есть только у музыки: у подкастов и книг их нет.
             fade: value["type"].string == "music" ? FadePoints.parse(value["fade"]) : nil,
             mixFade: value["type"].string == "music" ? FadePoints.parse(value["mixFade"]) : nil,
-            ugc: value["trackSource"].string == "UGC")
+            ugc: value["trackSource"].string == "UGC",
+            yandexAvailable: source["available"].bool)
     }
 
     private static func parsePlaylist(_ value: JSON, owner: String) -> Playlist? {

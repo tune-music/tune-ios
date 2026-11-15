@@ -111,6 +111,9 @@ final class Player: NSObject, ObservableObject {
     /// Таймер сна: когда музыка остановится сама.
     @Published private(set) var sleepAt: Date?
     @Published private(set) var sleepAfterTrack = false
+    @Published private(set) var selectedVersion: TrackFiles.Version?
+    private var versionTrackID: String?
+    private var versionTask: Task<Void, Never>?
     let progress = PlaybackProgress()
     private var sleepTask: Task<Void, Never>?
 
@@ -280,6 +283,13 @@ final class Player: NSObject, ObservableObject {
 
     private func load(_ target: Int, autoplay: Bool, resume: Double? = nil, viaFile: Bool = false) {
         guard queue.indices.contains(target) else { return }
+        versionTask?.cancel()
+        versionTask = nil
+        if queue[target].id != versionTrackID {
+            versionTrackID = nil
+            selectedVersion = nil
+        }
+        let version = selectedVersion
         movedBack = target < index
         index = target
         // Дошли до дописанной волны — играет уже она; вернулись назад — снова альбом или плейлист.
@@ -309,7 +319,7 @@ final class Player: NSObject, ObservableObject {
         UserDefaults.standard.set(target, forKey: "playerIndex")
 
         // Следующий трек уже лежит в запасном проигрывателе: меняем их местами.
-        if !viaFile, resume == nil, let ready = preloaded, ready.id == track.id, spare.currentItem === ready.item {
+        if version == nil, !viaFile, resume == nil, let ready = preloaded, ready.id == track.id, spare.currentItem === ready.item {
             preloaded = nil
             fromPreload = true
             streamed = !((ready.item.asset as? AVURLAsset)?.url.isFileURL ?? true)
@@ -352,10 +362,10 @@ final class Player: NSObject, ObservableObject {
             }
             guard let self else { return }
             do {
-                let item = try await self.makeItem(track, viaFile: viaFile)
+                let item = try await self.makeItem(track, viaFile: viaFile, version: version)
+                guard turn == self.generation else { return }
                 self.fromPreload = false
                 self.streamed = !viaFile && !((item.asset as? AVURLAsset)?.url.isFileURL ?? true)
-                guard turn == self.generation else { return }
                 self.attach(item, track: track, resume: resume)
             } catch {
                 guard turn == self.generation else { return }
@@ -366,7 +376,11 @@ final class Player: NSObject, ObservableObject {
 
     /// Скачанный файл, кэш или поток. Версия без цензуры и зашифрованный файл сначала
     /// скачиваются целиком.
-    private func makeItem(_ track: Track, viaFile: Bool = false) async throws -> AVPlayerItem {
+    private func makeItem(_ track: Track, viaFile: Bool = false, version: TrackFiles.Version? = nil) async throws -> AVPlayerItem {
+        if let version {
+            let file = try await TrackFiles.versionFile(for: track, version: version, quality: Settings.streamQuality)
+            return AVPlayerItem(url: file)
+        }
         if let file = Downloads.shared.fileURL(for: track.id) {
             return AVPlayerItem(url: file)
         }
@@ -381,6 +395,32 @@ final class Player: NSObject, ObservableObject {
         let file = try await TrackFiles.download(id: track.id, from: source, to: Storage.stream)
         Task.detached(priority: .utility) { TrackFiles.trimStreamCache() }
         return AVPlayerItem(url: file)
+    }
+
+    func selectVersion(_ version: TrackFiles.Version, for track: Track) {
+        guard current?.id == track.id, selectedVersion != version,
+              version != .yandex || track.yandexAvailable != false else { return }
+        versionTask?.cancel()
+        let turn = generation
+        Session.shared.show("Готовим: \(version.title)")
+        versionTask = Task { [weak self] in
+            do {
+                _ = try await TrackFiles.versionFile(for: track, version: version, quality: Settings.streamQuality)
+                guard let self, !Task.isCancelled, turn == self.generation, self.current?.id == track.id else { return }
+                self.versionTask = nil
+                self.versionTrackID = track.id
+                self.selectedVersion = version
+                let position = self.progress.position
+                self.endCurrent(.skipped)
+                self.load(self.index, autoplay: self.isPlaying, resume: position)
+                Task.detached(priority: .utility) { TrackFiles.trimStreamCache() }
+                Session.shared.show(version.title)
+            } catch {
+                guard let self, !Task.isCancelled, turn == self.generation else { return }
+                self.versionTask = nil
+                Session.shared.show(error.localizedDescription)
+            }
+        }
     }
 
     private func attach(_ item: AVPlayerItem, track: Track, resume: Double?) {
@@ -472,6 +512,14 @@ final class Player: NSObject, ObservableObject {
 
     private func fail(_ error: Error) {
         listen = nil
+        if let version = selectedVersion, let track = current {
+            TrackFiles.remove(id: version.cacheID(track.id), in: Storage.stream)
+            selectedVersion = nil
+            versionTrackID = nil
+            Session.shared.show("Выбранная версия не воспроизводится")
+            load(index, autoplay: isPlaying, resume: progress.position)
+            return
+        }
         // Ссылка, заготовленная заранее, могла устареть: берём свежую.
         if fromPreload {
             fromPreload = false
@@ -725,6 +773,10 @@ final class Player: NSObject, ObservableObject {
     }
 
     func stop() {
+        versionTask?.cancel()
+        versionTask = nil
+        selectedVersion = nil
+        versionTrackID = nil
         endCurrent(.skipped)
         generation += 1
         itemObservation = nil

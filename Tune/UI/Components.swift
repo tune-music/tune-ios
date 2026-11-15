@@ -252,6 +252,17 @@ struct TrackMenu: View {
         } label: {
             Label(disliked ? "Снять дизлайк" : "Не нравится", systemImage: disliked ? "hand.thumbsup" : "hand.thumbsdown")
         }
+        if inPlayer, Uncensor.shared.has(track.id), track.yandexAvailable != false {
+            ForEach(TrackFiles.Version.allCases, id: \.rawValue) { version in
+                Button {
+                    player.selectVersion(version, for: track)
+                    done()
+                } label: {
+                    Label(version.title, systemImage: player.selectedVersion == version ? "checkmark" : "waveform")
+                }
+                .disabled(player.selectedVersion == version)
+            }
+        }
         Button {
             done()
             pick(track)

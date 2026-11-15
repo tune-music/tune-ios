@@ -205,6 +205,7 @@ final class Uncensor {
 
     private static func catalogTrack(_ id: String, in list: List) -> JSON {
         var fields = list.tracks[id] ?? [:]
+        fields["available"] = false
         if let album = list.trackAlbums[id] {
             fields["albums"] = [album]
             if fields["artists"] == nil { fields["artists"] = album["artists"] }
