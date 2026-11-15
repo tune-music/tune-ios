@@ -345,7 +345,7 @@ private struct PlayerBody: View {
                 sound = true
             } label: {
                 Image(systemName: "slider.horizontal.3")
-                    .foregroundStyle(player.sound != SoundSettings() ? Theme.accent : Color.white.opacity(0.85))
+                    .foregroundStyle(player.sound.needsAudioMix || player.sound.speed != 1 ? Theme.accent : Color.white.opacity(0.85))
                     .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
             }

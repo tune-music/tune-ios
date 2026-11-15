@@ -2,26 +2,73 @@ import AVFoundation
 import MediaToolbox
 
 struct SoundSettings: Equatable {
-    static let frequencies: [Float] = [60, 250, 1_000, 4_000, 12_000]
-    static let speeds: [Float] = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]
+    static let frequencies: [Float] = [60, 170, 310, 600, 1_000, 3_000, 6_000, 12_000, 14_000, 16_000]
+    static let speedRange: ClosedRange<Float> = 0.5...2
+    // Частоты и пресеты из эквалайзера Tune Native.
+    static let presets: [(name: String, gains: [Float])] = [
+        ("Своя настройка", []),
+        ("По умолчанию", Array(repeating: 0, count: 10)),
+        ("Классическая музыка", [-0.5, -0.5, -0.5, -0.5, -0.5, -0.5, -3.5, -3.5, -3.5, -4.5]),
+        ("Клубная музыка", [-0.5, -0.5, 4, 2.5, 2.5, 2.5, 1.5, -0.5, -0.5, -0.5]),
+        ("Танцевальная музыка", [4.5, 3.5, 1, -0.5, -0.5, -2.5, -3.5, -3.5, -0.5, -0.5]),
+        ("Усиление НЧ", [4, 4.5, 4.5, 2.5, 0.5, -2, -4, -5, -5.5, -5.5]),
+        ("Усиление НЧ и ВЧ", [3.5, 2.5, -0.5, -3.5, -2, 0.5, 4, 5.5, 6, 6]),
+        ("Усиление ВЧ", [-4.5, -4.5, -4.5, -2, 1, 5.5, 8, 8, 8, 8]),
+        ("Колонки ноутбука", [2, 5.5, 2.5, -1.5, -1, 0.5, 2, 4.5, 6, 7]),
+        ("Большой зал", [5, 5, 2.5, 2.5, -0.5, -2, -2, -2, -0.5, -0.5]),
+        ("Концерт", [-2, -0.5, 2, 2.5, 2.5, 2.5, 2, 1, 1, 1]),
+        ("Вечеринка", [3.5, 3.5, -0.5, -0.5, -0.5, -0.5, -0.5, -0.5, 3.5, 3.5]),
+        ("Поп", [-0.5, 2, 3.5, 4, 2.5, -0.5, -1, -1, -0.5, -0.5]),
+        ("Регги", [-0.5, -0.5, -0.5, -2.5, -0.5, 3, 3, -0.5, -0.5, -0.5]),
+        ("Рок", [4, 2, -2.5, -4, -1.5, 2, 4, 5.5, 5.5, 5.5]),
+        ("Ска", [-1, -2, -2, -0.5, 2, 2.5, 4, 4.5, 5.5, 4.5]),
+        ("Мягкое звучание", [2, 0.5, -0.5, -1, -0.5, 2, 4, 4.5, 5.5, 6]),
+        ("Софт-рок", [2, 2, 1, -0.5, -2, -2.5, -1.5, -0.5, 1, 4]),
+        ("Техно", [4, 2.5, -0.5, -2.5, -2, -0.5, 4, 4.5, 4.5, 4]),
+    ]
 
     var speed: Float = 1
-    var gains = SIMD8<Float>.zero
+    var eqEnabled = false
+    var preset = 1
+    var preamp: Float = 1
+    var gains = SIMD16<Float>.zero
     var echo: Float = 0
-    var needsAudioMix: Bool { gains != .zero || echo > 0 }
+    var needsAudioMix: Bool { (eqEnabled && (gains != .zero || preamp != 1)) || echo > 0 }
+
+    mutating func selectPreset(_ index: Int) {
+        guard Self.presets.indices.contains(index) else { return }
+        preset = index
+        if index != 0 {
+            preamp = 1
+            for band in Self.frequencies.indices { gains[band] = Self.presets[index].gains[band] }
+        }
+    }
 
     static func read() -> Self {
         let saved = UserDefaults.standard.array(forKey: "tuneSound") as? [Float] ?? []
-        guard saved.count == frequencies.count + 2, saved.allSatisfy(\.isFinite) else { return Self() }
+        guard saved.allSatisfy(\.isFinite), saved.count == 7 || saved.count == frequencies.count + 5 else { return Self() }
         var settings = Self()
-        settings.speed = speeds.contains(saved[0]) ? saved[0] : 1
+        settings.speed = min(speedRange.upperBound, max(speedRange.lowerBound, saved[0]))
         settings.echo = min(1, max(0, saved[1]))
-        for index in frequencies.indices { settings.gains[index] = min(12, max(-12, saved[index + 2])) }
+        if saved.count == 7 {
+            // Переносим прежние пять полос к ближайшим частотам новой сетки.
+            for (offset, band) in [0, 2, 4, 5, 7].enumerated() {
+                settings.gains[band] = min(12, max(-12, saved[offset + 2]))
+            }
+            settings.eqEnabled = settings.gains != .zero
+            settings.preset = settings.eqEnabled ? 0 : 1
+        } else {
+            settings.eqEnabled = saved[2] == 1
+            settings.preset = Int(min(Float(presets.count - 1), max(0, saved[3])))
+            settings.preamp = min(1.5, max(0.5, saved[4]))
+            for index in frequencies.indices { settings.gains[index] = min(12, max(-12, saved[index + 5])) }
+        }
         return settings
     }
 
     func save() {
-        UserDefaults.standard.set([speed, echo] + Self.frequencies.indices.map { gains[$0] }, forKey: "tuneSound")
+        let values: [Float] = [speed, echo, eqEnabled ? 1 : 0, Float(preset), preamp]
+        UserDefaults.standard.set(values + Self.frequencies.indices.map { gains[$0] }, forKey: "tuneSound")
     }
 }
 
@@ -80,8 +127,8 @@ final class AudioEffects {
 
     private final class Renderer {
         private struct Channel {
-            var z1 = SIMD8<Float>.zero
-            var z2 = SIMD8<Float>.zero
+            var z1 = SIMD16<Float>.zero
+            var z2 = SIMD16<Float>.zero
         }
 
         private let effects: AudioEffects
@@ -93,11 +140,12 @@ final class AudioEffects {
         private var delayFrames = 0
         private var cursor = 0
         private var headroom: Float = 1
-        private var b0 = SIMD8<Float>(repeating: 1)
-        private var b1 = SIMD8<Float>.zero
-        private var b2 = SIMD8<Float>.zero
-        private var a1 = SIMD8<Float>.zero
-        private var a2 = SIMD8<Float>.zero
+        private var activeBands: UInt16 = 0
+        private var b0 = SIMD16<Float>(repeating: 1)
+        private var b1 = SIMD16<Float>.zero
+        private var b2 = SIMD16<Float>.zero
+        private var a1 = SIMD16<Float>.zero
+        private var a2 = SIMD16<Float>.zero
 
         init(effects: AudioEffects) { self.effects = effects }
 
@@ -116,32 +164,44 @@ final class AudioEffects {
 
         private func configure(_ settings: SoundSettings) {
             current = settings
+            activeBands = 0
             var boost: Float = 0
             for index in SoundSettings.frequencies.indices {
+                let frequency = SoundSettings.frequencies[index]
                 let gain = settings.gains[index]
-                boost += max(0, gain)
-                guard gain != 0 else {
-                    b0[index] = 1
-                    b1[index] = 0
-                    b2[index] = 0
-                    a1[index] = 0
-                    a2[index] = 0
-                    continue
-                }
-                // Peaking biquad, Q = 1.0.
+                guard settings.eqEnabled, gain != 0, frequency < rate * 0.49 else { continue }
+                activeBands |= 1 << index
+                boost = max(boost, gain)
                 let amplitude = powf(10, gain / 40)
-                let angle = 2 * Float.pi * min(SoundSettings.frequencies[index], rate * 0.45) / rate
-                let alpha = sinf(angle) / 2
-                let middle = -2 * cosf(angle)
-                let normalization = 1 + alpha / amplitude
-                b0[index] = (1 + alpha * amplitude) / normalization
-                b1[index] = middle / normalization
-                b2[index] = (1 - alpha * amplitude) / normalization
-                a1[index] = middle / normalization
-                a2[index] = (1 - alpha / amplitude) / normalization
+                let angle = 2 * Float.pi * frequency / rate
+                let cosine = cosf(angle)
+                let sine = sinf(angle)
+                if index == 0 || index == SoundSettings.frequencies.count - 1 {
+                    // Полки по краям, как в Tune Native; средние полосы — peaking Q = 1.
+                    let direction: Float = index == 0 ? 1 : -1
+                    let sum = amplitude + 1
+                    let difference = amplitude - 1
+                    let slope = sqrtf(2 * amplitude) * sine
+                    let normalization = sum + direction * difference * cosine + slope
+                    b0[index] = amplitude * (sum - direction * difference * cosine + slope) / normalization
+                    b1[index] = direction * 2 * amplitude * (difference - direction * sum * cosine) / normalization
+                    b2[index] = amplitude * (sum - direction * difference * cosine - slope) / normalization
+                    a1[index] = -direction * 2 * (difference + direction * sum * cosine) / normalization
+                    a2[index] = (sum + direction * difference * cosine - slope) / normalization
+                } else {
+                    let alpha = sine / 2
+                    let middle = -2 * cosine
+                    let normalization = 1 + alpha / amplitude
+                    b0[index] = (1 + alpha * amplitude) / normalization
+                    b1[index] = middle / normalization
+                    b2[index] = (1 - alpha * amplitude) / normalization
+                    a1[index] = middle / normalization
+                    a2[index] = (1 - alpha / amplitude) / normalization
+                }
             }
             let feedback: Float = 0.32
-            headroom = powf(10, -boost / 20) / (1 + settings.echo * 0.5 / (1 - feedback))
+            let preamp = settings.eqEnabled ? settings.preamp : 1
+            headroom = preamp * powf(10, -boost / 20) / (1 + settings.echo * 0.5 / (1 - feedback))
         }
 
         func render(_ list: UnsafeMutablePointer<AudioBufferList>, frames: Int, flags: MTAudioProcessingTapFlags) {
@@ -152,7 +212,7 @@ final class AudioEffects {
                 cursor = 0
             }
             if let settings = effects.snapshot(), settings != current {
-                if settings.gains != current.gains {
+                if settings.gains != current.gains || settings.eqEnabled != current.eqEnabled {
                     for channel in channels.indices { channels[channel] = Channel() }
                 }
                 if settings.echo == 0, current.echo > 0 {
@@ -177,7 +237,10 @@ final class AudioEffects {
                     for frame in 0..<available {
                         let sampleIndex = frame * count + index
                         var value = samples[sampleIndex]
-                        for band in SoundSettings.frequencies.indices where current.gains[band] != 0 {
+                        var bands = activeBands
+                        while bands != 0 {
+                            let band = bands.trailingZeroBitCount
+                            bands &= bands - 1
                             let output = b0[band] * value + channel.z1[band]
                             channel.z1[band] = b1[band] * value - a1[band] * output + channel.z2[band]
                             channel.z2[band] = b2[band] * value - a2[band] * output
@@ -191,7 +254,7 @@ final class AudioEffects {
                             position += 1
                             if position == delayFrames { position = 0 }
                         }
-                        samples[sampleIndex] = value * headroom
+                        samples[sampleIndex] = min(1, max(-1, value * headroom))
                     }
                     channels[channelIndex] = channel
                 }
