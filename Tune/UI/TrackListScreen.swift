@@ -416,7 +416,7 @@ struct TrackListScreen: View {
 
     private var page: some View {
         let tracks = shown
-        ScrollViewReader { proxy in
+        return ScrollViewReader { proxy in
             List {
                 header(count: all.count)
                     // Шапка почти ушла под панель навигации: пора показать название в панели.
