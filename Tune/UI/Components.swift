@@ -119,12 +119,13 @@ extension Font {
 /// Нажатие с откликом: кнопка поджимается под пальцем и пружинит обратно.
 struct PressStyle: ButtonStyle {
     var scale: CGFloat = 0.86
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .scaleEffect(configuration.isPressed ? scale : 1)
+            .scaleEffect(configuration.isPressed && !reduceMotion ? scale : 1)
             .opacity(configuration.isPressed ? 0.75 : 1)
-            .animation(.spring(response: 0.25, dampingFraction: 0.6), value: configuration.isPressed)
+            .animation(reduceMotion ? nil : .spring(response: 0.25, dampingFraction: 0.6), value: configuration.isPressed)
     }
 }
 
@@ -132,11 +133,12 @@ struct PressStyle: ButtonStyle {
 struct PlayGlyph: View {
     let playing: Bool
     let size: CGFloat
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let image = Image(systemName: playing ? "pause.fill" : "play.fill")
             .font(.system(size: size))
-        if #available(iOS 17.0, *) {
+        if #available(iOS 17.0, *), !reduceMotion {
             image
                 .contentTransition(.symbolEffect(.replace))
                 .animation(.spring(response: 0.3, dampingFraction: 0.8), value: playing)
@@ -1091,15 +1093,27 @@ struct MiniPlayerSpace: View {
     }
 }
 
+@available(iOS 26.1, *)
+struct TabMiniPlayer: View {
+    @Environment(\.tabViewBottomAccessoryPlacement) private var placement
+
+    var body: some View {
+        MiniPlayer(attached: true, compact: placement == .inline)
+    }
+}
+
 /// Плашка с текущим треком над панелью вкладок. Смахивание вверх открывает плеер,
 /// в стороны — переключает трек.
 struct MiniPlayer: View {
     /// Страница под плашкой светлая: стеклу нужна тёмная подложка, иначе белый текст не читается.
     var light = false
+    var attached = false
+    var compact = false
 
     @EnvironmentObject private var player: Player
     @EnvironmentObject private var session: Session
     @Environment(\.openPlayer) private var openPlayer
+    @Environment(\.colorScheme) private var scheme
     @State private var tone = Theme.tone
     /// Сдвиг названия под пальцем.
     @StateObject private var drag = TrackDrag()
@@ -1109,53 +1123,73 @@ struct MiniPlayer: View {
             let liked = session.isLiked(track.id)
             let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
             HStack(spacing: 0) {
-                TrackPager(style: .row, track: track, drag: drag, onOpen: openPlayer)
+                TrackPager(style: .row, track: track, drag: drag, onOpen: openPlayer,
+                           lightBackground: attached && scheme == .light)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel([track.fullTitle, track.artists].filter { !$0.isEmpty }.joined(separator: ", "))
+                    .accessibilityHint("Открывает плеер")
+                    .accessibilityAddTraits(.isButton)
+                    .accessibilityAction { openPlayer() }
+                    .accessibilityAction(named: Text("Следующий трек")) { player.next() }
+                    .accessibilityAction(named: Text("Предыдущий трек")) { player.previous() }
+                    .accessibilityAction(named: Text(liked ? "Снять лайк" : "Поставить лайк")) { session.toggleLike(track) }
 
-                Button {
-                    session.toggleLike(track)
-                } label: {
-                    Image(systemName: liked ? "heart.fill" : "heart")
-                        .font(.system(size: 20))
-                        .foregroundStyle(liked ? Theme.accentText : Theme.text)
-                        .frame(width: 46)
-                        .frame(maxHeight: .infinity)
-                        .contentShape(Rectangle())
+                if !compact {
+                    Button {
+                        session.toggleLike(track)
+                    } label: {
+                        Image(systemName: liked ? "heart.fill" : "heart")
+                            .font(.system(size: 20))
+                            .foregroundStyle(liked ? Theme.accentText : Theme.text)
+                            .frame(width: 46)
+                            .frame(maxHeight: .infinity)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(liked ? "Снять лайк" : "Поставить лайк")
+                    .accessibilityAddTraits(liked ? .isSelected : [])
                 }
-                .buttonStyle(.plain)
                 Button {
                     player.toggle()
                 } label: {
                     PlayGlyph(playing: player.isPlaying, size: 22)
                         .foregroundStyle(Theme.text)
                         .opacity(player.isBuffering ? 0.5 : 1)
-                        .frame(width: 50)
+                        .frame(width: compact ? 44 : 50)
                     .frame(maxHeight: .infinity)
                     // Нажатие ловит вся площадь кнопки, а не только сам значок.
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(PressStyle())
+                .accessibilityLabel(player.isPlaying ? "Пауза" : "Продолжить")
             }
-            .padding(.leading, 8)
+            .padding(.leading, attached ? 10 : 8)
             .padding(.trailing, 2)
-            .frame(height: 58)
+            .frame(height: attached ? (compact ? 44 : 52) : 58)
             .overlay(alignment: .bottom) {
-                MiniProgress(progress: player.progress)
-                    .padding(.horizontal, 18)
-                    .allowsHitTesting(false)
+                if !compact {
+                    MiniProgress(progress: player.progress)
+                        .padding(.horizontal, 18)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
             }
             // Стекло лежит подложкой под кнопками и не перехватывает их нажатия.
             .background {
-                if light {
-                    shape.fill(Color(white: 0.1).opacity(0.8))
+                if !attached {
+                    if light {
+                        shape.fill(Color(white: 0.1).opacity(0.8))
+                    }
+                    Color.clear.glass(in: shape, tint: tone.opacity(0.75))
+                        .animation(.easeInOut(duration: 0.3), value: tone)
                 }
-                Color.clear.glass(in: shape, tint: tone.opacity(0.75))
-                    .animation(.easeInOut(duration: 0.3), value: tone)
             }
             .contentShape(shape)
-            .padding(.horizontal, 10)
-            .padding(.bottom, 6)
+            .padding(.horizontal, attached ? 0 : 10)
+            .padding(.bottom, attached ? 0 : 6)
             .task(id: track.cover) {
+                guard !attached else { return }
                 let color = await ImageLoader.shared.tone(track.cover)
                 guard !Task.isCancelled else { return }
                 tone = color ?? Theme.tone

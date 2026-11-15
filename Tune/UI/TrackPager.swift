@@ -39,9 +39,9 @@ final class TrackPage: UIView {
         case .row:
             art.layer.cornerRadius = 10
             title.font = .systemFont(ofSize: 15, weight: .semibold)
-            title.textColor = .white
+            title.textColor = .label
             artist.font = .systemFont(ofSize: 13)
-            artist.textColor = UIColor(white: 1, alpha: 0.65)
+            artist.textColor = .secondaryLabel
             addSubview(title)
             addSubview(artist)
         }
@@ -61,7 +61,7 @@ final class TrackPage: UIView {
             // Готовый контур тени: система не вычисляет её по содержимому на каждом кадре.
             layer.shadowPath = UIBezierPath(roundedRect: bounds, cornerRadius: 22).cgPath
         case .row:
-            let side: CGFloat = 42
+            let side = min(42, max(0, bounds.height - 8))
             art.frame = CGRect(x: 0, y: (bounds.height - side) / 2, width: side, height: side)
             note.frame = art.frame.insetBy(dx: 12, dy: 12)
             let left = side + 10
@@ -84,7 +84,7 @@ final class TrackPage: UIView {
             text.append(NSAttributedString(string: "  "))
             text.append(NSAttributedString(attachment: attachment))
         }
-        let mark = UIColor(white: 1, alpha: 0.65)
+        let mark = UIColor.systemGray
         if track.explicit { add("e.square.fill", mark) }
         if track.uncensored { add("lock.open.fill", mark) }
         if track.isPrivate { add("eye.slash.fill", mark) }
@@ -232,6 +232,11 @@ final class TrackPagerView: UIView {
 
     private func animate(_ changes: @escaping () -> Void) {
         run += 1
+        if UIAccessibility.isReduceMotionEnabled {
+            changes()
+            back.isHidden = true
+            return
+        }
         let mine = run
         UIView.animate(
             withDuration: 0.42, delay: 0, usingSpringWithDamping: 1, initialSpringVelocity: 0,
@@ -391,9 +396,11 @@ struct TrackPager: UIViewRepresentable {
     let drag: TrackDrag
     /// Если задано, лента сама ловит касания: нажатие и смахивание вверх открывают плеер.
     var onOpen: (() -> Void)?
+    var lightBackground = false
 
     func makeUIView(context: Context) -> TrackPagerView {
         let view = TrackPagerView(style: style)
+        if style == .row { view.overrideUserInterfaceStyle = lightBackground ? .light : .dark }
         view.set(track)
         drag.view = view
         if let onOpen { view.enableTouch(onOpen) }
@@ -401,6 +408,7 @@ struct TrackPager: UIViewRepresentable {
     }
 
     func updateUIView(_ view: TrackPagerView, context: Context) {
+        if style == .row { view.overrideUserInterfaceStyle = lightBackground ? .light : .dark }
         drag.view = view
         if let onOpen { view.enableTouch(onOpen) }
         guard let track else { return }

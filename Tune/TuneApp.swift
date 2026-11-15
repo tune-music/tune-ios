@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 
 /// Быстрые действия: меню по долгому нажатию на значок приложения.
@@ -168,6 +169,7 @@ struct RootView: View {
     @State private var picking: Track? = Demo.screen == "picker" ? Demo.data.tracks.first : nil
     @Environment(\.scenePhase) private var phase
     @Environment(\.dynamicTypeSize) private var typeSize
+    @State private var hasTrack = Player.shared.now.id != nil
 
     var body: some View {
         Group {
@@ -192,6 +194,9 @@ struct RootView: View {
         .onOpenURL { url in
             if session.token != nil { Links.open(url) }
         }
+        .onReceive(Player.shared.now.$id.map { $0 != nil }.removeDuplicates()) { visible in
+            if hasTrack != visible { hasTrack = visible }
+        }
         .alert("Tune", isPresented: errorShown) {
             Button("Понятно", role: .cancel) {}
         } message: {
@@ -205,6 +210,30 @@ struct RootView: View {
     }
 
     private var tabs: some View {
+        tabsWithPlayer
+            .tint(Theme.accentText)
+            .environmentObject(router)
+            .environment(\.openPlayer, { PlayerWindow.shared.show() })
+            .environment(\.pickPlaylist, { picking = $0 })
+            .overlay(alignment: .bottom) {
+                ToastView(bottom: true)
+            }
+            .sheet(item: $picking) { track in
+                PlaylistPicker(track: track)
+            }
+    }
+
+    @ViewBuilder private var tabsWithPlayer: some View {
+        if #available(iOS 26.1, *) {
+            tabPages
+                .tabBarMinimizeBehavior(.onScrollDown)
+                .tabViewBottomAccessory(isEnabled: hasTrack) { TabMiniPlayer() }
+        } else {
+            tabPages
+        }
+    }
+
+    private var tabPages: some View {
         TabView(selection: $router.tab) {
             TabRoot(index: 0) { HomeScreen() }
                 .tabItem { Label("Главная", systemImage: "house.fill") }
@@ -216,16 +245,6 @@ struct RootView: View {
                 .tabItem { Label("Коллекция", systemImage: "heart.fill") }
                 .tag(2)
         }
-        .tint(Theme.accentText)
-        .environmentObject(router)
-        .environment(\.openPlayer, { PlayerWindow.shared.show() })
-        .environment(\.pickPlaylist, { picking = $0 })
-        .overlay(alignment: .bottom) {
-            ToastView(bottom: true)
-        }
-        .sheet(item: $picking) { track in
-            PlaylistPicker(track: track)
-        }
     }
 }
 
@@ -235,6 +254,7 @@ struct TabRoot<Content: View>: View {
     private let content: Content
     @EnvironmentObject private var router: Router
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Вкладка проявляется, когда на неё переключились.
     @State private var shown = true
 
@@ -243,31 +263,40 @@ struct TabRoot<Content: View>: View {
         self.content = content()
     }
 
-    var body: some View {
+    @ViewBuilder var body: some View {
+        if #available(iOS 26.1, *) {
+            stack
+        } else {
+            stack.overlay(alignment: .bottom) {
+                MiniPlayer(light: scheme == .light)
+                    .environment(\.colorScheme, .dark)
+            }
+        }
+    }
+
+    private var stack: some View {
         NavigationStack(path: $router.paths[index]) {
-            content
-                .opacity(shown ? 1 : 0)
-                .safeAreaInset(edge: .bottom, spacing: 0) { MiniPlayerSpace() }
+            inset(content.opacity(shown ? 1 : 0))
                 .navigationDestination(for: Route.self) { route in
-                    destination(route)
-                        .safeAreaInset(edge: .bottom, spacing: 0) { MiniPlayerSpace() }
+                    inset(destination(route))
                 }
         }
         .tint(Theme.text)
         .environment(\.navigate, { router.paths[index].append($0) })
         .onChange(of: router.tab) { tab in
-            guard tab == index else { return }
+            guard tab == index, !reduceMotion else { return }
             shown = false
             DispatchQueue.main.async {
                 withAnimation(.easeOut(duration: 0.22)) { shown = true }
             }
         }
-        // Мини-плеер лежит поверх страницы, а место под него отступает каждая страница сама:
-        // так список докручивается до конца и последние строки не прячутся.
-        .overlay(alignment: .bottom) {
-            // Мини-плеер окрашен под обложку, поэтому в любой теме тёмный.
-            MiniPlayer(light: scheme == .light)
-                .environment(\.colorScheme, .dark)
+    }
+
+    @ViewBuilder private func inset<V: View>(_ view: V) -> some View {
+        if #available(iOS 26.1, *) {
+            view
+        } else {
+            view.safeAreaInset(edge: .bottom, spacing: 0) { MiniPlayerSpace() }
         }
     }
 
