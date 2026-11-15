@@ -41,6 +41,7 @@ struct SearchScreen: View {
 
     @EnvironmentObject private var player: Player
     @EnvironmentObject private var downloads: Downloads
+    @EnvironmentObject private var session: Session
     @Environment(\.navigate) private var navigate
     @State private var query = Demo.screen == "search" ? "queen" : ""
     @State private var tab = SearchTab.all
@@ -93,9 +94,9 @@ struct SearchScreen: View {
                     hints
                 }
                 tabs
-                if displayed != request || (completedPage < 0 && failure == nil) {
+                if displayed != request || (completedPage < 0 && result.isEmpty && failure == nil) {
                     RowsSkeleton(count: 8)
-                } else if completedPage < 0, let failure {
+                } else if completedPage < 0, result.isEmpty, let failure {
                     Placeholder(icon: "wifi.slash", title: "Не удалось выполнить поиск", text: failure) { retryCount += 1 }
                 } else if result.isEmpty {
                     Placeholder(
@@ -119,6 +120,8 @@ struct SearchScreen: View {
                 }
                 if tab != .all, displayed == request, completedPage >= 0, result.hasMore {
                     pagination
+                } else if displayed == request, completedPage < 0, !result.isEmpty, let failure {
+                    Placeholder(icon: "wifi.slash", title: "Показаны сохранённые результаты", text: failure) { retryCount += 1 }
                 }
             }
         }
@@ -253,7 +256,7 @@ struct SearchScreen: View {
     private func suggest() async {
         let asked = text
         suggestions = []
-        guard asked.count > 1 else {
+        guard asked.count > 1, Demo.on || !Settings.offlineMode else {
             suggestions = []
             return
         }
@@ -395,6 +398,9 @@ struct SearchScreen: View {
             Button {
                 recent = []
                 UserDefaults.standard.removeObject(forKey: "recentSearches")
+                if let account = session.profile?.uid {
+                    Task { await SearchCache.shared.clear(account: account) }
+                }
             } label: {
                 Text("Очистить")
                     .font(.scaled(size: 15, weight: .medium))
@@ -515,7 +521,25 @@ struct SearchScreen: View {
         guard !asked.text.isEmpty else { return }
         guard page == completedPage + 1 else { return }
         failure = nil
+        let cacheKey: SearchCache.Key?
+        if !Demo.on, asked.tab != .lyrics, let account = session.profile?.uid {
+            cacheKey = SearchCache.Key(account: account, query: asked.text.lowercased(), tab: asked.tab.rawValue,
+                                       uncensor: Settings.uncensor)
+        } else {
+            cacheKey = nil
+        }
         do {
+            if page == 0, let cacheKey {
+                let saved = await SearchCache.shared.result(for: cacheKey)
+                try Task.checkCancellation()
+                guard request == asked else { return }
+                if let saved { result = saved }
+            }
+            if !Demo.on, Settings.offlineMode, asked.tab != .lyrics {
+                result.hasMore = false
+                completedPage = 0
+                return
+            }
             if page == 0 { try await Task.sleep(nanoseconds: 350_000_000) }
             var byLine: [Track] = []
             var lineError: Error?
@@ -564,6 +588,7 @@ struct SearchScreen: View {
             }
             result.append(found)
             completedPage = page
+            if page == 0, let cacheKey { await SearchCache.shared.save(result, for: cacheKey) }
         } catch {
             guard !Task.isCancelled, request == asked else { return }
             failure = error.localizedDescription

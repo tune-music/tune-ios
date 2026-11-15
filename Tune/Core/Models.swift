@@ -260,7 +260,7 @@ func shortCount(_ value: Int) -> String {
 }
 
 /// Первое, что нашёл Яндекс: показывается крупной карточкой.
-enum SearchBest {
+enum SearchBest: Codable {
     case track(Track)
     case artist(Card)
     case album(Card)
@@ -268,7 +268,7 @@ enum SearchBest {
     case podcast(Card)
 }
 
-struct SearchResult {
+struct SearchResult: Codable {
     var best: SearchBest?
     var tracks: [Track] = []
     var albums: [Card] = []
