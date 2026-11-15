@@ -28,7 +28,7 @@ struct SoundSettings: Equatable {
     ]
 
     var speed: Float = 1
-    var pitchWithSpeed = false
+    var pitchWithSpeed = true
     var pitchAlgorithm: AVAudioTimePitchAlgorithm { pitchWithSpeed ? .varispeed : .spectral }
     var eqEnabled = false
     var preset = 1
@@ -52,7 +52,7 @@ struct SoundSettings: Equatable {
         var settings = Self()
         settings.speed = min(speedRange.upperBound, max(speedRange.lowerBound, saved[0]))
         settings.echo = min(1, max(0, saved[1]))
-        settings.pitchWithSpeed = UserDefaults.standard.bool(forKey: "tunePitchWithSpeed")
+        settings.pitchWithSpeed = UserDefaults.standard.object(forKey: "tunePitchWithSpeed") as? Bool ?? true
         if saved.count == 7 {
             // Переносим прежние пять полос к ближайшим частотам новой сетки.
             for (offset, band) in [0, 2, 4, 5, 7].enumerated() {

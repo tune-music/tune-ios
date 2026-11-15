@@ -3,17 +3,15 @@ import SwiftUI
 struct SoundSheet: View {
     @EnvironmentObject private var player: Player
     @Environment(\.dismiss) private var dismiss
+    @State private var pendingSpeed: Float?
+
+    private var shownSpeed: Float { pendingSpeed ?? player.sound.speed }
 
     var body: some View {
         NavigationStack {
             Form {
                 Section("Воспроизведение") {
-                    valueSlider("Скорость", value: "\(player.sound.speed.formatted(.number.precision(.fractionLength(0...2))))×",
-                                range: SoundSettings.speedRange, step: 0.05, binding: Binding(get: { player.sound.speed }, set: { speed in
-                        var setting = player.sound
-                        setting.speed = (speed * 20).rounded() / 20
-                        player.updateSound(setting)
-                    }))
+                    speedSlider
                     Toggle("Тон вместе со скоростью", isOn: Binding(get: { player.sound.pitchWithSpeed }, set: { enabled in
                         var setting = player.sound
                         setting.pitchWithSpeed = enabled
@@ -63,6 +61,31 @@ struct SoundSheet: View {
         .tint(Theme.accentText)
     }
 
+    private var speedSlider: some View {
+        valueSlider("Скорость", value: "\(shownSpeed.formatted(.number.precision(.fractionLength(0...2))))×",
+                    range: SoundSettings.speedRange, step: 0.05, binding: Binding(get: { shownSpeed }, set: { value in
+            let speed = (value * 20).rounded() / 20
+            if pendingSpeed != nil {
+                pendingSpeed = speed
+            } else {
+                applySpeed(speed)
+            }
+        }), onEditingChanged: { editing in
+            if editing {
+                pendingSpeed = player.sound.speed
+            } else if let pendingSpeed {
+                applySpeed(pendingSpeed)
+                self.pendingSpeed = nil
+            }
+        })
+    }
+
+    private func applySpeed(_ speed: Float) {
+        var setting = player.sound
+        setting.speed = speed
+        player.updateSound(setting)
+    }
+
     private var presets: some View {
         Picker("Пресет", selection: Binding(get: { player.sound.preset }, set: { preset in
             var setting = player.sound
@@ -93,10 +116,10 @@ struct SoundSheet: View {
     }
 
     private func valueSlider(_ title: String, value: String, range: ClosedRange<Float>, step: Float,
-                             binding: Binding<Float>) -> some View {
+                             binding: Binding<Float>, onEditingChanged: @escaping (Bool) -> Void = { _ in }) -> some View {
         HStack(spacing: 12) {
             Text(title).frame(width: 78, alignment: .leading)
-            Slider(value: binding, in: range, step: step)
+            Slider(value: binding, in: range, step: step, onEditingChanged: onEditingChanged)
                 .accessibilityLabel(title)
                 .accessibilityValue(value)
             Text(value)
