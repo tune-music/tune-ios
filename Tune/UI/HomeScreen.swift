@@ -375,6 +375,8 @@ private struct HomeSkeleton: View {
 
 /// «Моя волна»: переливающееся пятно, кнопка запуска и настройка.
 private struct WaveHero: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var phase
     let tune: () -> Void
 
     @EnvironmentObject private var player: Player
@@ -448,8 +450,9 @@ private struct WaveHero: View {
         }
         .frame(maxWidth: .infinity)
         .frame(height: 300)
-        .onAppear { animate(playing) }
-        .onChange(of: playing) { animate($0) }
+        .onAppear { animate(playing && phase == .active && !reduceMotion) }
+        .onChange(of: playing && phase == .active && !reduceMotion) { animate($0) }
+        .onDisappear { moving = false }
     }
 
     /// Пятно движется, только пока волна играет: в покое оно не тратит заряд.

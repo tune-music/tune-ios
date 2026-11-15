@@ -248,6 +248,25 @@ struct ArtistPage: Codable {
     var listeners: Int?
     var about = ""
     var latestRelease: Card?
+    var clips: [ArtistClip]? = nil
+    var concerts: [ArtistConcert]? = nil
+}
+
+struct ArtistClip: Codable, Identifiable {
+    let id: String
+    let title: String
+    let cover: String?
+    let url: URL
+}
+
+struct ArtistConcert: Codable, Identifiable {
+    let id: String
+    let title: String
+    let city: String
+    let venue: String
+    let date: String
+    let cover: String?
+    let tickets: URL?
 }
 
 /// «1,2 млн», «34 тыс.»: число слушателей коротко.

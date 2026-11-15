@@ -1,3 +1,4 @@
+import PhotosUI
 import SwiftUI
 
 enum ListKind: Hashable {
@@ -64,7 +65,7 @@ final class TrackListModel: ObservableObject {
         switch kind {
         case .playlist(let playlist): key = "playlist:" + playlist.id
         case .album(let id): key = "album:" + id
-        case .artist(let id, _): key = "artist:" + id
+        case .artist(let id, _): key = "artist-tracks:" + id
         case .history: key = "history"
         default: return nil
         }
@@ -116,7 +117,7 @@ final class TrackListModel: ObservableObject {
                 tracks = page.tracks
                 info = page
                 if title.isEmpty { title = page.title }
-                if cover == nil { cover = page.cover }
+                cover = page.cover ?? playlist.cover
             case .album(let id):
                 let page = try await API.shared.album(id: id)
                 title = page.card.title
@@ -227,6 +228,9 @@ struct TrackListScreen: View {
     @State private var confirmRemove = false
     @State private var confirmDelete = false
     @State private var renaming = false
+    @State private var choosingCover = false
+    @State private var coverPhoto: PhotosPickerItem?
+    @State private var uploadingCover = false
     @State private var name = ""
     @State private var tone = Theme.tone
     @State private var sort = TrackSort.original
@@ -884,6 +888,12 @@ struct TrackListScreen: View {
             } label: {
                 Label("Переименовать", systemImage: "pencil")
             }
+            Button {
+                choosingCover = true
+            } label: {
+                Label(uploadingCover ? "Загружается обложка" : "Сменить обложку", systemImage: "photo")
+            }
+            .disabled(uploadingCover)
             if let open = model.info?.open {
                 Button {
                     setOpen(!open)
@@ -970,6 +980,11 @@ struct TrackListScreen: View {
             artwork
                 .shadow(color: .black.opacity(0.45), radius: 22, y: 12)
                 .padding(.bottom, 12)
+                .photosPicker(isPresented: $choosingCover, selection: $coverPhoto, matching: .images)
+                .onChange(of: coverPhoto) { photo in
+                    guard let photo else { return }
+                    Task { await uploadCover(photo) }
+                }
             Text(kindName.uppercased())
                 .font(.scaled(size: 11, weight: .semibold))
                 .kerning(1)
@@ -1025,6 +1040,25 @@ struct TrackListScreen: View {
             .opacity(count == 0 ? 0.5 : 1)
         }
         .frame(maxWidth: .infinity)
+    }
+
+    private func uploadCover(_ photo: PhotosPickerItem) async {
+        guard let playlist, own, !uploadingCover else { return }
+        uploadingCover = true
+        defer {
+            uploadingCover = false
+            coverPhoto = nil
+        }
+        do {
+            guard let data = try await photo.loadTransferable(type: Data.self),
+                  let jpeg = await Task.detached(priority: .userInitiated, operation: {
+                      ImageLoader.playlistCoverJPEG(data)
+                  }).value else { throw TuneError("Не удалось прочитать фото") }
+            model.cover = try await session.updateCover(playlist, jpeg: jpeg)
+            session.show("Обложка обновлена")
+        } catch {
+            if !(error is CancellationError) { session.show(error.localizedDescription) }
+        }
     }
 }
 
@@ -1266,6 +1300,7 @@ struct ArtistScreen: View {
                 if !page.playlists.isEmpty {
                     shelf("Плейлисты", page.playlists.map { .playlist($0) })
                 }
+                ArtistExtras(clips: page.clips ?? [], concerts: page.concerts ?? [])
                 if !page.similar.isEmpty {
                     shelf("Похожие исполнители", page.similar.map { .artist($0) })
                 }
@@ -1378,7 +1413,7 @@ struct ArtistScreen: View {
             if page == nil { page = saved }
         }
         do {
-            let fresh = try await API.shared.artist(id: id)
+            let fresh = try await API.shared.artist(id: id, includeExtras: true)
             page = fresh
             if !Demo.on {
                 Task.detached(priority: .utility) { Storage.save(fresh, file) }

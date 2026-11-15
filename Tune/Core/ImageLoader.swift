@@ -129,6 +129,10 @@ final class ImageLoader {
         guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
         return UIImage(cgImage: image)
     }
+
+    static func playlistCoverJPEG(_ data: Data) -> Data? {
+        decode(data, side: 1024)?.jpegData(compressionQuality: 0.88)
+    }
 }
 
 /// Одна и та же обложка не качается дважды одновременно.

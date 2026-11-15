@@ -407,7 +407,7 @@ final class API {
         return value["result"].array.compactMap(Self.albumCard)
     }
 
-    func artist(id: String) async throws -> ArtistPage {
+    func artist(id: String, includeExtras: Bool = false) async throws -> ArtistPage {
         if Demo.on {
             guard let card = Demo.data.artists.first(where: { $0.id == id }) ?? Demo.data.artists.first else { throw APIError.server("Нет демо-данных") }
             var page = ArtistPage(id: card.id, name: card.title, cover: card.cover, popular: Demo.data.tracks, albums: Demo.data.albums, similar: Demo.data.artists)
@@ -421,6 +421,8 @@ final class API {
         let value = result(try await get("artists/\(id)/brief-info"))
         let artist = value["artist"]
         guard let name = artist["name"].string, artist["error"].string != "not-found" else { throw APIError.server("Исполнитель не найден") }
+        async let clips = includeExtras ? artistClips(id, legacy: value["videos"]) : []
+        async let concerts = includeExtras ? artistConcerts(id) : []
         var popular = value["popularTracks"].array.compactMap(Self.parseTrack)
         let releases = value["albums"].array
         var albums = releases.filter { $0["type"].string != "single" }.compactMap(Self.albumCard)
@@ -445,13 +447,55 @@ final class API {
         page.listeners = value["stats"]["lastMonthListeners"].int
         page.about = artist["description"]["text"].string ?? ""
         let today = String(ISO8601DateFormatter().string(from: Date()).prefix(10))
-        page.latestRelease = releases.compactMap { release -> (String, Card)? in
+        page.latestRelease = value["lastReleases"].array.compactMap(Self.albumCard).first ?? releases.compactMap { release -> (String, Card)? in
             guard let stamp = release["releaseDate"].string, stamp.count >= 10,
                   let card = Self.albumCard(release) else { return nil }
             let day = String(stamp.prefix(10))
             return day <= today ? (day, card) : nil
         }.max { $0.0 < $1.0 }?.1
+        page.clips = await clips
+        page.concerts = await concerts
         return page
+    }
+
+    private func artistClips(_ id: String, legacy: JSON) async -> [ArtistClip] {
+        let value = (try? await get("artists/\(id)/blocks/artist-clips", [("page", "0"), ("pageSize", "30")])).map(result)
+        let found = value?["items"].array.compactMap { item -> ArtistClip? in
+            let clip = item["data"]["clip"].isObject ? item["data"]["clip"] : item
+            guard clip["contentRestrictions"]["available"].bool != false,
+                  let id = clip["clipId"].idText ?? clip["id"].idText, !id.isEmpty,
+                  let title = clip["title"].string, !title.isEmpty else { return nil }
+            var address = URLComponents(string: "https://music.yandex.ru/video")
+            address?.queryItems = [URLQueryItem(name: "ids", value: id)]
+            guard let url = address?.url else { return nil }
+            return ArtistClip(id: id, title: title, cover: clip["thumbnail"].string ?? clip["cover"]["uri"].string, url: url)
+        } ?? []
+        var seen = Set<String>()
+        if !found.isEmpty { return found.filter { seen.insert($0.id).inserted } }
+        return legacy.array.compactMap { video in
+            guard let title = video["title"].string, !title.isEmpty,
+                  let raw = video["embedUrl"].string, let url = URL(string: raw),
+                  url.scheme == "https", url.host != nil, seen.insert(raw).inserted else { return nil }
+            return ArtistClip(id: raw, title: title, cover: video["cover"].string, url: url)
+        }
+    }
+
+    private func artistConcerts(_ id: String) async -> [ArtistConcert] {
+        guard let response = try? await get("artists/\(id)/blocks/artist-concerts") else { return [] }
+        var seen = Set<String>()
+        return result(response)["concerts"].array.compactMap { item in
+            let concert = item["concert"]
+            guard let id = concert["id"].idText, seen.insert(id).inserted,
+                  let title = concert["concertTitle"].string, !title.isEmpty else { return nil }
+            let tickets = concert["dataSessionId"].string.flatMap { session -> URL? in
+                guard !session.isEmpty, session.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }) else { return nil }
+                var url = URLComponents(string: "https://widget.afisha.yandex.ru/w/sessions/\(session)")
+                url?.queryItems = [URLQueryItem(name: "clientKey", value: "0d8ab1a6-1667-42cb-a98f-2fe7eff4b137")]
+                return url?.url
+            }
+            return ArtistConcert(id: id, title: title, city: concert["city"].string ?? "", venue: concert["place"].string ?? "",
+                                 date: concert["datetime"].string ?? "", cover: concert["cover"]["uri"].string, tickets: tickets)
+        }
     }
 
     func artistTracks(id: String) async throws -> [Track] {
@@ -689,6 +733,18 @@ final class API {
 
     func renamePlaylist(uid: String, kind: String, title: String) async throws {
         _ = try await post("users/\(uid)/playlists/\(kind)/name?value=\(Self.encode(title))")
+    }
+
+    func uploadPlaylistCover(_ playlist: Playlist, jpeg: Data) async throws -> String {
+        let boundary = "Tune-" + UUID().uuidString
+        var body = Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"image\"; filename=\"cover.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n".utf8)
+        body.append(jpeg)
+        body.append(Data("\r\n--\(boundary)--\r\n".utf8))
+        let path = "users/\(playlist.owner)/playlists/\(playlist.kind)/cover/upload"
+        let value = result(try await send("POST", path, body: body, type: "multipart/form-data; boundary=\(boundary)"))
+        if let cover = value["cover"]["uri"].string, !cover.isEmpty { return cover }
+        if let cover = try await self.playlist(playlist).cover, !cover.isEmpty { return cover }
+        throw APIError.server("Яндекс не вернул новую обложку")
     }
 
     /// «Меньше ИИ»: Яндекс реже ставит в рекомендации музыку, созданную с помощью ИИ.

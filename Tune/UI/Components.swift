@@ -615,6 +615,8 @@ struct TrackMarks: View {
 
 /// Живые полоски играющего трека: прыгают, пока звук идёт, и замирают на паузе.
 struct PlayingBars: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var phase
     let playing: Bool
     var size: CGFloat = 16
     var color: Color = Theme.accentText
@@ -624,7 +626,7 @@ struct PlayingBars: View {
     private static let rest: [Double] = [0.45, 0.85, 0.6, 0.35]
 
     var body: some View {
-        let still = !playing || ProcessInfo.processInfo.isLowPowerModeEnabled
+        let still = !playing || phase != .active || reduceMotion || ProcessInfo.processInfo.isLowPowerModeEnabled
         TimelineView(.animation(minimumInterval: 1.0 / 30, paused: still)) { context in
             let time = context.date.timeIntervalSinceReferenceDate
             HStack(alignment: .bottom, spacing: size * 0.12) {

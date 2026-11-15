@@ -410,6 +410,17 @@ final class Session: ObservableObject {
         }
     }
 
+    func updateCover(_ playlist: Playlist, jpeg: Data) async throws -> String {
+        guard isOwn(playlist) else { throw APIError.needLogin }
+        let cover = try await API.shared.uploadPlaylistCover(playlist, jpeg: jpeg)
+        guard isOwn(playlist) else { throw CancellationError() }
+        if let index = playlists.firstIndex(where: { $0.id == playlist.id }) {
+            playlists[index].cover = cover
+        }
+        save()
+        return cover
+    }
+
     func delete(_ playlist: Playlist) async -> Bool {
         guard let uid = profile?.uid else { return false }
         do {
