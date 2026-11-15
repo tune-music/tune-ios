@@ -1,3 +1,4 @@
+import Combine
 import PhotosUI
 import SwiftUI
 
@@ -217,8 +218,11 @@ struct TrackListScreen: View {
     let kind: ListKind
 
     @StateObject private var model = TrackListModel()
-    @EnvironmentObject private var player: Player
-    @EnvironmentObject private var downloads: Downloads
+    private var player: Player { Player.shared }
+    private var downloads: Downloads { Downloads.shared }
+    @State private var downloadEntries: [Downloads.Entry] = []
+    @State private var hasDownloadQueue = false
+    @State private var hasDownloadPanel = false
     @EnvironmentObject private var session: Session
     @Environment(\.dismiss) private var dismiss
     @Environment(\.navigate) private var navigate
@@ -249,7 +253,7 @@ struct TrackListScreen: View {
 
     private var all: [Track] {
         switch kind {
-        case .downloads: return downloads.tracks
+        case .downloads: return downloadEntries.map(\.track)
         // Трек пропадает из списка, как только с него сняли дизлайк.
         case .disliked: return model.tracks.filter { session.disliked.contains($0.id) }
         default: return model.tracks
@@ -270,7 +274,7 @@ struct TrackListScreen: View {
         case .newest, .oldest:
             var downloadDates: [String: Date] = [:]
             if kind == .downloads {
-                for entry in downloads.entries { downloadDates[entry.track.id] = entry.date }
+                for entry in downloadEntries { downloadDates[entry.track.id] = entry.date }
             }
             let dated = list.enumerated().map { index, track in
                 (index: index, track: track, date: kind == .downloads ? downloadDates[track.id] : track.addedAt)
@@ -388,6 +392,29 @@ struct TrackListScreen: View {
     }
 
     var body: some View {
+        page
+            .onReceive(downloads.$entries.removeDuplicates()) { entries in
+                if (kind == .downloads || onlyDownloaded), downloadEntries != entries { downloadEntries = entries }
+            }
+            .onChange(of: onlyDownloaded) { enabled in
+                if enabled { downloadEntries = downloads.entries }
+            }
+            .onReceive(downloads.$queue.map { !$0.isEmpty }.removeDuplicates()) {
+                if hasDownloadQueue != $0 { hasDownloadQueue = $0 }
+            }
+            .onReceive(downloadPanelVisibility) {
+                if kind == .downloads, hasDownloadPanel != $0 { hasDownloadPanel = $0 }
+            }
+    }
+
+    private var downloadPanelVisibility: AnyPublisher<Bool, Never> {
+        downloads.$queue.combineLatest(downloads.$failed)
+            .map { !$0.0.isEmpty || !$0.1.isEmpty }
+            .removeDuplicates()
+            .eraseToAnyPublisher()
+    }
+
+    private var page: some View {
         let tracks = shown
         ScrollViewReader { proxy in
             List {
@@ -398,7 +425,7 @@ struct TrackListScreen: View {
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
                     .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 14, trailing: 16))
-                if kind == .downloads, !downloads.queue.isEmpty || !downloads.failed.isEmpty {
+                if kind == .downloads, hasDownloadPanel {
                     DownloadsPanel()
                         .listRowBackground(Color.clear)
                         .listRowSeparator(.hidden)
@@ -820,7 +847,7 @@ struct TrackListScreen: View {
                 Label("Скачать всё", systemImage: "arrow.down.circle")
             }
         }
-        if !downloads.queue.isEmpty {
+        if hasDownloadQueue {
             Button {
                 downloads.cancelAll()
             } label: {
@@ -967,7 +994,10 @@ struct TrackListScreen: View {
     /// Строка под названием: автор чужого плейлиста, число треков, длительность.
     private func summary(_ count: Int) -> String {
         let amount = plural(count, "трек", "трека", "треков")
-        if kind == .downloads { return "\(amount) · \(Storage.sizeText(downloads.totalBytes))" }
+        if kind == .downloads {
+            let bytes = downloadEntries.reduce(0) { $0 + $1.bytes }
+            return "\(amount) · \(Storage.sizeText(bytes))"
+        }
         var parts: [String] = []
         if !own, let author = model.info?.author, !author.isEmpty { parts.append(author) }
         parts.append(amount)

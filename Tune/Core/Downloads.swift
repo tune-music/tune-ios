@@ -6,7 +6,7 @@ import Network
 final class Downloads: ObservableObject {
     static let shared = Downloads()
 
-    struct Entry: Codable {
+    struct Entry: Codable, Equatable {
         var track: Track
         var file: String
         var bytes: Int64
