@@ -112,6 +112,9 @@ final class Player: NSObject, ObservableObject {
     @Published private(set) var sleepAt: Date?
     @Published private(set) var sleepAfterTrack = false
     @Published private(set) var selectedVersion: TrackFiles.Version?
+    @Published private(set) var sound = SoundSettings.read()
+    private let audioEffects = AudioEffects()
+    private var effectsTask: Task<Void, Never>?
     private var versionTrackID: String?
     private var versionTask: Task<Void, Never>?
     let progress = PlaybackProgress()
@@ -170,6 +173,9 @@ final class Player: NSObject, ObservableObject {
 
     private override init() {
         super.init()
+        audioEffects.update(sound)
+        av.defaultRate = sound.speed
+        spare.defaultRate = sound.speed
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
         restore()
         observe()
@@ -283,6 +289,8 @@ final class Player: NSObject, ObservableObject {
 
     private func load(_ target: Int, autoplay: Bool, resume: Double? = nil, viaFile: Bool = false) {
         guard queue.indices.contains(target) else { return }
+        effectsTask?.cancel()
+        effectsTask = nil
         versionTask?.cancel()
         versionTask = nil
         if queue[target].id != versionTrackID {
@@ -319,7 +327,8 @@ final class Player: NSObject, ObservableObject {
         UserDefaults.standard.set(target, forKey: "playerIndex")
 
         // Следующий трек уже лежит в запасном проигрывателе: меняем их местами.
-        if version == nil, !viaFile, resume == nil, let ready = preloaded, ready.id == track.id, spare.currentItem === ready.item {
+        if version == nil, !viaFile, resume == nil, let ready = preloaded, ready.id == track.id,
+           spare.currentItem === ready.item, !sound.needsAudioMix || ready.item.audioMix != nil {
             preloaded = nil
             fromPreload = true
             streamed = !((ready.item.asset as? AVURLAsset)?.url.isFileURL ?? true)
@@ -379,22 +388,74 @@ final class Player: NSObject, ObservableObject {
     private func makeItem(_ track: Track, viaFile: Bool = false, version: TrackFiles.Version? = nil) async throws -> AVPlayerItem {
         if let version {
             let file = try await TrackFiles.versionFile(for: track, version: version, quality: Settings.streamQuality)
-            return AVPlayerItem(url: file)
+            return await localAudioItem(file)
         }
         if let file = Downloads.shared.fileURL(for: track.id) {
-            return AVPlayerItem(url: file)
+            return await localAudioItem(file)
         }
         if let file = TrackFiles.existing(id: track.id, in: Storage.stream) {
-            return AVPlayerItem(url: file)
+            return await localAudioItem(file)
         }
         let source = try await TrackFiles.source(for: track, quality: Settings.streamQuality)
-        if !source.needsFile, !viaFile, let url = source.urls.first {
+        if !source.needsFile, !viaFile, !sound.needsAudioMix, let url = source.urls.first {
             let asset = AVURLAsset(url: url, options: ["AVURLAssetOutOfBandMIMETypeKey": source.mime])
-            return AVPlayerItem(asset: asset)
+            let item = AVPlayerItem(asset: asset)
+            item.audioTimePitchAlgorithm = .spectral
+            return item
         }
         let file = try await TrackFiles.download(id: track.id, from: source, to: Storage.stream)
         Task.detached(priority: .utility) { TrackFiles.trimStreamCache() }
-        return AVPlayerItem(url: file)
+        return await localAudioItem(file)
+    }
+
+    private func localAudioItem(_ url: URL) async -> AVPlayerItem {
+        let item = AVPlayerItem(url: url)
+        item.audioTimePitchAlgorithm = .spectral
+        _ = await audioEffects.install(on: item)
+        return item
+    }
+
+    func updateSound(_ settings: SoundSettings) {
+        guard settings != sound else { return }
+        let speedChanged = settings.speed != sound.speed
+        sound = settings
+        sound.save()
+        audioEffects.update(sound)
+        if speedChanged {
+            av.defaultRate = sound.speed
+            spare.defaultRate = sound.speed
+            if av.rate > 0 { av.rate = sound.speed }
+            if spare.rate > 0 { spare.rate = sound.speed }
+            refreshNowPlaying()
+        }
+        guard sound.needsAudioMix else {
+            effectsTask?.cancel()
+            effectsTask = nil
+            return
+        }
+        prepareEffectsForStream()
+    }
+
+    private func prepareEffectsForStream() {
+        guard effectsTask == nil, streamed, let track = current, let item = av.currentItem,
+              item.audioMix == nil, !Settings.offlineMode else { return }
+        let turn = generation
+        Session.shared.show("Загружаем трек для эффектов")
+        effectsTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await self.makeItem(track, viaFile: true)
+                guard !Task.isCancelled, turn == self.generation, self.sound.needsAudioMix else { return }
+                self.effectsTask = nil
+                let position = self.progress.position
+                self.endCurrent(.skipped)
+                self.load(self.index, autoplay: self.isPlaying, resume: position, viaFile: true)
+            } catch {
+                guard !Task.isCancelled, turn == self.generation else { return }
+                self.effectsTask = nil
+                Session.shared.show("Не удалось загрузить трек для эффектов")
+            }
+        }
     }
 
     func selectVersion(_ version: TrackFiles.Version, for track: Track) {
@@ -440,6 +501,7 @@ final class Player: NSObject, ObservableObject {
             activate()
             av.play()
         }
+        if sound.needsAudioMix { prepareEffectsForStream() }
         let started = Listen(track: track, context: context, session: wave)
         listen = started
         let report = started.report(position: 0, first: true)
@@ -773,6 +835,8 @@ final class Player: NSObject, ObservableObject {
     }
 
     func stop() {
+        effectsTask?.cancel()
+        effectsTask = nil
         versionTask?.cancel()
         versionTask = nil
         selectedVersion = nil
@@ -1185,7 +1249,8 @@ final class Player: NSObject, ObservableObject {
             MPMediaItemPropertyAlbumTitle: track.albumTitle,
             MPMediaItemPropertyPlaybackDuration: progress.duration,
             MPNowPlayingInfoPropertyElapsedPlaybackTime: elapsed,
-            MPNowPlayingInfoPropertyPlaybackRate: (isPlaying && av.timeControlStatus == .playing) ? 1.0 : 0.0,
+            MPNowPlayingInfoPropertyPlaybackRate: (isPlaying && av.timeControlStatus == .playing) ? av.rate : 0,
+            MPNowPlayingInfoPropertyDefaultPlaybackRate: sound.speed,
         ]
         if let artwork, artwork.id == track.id {
             info[MPMediaItemPropertyArtwork] = artwork.art

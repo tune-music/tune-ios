@@ -101,6 +101,7 @@ private struct PlayerBody: View {
     @State private var picking: Track?
     @State private var actions = Demo.screen == "actions"
     @State private var sleep = false
+    @State private var sound = false
 
     var body: some View {
         GeometryReader { geometry in
@@ -158,6 +159,9 @@ private struct PlayerBody: View {
         }
         .sheet(isPresented: $sleep) {
             SleepSheet()
+        }
+        .sheet(isPresented: $sound) {
+            SoundSheet()
         }
         .sheet(item: $picking) { track in
             PlaylistPicker(track: track)
@@ -336,6 +340,16 @@ private struct PlayerBody: View {
             Spacer()
             RoutePicker()
                 .frame(width: 48, height: 44)
+            Spacer()
+            Button {
+                sound = true
+            } label: {
+                Image(systemName: "slider.horizontal.3")
+                    .foregroundStyle(player.sound != SoundSettings() ? Theme.accent : Color.white.opacity(0.85))
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel("Настройки звука")
             Spacer()
             Button {
                 sleep = true
