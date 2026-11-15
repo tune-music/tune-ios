@@ -259,6 +259,12 @@ struct ArtistClip: Codable, Identifiable {
     let title: String
     let cover: String?
     let url: URL
+    var playerID: String? = nil
+}
+
+struct ConcertCity: Identifiable, Hashable {
+    let id: String
+    let name: String
 }
 
 struct ArtistConcert: Codable, Identifiable {

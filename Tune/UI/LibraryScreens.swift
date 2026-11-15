@@ -69,6 +69,7 @@ struct LibraryScreen: View {
                 entry("mic", "Подкасты", "", .likedPodcasts)
                 entry("book", "Аудиокниги", "", .likedBooks)
                 entry("balloon", "Детям", "", .kids)
+                entry("calendar", "Концерты", "", .concerts)
                 entry("clock.arrow.circlepath", "История", "", .history)
                 entry("chart.bar.fill", "Статистика", "", .stats)
                 if !session.disliked.isEmpty {
@@ -614,6 +615,7 @@ struct SettingsScreen: View {
     @Environment(\.navigate) private var navigate
     @State private var uncensor = Settings.uncensor
     @State private var appearance = Settings.appearance
+    @AppStorage("playbackLiveActivity") private var playbackLiveActivity = false
     @State private var crossfade = Settings.crossfade
     @State private var lyricsExternal = Settings.lyricsExternal
     @State private var waveWheel = Settings.waveWheel
@@ -719,6 +721,11 @@ struct SettingsScreen: View {
                     Text("Как в системе").tag(0)
                     Text("Тёмная").tag(1)
                     Text("Светлая").tag(2)
+                }
+                if #available(iOS 16.2, *) {
+                    Toggle("Текущий трек в Live Activity", isOn: $playbackLiveActivity)
+                        .tint(Theme.accentText)
+                        .onChange(of: playbackLiveActivity) { _ in Player.shared.refreshPlaybackActivity() }
                 }
             }
             Section {

@@ -469,7 +469,8 @@ final class API {
             var address = URLComponents(string: "https://music.yandex.ru/video")
             address?.queryItems = [URLQueryItem(name: "ids", value: id)]
             guard let url = address?.url else { return nil }
-            return ArtistClip(id: id, title: title, cover: clip["thumbnail"].string ?? clip["cover"]["uri"].string, url: url)
+            return ArtistClip(id: id, title: title, cover: clip["thumbnail"].string ?? clip["cover"]["uri"].string, url: url,
+                              playerID: clip["playerId"].string)
         } ?? []
         var seen = Set<String>()
         if !found.isEmpty { return found.filter { seen.insert($0.id).inserted } }
@@ -477,14 +478,39 @@ final class API {
             guard let title = video["title"].string, !title.isEmpty,
                   let raw = video["embedUrl"].string, let url = URL(string: raw),
                   url.scheme == "https", url.host != nil, seen.insert(raw).inserted else { return nil }
-            return ArtistClip(id: raw, title: title, cover: video["cover"].string, url: url)
+            let playerID = url.host == "frontend.vh.yandex.ru" ? video["providerVideoId"].idText : nil
+            return ArtistClip(id: raw, title: title, cover: video["cover"].string, url: url, playerID: playerID)
         }
     }
 
     private func artistConcerts(_ id: String) async -> [ArtistConcert] {
         guard let response = try? await get("artists/\(id)/blocks/artist-concerts") else { return [] }
+        return Self.parseConcerts(result(response)["concerts"].array)
+    }
+
+    func concertCities() async throws -> [ConcertCity] {
+        if Demo.on { return [ConcertCity(id: "213", name: "Москва"), ConcertCity(id: "2", name: "Санкт-Петербург")] }
+        let value = result(try await get("concerts/locations"))
         var seen = Set<String>()
-        return result(response)["concerts"].array.compactMap { item in
+        return value["locations"].array.compactMap { item in
+            guard let id = item["id"].idText, let name = item["name"].string, seen.insert(id).inserted else { return nil }
+            return ConcertCity(id: id, name: name)
+        }
+    }
+
+    func concerts(city: String?) async throws -> [ArtistConcert] {
+        if Demo.on {
+            return [ArtistConcert(id: "demo-concert", title: "Симфонический концерт",
+                                  city: city == "2" ? "Санкт-Петербург" : "Москва", venue: "Филармония",
+                                  date: "2026-12-05T19:00:00+03:00", cover: nil, tickets: nil)]
+        }
+        let value = result(try await get("concerts/feed", city.map { [("locations", $0)] } ?? []))
+        return Self.parseConcerts(value["items"].array.filter { $0["type"].string == "concert_item" }.map { $0["data"] })
+    }
+
+    private static func parseConcerts(_ items: [JSON]) -> [ArtistConcert] {
+        var seen = Set<String>()
+        return items.compactMap { item in
             let concert = item["concert"]
             guard let id = concert["id"].idText, seen.insert(id).inserted,
                   let title = concert["concertTitle"].string, !title.isEmpty else { return nil }
@@ -497,6 +523,40 @@ final class API {
             return ArtistConcert(id: id, title: title, city: concert["city"].string ?? "", venue: concert["place"].string ?? "",
                                  date: concert["datetime"].string ?? "", cover: concert["cover"]["uri"].string, tickets: tickets)
         }
+    }
+
+    func clipStream(_ clip: ArtistClip) async throws -> URL {
+        guard let token = TokenStore.token else { throw APIError.needLogin }
+        var identifier = clip.playerID
+        if identifier == nil, clip.url.host == "music.yandex.ru" {
+            let value = result(try await get("clips", [("clipIds", clip.id)]))
+            let items = value.isArray ? value.array : value["clips"].array
+            identifier = items.first?["playerId"].string
+        }
+        guard let identifier, !identifier.isEmpty,
+              identifier.utf8.allSatisfy({ (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || [45, 95].contains($0) }) else {
+            throw APIError.server("Яндекс не прислал адрес клипа")
+        }
+        var address = URLComponents()
+        address.scheme = "https"
+        address.host = "frontend.vh.yandex.ru"
+        address.path = "/player/\(identifier).json"
+        address.queryItems = [URLQueryItem(name: "service", value: "ya-music"), URLQueryItem(name: "from", value: "ya-music")]
+        guard let url = address.url else { throw APIError.server("Не удалось открыть клип") }
+        var request = URLRequest(url: url)
+        request.setValue("OAuth \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("https://music.yandex.ru", forHTTPHeaderField: "Origin")
+        request.setValue("https://music.yandex.ru/", forHTTPHeaderField: "Referer")
+        request.setValue("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
+        let (data, response) = try await http.data(for: request)
+        let value = JSON.parse(data)
+        if value["error"].string == "no_licenses" { throw APIError.server("Клип недоступен в вашем регионе") }
+        guard (response as? HTTPURLResponse)?.statusCode == 200,
+              let raw = value["content"]["streams"].array.first(where: { $0["stream_type"].string == "HLS" })?["url"].string,
+              let stream = URL(string: raw), stream.scheme == "https", stream.host != nil else {
+            throw APIError.server("Яндекс не прислал видео для плеера")
+        }
+        return stream
     }
 
     func artistTracks(id: String) async throws -> [Track] {

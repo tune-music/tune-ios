@@ -24,6 +24,10 @@ targets:
       - path: Tune
         excludes:
           - Info.plist
+      - path: Shared
+    dependencies:
+      - target: TuneWidgets
+        embed: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.tune.music
@@ -33,3 +37,18 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         SWIFT_OPTIMIZATION_LEVEL: "-O"
+  TuneWidgets:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "16.2"
+    sources:
+      - path: TuneWidgets
+        excludes:
+          - Info.plist
+      - path: Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.tune.music.widgets
+        INFOPLIST_FILE: TuneWidgets/Info.plist
+        APPLICATION_EXTENSION_API_ONLY: "YES"
+        SKIP_INSTALL: "YES"

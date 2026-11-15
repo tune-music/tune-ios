@@ -56,6 +56,24 @@ jobs:
         run: |
           mkdir Payload
           cp -R build/Build/Products/Release-iphoneos/Tune.app Payload/
+          python3 - <<'EOF'
+          import plistlib
+          from pathlib import Path
+
+          app = Path("Payload/Tune.app")
+          extension = app / "PlugIns/TuneWidgets.appex"
+          with (app / "Info.plist").open("rb") as file:
+              main = plistlib.load(file)
+          with (extension / "Info.plist").open("rb") as file:
+              widget = plistlib.load(file)
+
+          assert main["NSSupportsLiveActivities"]
+          assert widget["CFBundleIdentifier"] == main["CFBundleIdentifier"] + ".widgets"
+          assert widget["NSExtension"]["NSExtensionPointIdentifier"] == "com.apple.widgetkit-extension"
+          assert (extension / widget["CFBundleExecutable"]).is_file()
+          for key in ("CFBundleShortVersionString", "CFBundleVersion"):
+              assert main[key] == widget[key], f"Version mismatch for {key}"
+          EOF
           zip -qry Tune.ipa Payload
 
       # Источник для AltStore и SideStore: по нему приложение обновляется одной кнопкой.

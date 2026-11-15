@@ -9,6 +9,8 @@ enum QuickAction {
 
     static func run(_ type: String) {
         switch type {
+        case "player":
+            PlayerWindow.shared.show()
         case "wave":
             Player.shared.playWave()
         case "search":
@@ -123,6 +125,7 @@ enum Route: Hashable {
     case likedPodcasts
     case likedBooks
     case kids
+    case concerts
     case settings
     case log
     case stats
@@ -184,6 +187,7 @@ struct RootView: View {
         }
         .onChange(of: phase) { now in
             if now == .active {
+                Player.shared.refreshPlaybackActivity()
                 Task {
                     async let update: Void = Updater.shared.check()
                     if !Demo.on, !Settings.offlineMode { await session.refresh() }
@@ -192,7 +196,13 @@ struct RootView: View {
             }
         }
         .onOpenURL { url in
-            if session.token != nil { Links.open(url) }
+            guard session.token != nil else { return }
+            if url.scheme == "tune", url.path.isEmpty, let action = url.host,
+               ["player", "wave", "likes", "search"].contains(action) {
+                QuickAction.run(action)
+            } else {
+                Links.open(url)
+            }
         }
         .onReceive(Player.shared.now.$id.map { $0 != nil }.removeDuplicates()) { visible in
             if hasTrack != visible { hasTrack = visible }
@@ -317,6 +327,7 @@ struct TabRoot<Content: View>: View {
         case .likedPodcasts: CardGridScreen(kind: .podcasts)
         case .likedBooks: CardGridScreen(kind: .books)
         case .kids: KidsScreen()
+        case .concerts: ConcertsScreen()
         case .settings: SettingsScreen()
         case .log: LogScreen()
         case .stats: StatsScreen()

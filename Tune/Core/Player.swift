@@ -864,7 +864,7 @@ final class Player: NSObject, ObservableObject {
         isBuffering = false
         contextName = ""
         mark("", nil, "")
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        refreshNowPlaying()
         Storage.remove("player.json")
     }
 
@@ -1239,7 +1239,14 @@ final class Player: NSObject, ObservableObject {
         }
     }
 
+    func refreshPlaybackActivity() {
+        if #available(iOS 16.2, *) {
+            PlaybackActivity.shared.refresh(track: current, playing: isPlaying)
+        }
+    }
+
     private func refreshNowPlaying() {
+        refreshPlaybackActivity()
         guard let track = current else {
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
             return
