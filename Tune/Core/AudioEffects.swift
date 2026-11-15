@@ -28,6 +28,8 @@ struct SoundSettings: Equatable {
     ]
 
     var speed: Float = 1
+    var pitchWithSpeed = false
+    var pitchAlgorithm: AVAudioTimePitchAlgorithm { pitchWithSpeed ? .varispeed : .spectral }
     var eqEnabled = false
     var preset = 1
     var preamp: Float = 1
@@ -50,6 +52,7 @@ struct SoundSettings: Equatable {
         var settings = Self()
         settings.speed = min(speedRange.upperBound, max(speedRange.lowerBound, saved[0]))
         settings.echo = min(1, max(0, saved[1]))
+        settings.pitchWithSpeed = UserDefaults.standard.bool(forKey: "tunePitchWithSpeed")
         if saved.count == 7 {
             // Переносим прежние пять полос к ближайшим частотам новой сетки.
             for (offset, band) in [0, 2, 4, 5, 7].enumerated() {
@@ -69,6 +72,7 @@ struct SoundSettings: Equatable {
     func save() {
         let values: [Float] = [speed, echo, eqEnabled ? 1 : 0, Float(preset), preamp]
         UserDefaults.standard.set(values + Self.frequencies.indices.map { gains[$0] }, forKey: "tuneSound")
+        UserDefaults.standard.set(pitchWithSpeed, forKey: "tunePitchWithSpeed")
     }
 }
 
@@ -98,9 +102,9 @@ final class AudioEffects {
             clientInfo: state.toOpaque(),
             init: { _, info, storage in storage.pointee = info },
             finalize: { tap in Unmanaged<Renderer>.fromOpaque(MTAudioProcessingTapGetStorage(tap)).release() },
-            prepare: { tap, _, format in
+            prepare: { tap, maxFrames, format in
                 Unmanaged<Renderer>.fromOpaque(MTAudioProcessingTapGetStorage(tap))
-                    .takeUnretainedValue().prepare(format.pointee)
+                    .takeUnretainedValue().prepare(format.pointee, maxFrames: Int(maxFrames))
             },
             unprepare: nil,
             process: { tap, frames, _, buffers, written, flags in
@@ -136,9 +140,8 @@ final class AudioEffects {
         private var rate: Float = 0
         private var formatSupported = false
         private var channels: [Channel] = []
-        private var delay: [Float] = []
-        private var delayFrames = 0
-        private var cursor = 0
+        private var halls: [HallReverb] = []
+        private var mono: [Float] = []
         private var headroom: Float = 1
         private var activeBands: UInt16 = 0
         private var b0 = SIMD16<Float>(repeating: 1)
@@ -149,16 +152,15 @@ final class AudioEffects {
 
         init(effects: AudioEffects) { self.effects = effects }
 
-        func prepare(_ format: AudioStreamBasicDescription) {
+        func prepare(_ format: AudioStreamBasicDescription, maxFrames: Int) {
             rate = Float(format.mSampleRate)
             formatSupported = format.mFormatID == kAudioFormatLinearPCM
                 && format.mFormatFlags & kAudioFormatFlagIsFloat != 0
                 && format.mBitsPerChannel == 32 && rate.isFinite && rate > 0
             guard formatSupported else { return }
             channels = Array(repeating: Channel(), count: Int(format.mChannelsPerFrame))
-            delayFrames = max(1, Int(rate * 0.24))
-            delay = Array(repeating: 0, count: delayFrames * channels.count)
-            cursor = 0
+            halls = channels.indices.map { HallReverb(rate: rate, channel: $0) }
+            mono = Array(repeating: 0, count: max(0, maxFrames))
             configure(effects.snapshot() ?? current)
         }
 
@@ -199,29 +201,31 @@ final class AudioEffects {
                     a2[index] = (1 - alpha / amplitude) / normalization
                 }
             }
-            let feedback: Float = 0.32
             let preamp = settings.eqEnabled ? settings.preamp : 1
-            headroom = preamp * powf(10, -boost / 20) / (1 + settings.echo * 0.5 / (1 - feedback))
+            headroom = preamp * powf(10, -boost / 20)
         }
 
         func render(_ list: UnsafeMutablePointer<AudioBufferList>, frames: Int, flags: MTAudioProcessingTapFlags) {
             guard formatSupported, !channels.isEmpty else { return }
             if flags & kMTAudioProcessingTapFlag_StartOfStream != 0 {
                 for channel in channels.indices { channels[channel] = Channel() }
-                for index in delay.indices { delay[index] = 0 }
-                cursor = 0
+                for index in halls.indices { halls[index].reset() }
             }
             if let settings = effects.snapshot(), settings != current {
                 if settings.gains != current.gains || settings.eqEnabled != current.eqEnabled {
                     for channel in channels.indices { channels[channel] = Channel() }
                 }
                 if settings.echo == 0, current.echo > 0 {
-                    for index in delay.indices { delay[index] = 0 }
+                    for index in halls.indices { halls[index].reset() }
                 }
                 configure(settings)
             }
             guard current.needsAudioMix else { return }
             let buffers = UnsafeMutableAudioBufferListPointer(list)
+            let reverb = current.echo > 0 && frames <= mono.count
+            if reverb {
+                for frame in 0..<frames { mono[frame] = 0 }
+            }
             var offset = 0
             for buffer in buffers {
                 let count = Int(buffer.mNumberChannels)
@@ -233,7 +237,6 @@ final class AudioEffects {
                 for index in 0..<count {
                     let channelIndex = offset + index
                     var channel = channels[channelIndex]
-                    var position = cursor
                     for frame in 0..<available {
                         let sampleIndex = frame * count + index
                         var value = samples[sampleIndex]
@@ -246,20 +249,40 @@ final class AudioEffects {
                             channel.z2[band] = b2[band] * value - a2[band] * output
                             value = output
                         }
-                        if current.echo > 0 {
-                            let slot = channelIndex * delayFrames + position
-                            let previous = delay[slot]
-                            delay[slot] = value + previous * 0.32
-                            value += previous * current.echo * 0.5
-                            position += 1
-                            if position == delayFrames { position = 0 }
+                        value *= headroom
+                        if reverb {
+                            mono[frame] += value
+                            samples[sampleIndex] = value
+                        } else {
+                            samples[sampleIndex] = min(1, max(-1, value))
                         }
-                        samples[sampleIndex] = min(1, max(-1, value * headroom))
                     }
                     channels[channelIndex] = channel
                 }
             }
-            if current.echo > 0 { cursor = (cursor + frames) % delayFrames }
+            if reverb { mixHall(buffers, frames: frames) }
+        }
+
+        private func mixHall(_ buffers: UnsafeMutableAudioBufferListPointer, frames: Int) {
+            let wet = current.echo * 0.8
+            let dry = 1 - current.echo * 0.4
+            let inputScale: Float = 0.015 * min(1, 2 / Float(halls.count))
+            var offset = 0
+            for buffer in buffers {
+                let count = Int(buffer.mNumberChannels)
+                defer { offset += count }
+                guard count > 0, offset + count <= halls.count, let raw = buffer.mData else { continue }
+                let samples = raw.assumingMemoryBound(to: Float.self)
+                let available = min(frames, Int(buffer.mDataByteSize) / (count * MemoryLayout<Float>.stride))
+                for index in 0..<count {
+                    let channel = offset + index
+                    for frame in 0..<available {
+                        let sample = frame * count + index
+                        let hall = halls[channel].render(mono[frame] * inputScale)
+                        samples[sample] = min(1, max(-1, samples[sample] * dry + hall * wet))
+                    }
+                }
+            }
         }
     }
 }

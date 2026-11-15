@@ -400,7 +400,7 @@ final class Player: NSObject, ObservableObject {
         if !source.needsFile, !viaFile, !sound.needsAudioMix, let url = source.urls.first {
             let asset = AVURLAsset(url: url, options: ["AVURLAssetOutOfBandMIMETypeKey": source.mime])
             let item = AVPlayerItem(asset: asset)
-            item.audioTimePitchAlgorithm = .spectral
+            item.audioTimePitchAlgorithm = sound.pitchAlgorithm
             return item
         }
         let file = try await TrackFiles.download(id: track.id, from: source, to: Storage.stream)
@@ -410,17 +410,22 @@ final class Player: NSObject, ObservableObject {
 
     private func localAudioItem(_ url: URL) async -> AVPlayerItem {
         let item = AVPlayerItem(url: url)
-        item.audioTimePitchAlgorithm = .spectral
         _ = await audioEffects.install(on: item)
+        item.audioTimePitchAlgorithm = sound.pitchAlgorithm
         return item
     }
 
     func updateSound(_ settings: SoundSettings) {
         guard settings != sound else { return }
         let speedChanged = settings.speed != sound.speed
+        let pitchChanged = settings.pitchWithSpeed != sound.pitchWithSpeed
         sound = settings
         sound.save()
         audioEffects.update(sound)
+        if pitchChanged {
+            av.currentItem?.audioTimePitchAlgorithm = sound.pitchAlgorithm
+            spare.currentItem?.audioTimePitchAlgorithm = sound.pitchAlgorithm
+        }
         if speedChanged {
             av.defaultRate = sound.speed
             spare.defaultRate = sound.speed
@@ -485,6 +490,7 @@ final class Player: NSObject, ObservableObject {
     }
 
     private func attach(_ item: AVPlayerItem, track: Track, resume: Double?) {
+        if item.audioTimePitchAlgorithm != sound.pitchAlgorithm { item.audioTimePitchAlgorithm = sound.pitchAlgorithm }
         itemObservation = item.observe(\.status) { [weak self] item, _ in
             Task { @MainActor [weak self] in self?.itemChanged(item) }
         }

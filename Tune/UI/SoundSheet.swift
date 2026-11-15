@@ -14,7 +14,12 @@ struct SoundSheet: View {
                         setting.speed = (speed * 20).rounded() / 20
                         player.updateSound(setting)
                     }))
-                    valueSlider("Эхо", value: "\(Int((player.sound.echo * 100).rounded()))%",
+                    Toggle("Тон вместе со скоростью", isOn: Binding(get: { player.sound.pitchWithSpeed }, set: { enabled in
+                        var setting = player.sound
+                        setting.pitchWithSpeed = enabled
+                        player.updateSound(setting)
+                    }))
+                    valueSlider("Реверб", value: "\(Int((player.sound.echo * 100).rounded()))%",
                                 range: 0...1, step: 0.01, binding: Binding(get: { player.sound.echo }, set: { echo in
                         var setting = player.sound
                         setting.echo = (echo * 100).rounded() / 100
@@ -41,7 +46,7 @@ struct SoundSheet: View {
                         }
                     }
                 } footer: {
-                    Text("Для эквалайзера и эха трек сначала загружается в кэш. На скачанных треках эффекты доступны без сети.")
+                    Text("Для эквалайзера и реверба трек сначала загружается в кэш. На скачанных треках эффекты доступны без сети.")
                 }
                 if player.sound != SoundSettings() {
                     Button("Сбросить настройки звука") { player.updateSound(SoundSettings()) }
