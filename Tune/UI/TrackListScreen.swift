@@ -44,6 +44,8 @@ final class TrackListModel: ObservableObject {
     /// История: подпись дня у первого трека, который слушали в этот день.
     @Published var days: [String: String] = [:]
     @Published var historySources: [String: String] = [:]
+    @Published private(set) var likesLoading = false
+    @Published private(set) var likesError: String?
     private var loaded = false
 
     /// Сохранённая копия списка: с неё страница открывается мгновенно и без сети.
@@ -71,6 +73,7 @@ final class TrackListModel: ObservableObject {
     }
 
     func load(_ kind: ListKind, force: Bool = false) async {
+        if kind == .likes, likesLoading { return }
         if loaded && !force { return }
         loading = tracks.isEmpty
         error = nil
@@ -149,6 +152,18 @@ final class TrackListModel: ObservableObject {
 
     /// Лайки: сначала сохранённый список, потом с сервера только то, чего в нём нет.
     private func loadLikes() async throws {
+        likesLoading = true
+        likesError = nil
+        defer { likesLoading = false }
+        do {
+            try await fetchLikes()
+        } catch {
+            if !Task.isCancelled, !tracks.isEmpty { likesError = error.localizedDescription }
+            throw error
+        }
+    }
+
+    private func fetchLikes() async throws {
         if tracks.isEmpty, !Demo.on {
             let cached = await Task.detached(priority: .userInitiated) { Storage.load("likes-tracks.json", as: [Track].self) }.value
             if let cached, tracks.isEmpty {
@@ -161,23 +176,33 @@ final class TrackListModel: ObservableObject {
         }
         guard let uid = Session.shared.profile?.uid else { throw APIError.network("") }
         let entries = try await API.shared.likedEntries(uid: uid)
+        try Task.checkCancellation()
+        guard Session.shared.profile?.uid == uid else { return }
         let ids = entries.map(\.id)
         Session.shared.setLiked(ids)
         var known: [String: Track] = [:]
         for track in tracks { known[track.id] = track }
-        let missing = ids.filter { known[$0] == nil }
-        func orderedTracks() -> [Track] {
-            entries.compactMap { entry in
+        let publishPages = tracks.isEmpty
+        var ordered: [Track] = []
+        // Первую страницу показываем как можно раньше, остальное догружаем порциями.
+        let first = Array(entries.prefix(60))
+        let pages = [first] + Array(entries.dropFirst(first.count)).chunked(150)
+        for page in pages where !page.isEmpty {
+            let missing = page.map(\.id).filter { known[$0] == nil }
+            for track in try await API.shared.tracks(ids: missing) { known[track.id] = track }
+            try Task.checkCancellation()
+            guard Session.shared.profile?.uid == uid else { return }
+            let items: [Track] = page.compactMap { entry in
                 guard var track = known[entry.id] else { return nil }
                 track.addedAt = entry.addedAt ?? track.addedAt
                 return track
             }
+            ordered.append(contentsOf: items)
+            if publishPages, !items.isEmpty {
+                tracks.append(contentsOf: items)
+                loading = false
+            }
         }
-        for chunk in missing.chunked(150) {
-            for track in try await API.shared.tracks(ids: chunk) { known[track.id] = track }
-            tracks = orderedTracks()
-        }
-        let ordered = orderedTracks()
         if ordered != tracks { tracks = ordered }
         Downloads.shared.auto(ordered)
         if !Demo.on {
@@ -406,6 +431,9 @@ struct TrackListScreen: View {
                     .id(index)
                 }
                 .onMove(perform: reordering ? move : nil)
+                if kind == .likes, !model.tracks.isEmpty {
+                    likesFooter
+                }
                 if let album = model.album, plainOrder, !selecting, !tracks.isEmpty {
                     albumFooter(album)
                 }
@@ -530,6 +558,19 @@ struct TrackListScreen: View {
         TrackRow(track: track, number: number(index), fadesDisliked: kind != .disliked,
                  onRemove: own ? { remove(track) } : nil, historySource: model.historySources[track.id]) {
             player.play(tracks, at: index, context: context)
+        }
+    }
+
+    @ViewBuilder private var likesFooter: some View {
+        if model.likesLoading {
+            ProgressView("Загружаем остальные треки")
+                .frame(maxWidth: .infinity)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+        } else if let error = model.likesError {
+            Placeholder(icon: "wifi.slash", title: "Не удалось загрузить все треки", text: error) {
+                Task { await model.load(.likes, force: true) }
+            }
         }
     }
 

@@ -340,19 +340,21 @@ struct TrackRow: View {
     var historySource: String? = nil
     let action: () -> Void
 
-    @ObservedObject fileprivate var now = Player.shared.now
+    @State private var playback = RowPlayback.other
+    @State private var downloadProgress: Double?
+    @State private var downloaded = false
     private var player: Player { Player.shared }
-    @EnvironmentObject private var downloads: Downloads
+    private var downloads: Downloads { Downloads.shared }
     @EnvironmentObject private var session: Session
     @Environment(\.navigate) private var navigate
     @Environment(\.pickPlaylist) private var pickPlaylist
 
     private var dimmed: Bool {
-        (track.unavailable && !track.uncensored && !downloads.has(track.id)) || (fadesDisliked && session.disliked.contains(track.id))
+        (track.unavailable && !track.uncensored && !downloaded) || (fadesDisliked && session.disliked.contains(track.id))
     }
 
     var body: some View {
-        let playing = now.id == track.id
+        let playing = playback != .other
         HStack(spacing: 4) {
             Button(action: action) {
                 HStack(spacing: 12) {
@@ -366,7 +368,7 @@ struct TrackRow: View {
                             TrackMarks(track: track)
                         }
                         HStack(spacing: 5) {
-                            if downloads.has(track.id) {
+                            if downloaded {
                                 Image(systemName: "arrow.down.circle.fill")
                                     .font(.system(size: 11))
                                     .foregroundStyle(Theme.accentText)
@@ -392,7 +394,7 @@ struct TrackRow: View {
                 TrackMenu(track: track, onRemove: onRemove, navigate: navigate, pick: pickPlaylist)
             }
 
-            if let value = downloads.active[track.id] {
+            if let value = downloadProgress {
                 ProgressRing(value: value)
                     .frame(width: 20, height: 20)
                     .padding(.horizontal, 6)
@@ -424,7 +426,7 @@ struct TrackRow: View {
         .listRowSeparator(.hidden)
         .listRowInsets(EdgeInsets(top: 5, leading: 16, bottom: 5, trailing: 6))
         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-            if downloads.has(track.id) {
+            if downloaded {
                 Button(role: .destructive) {
                     downloads.remove(track.id)
                 } label: {
@@ -447,6 +449,29 @@ struct TrackRow: View {
             }
             .tint(.indigo)
         }
+        .onReceive(playbackChanges) {
+            if playback != $0 { playback = $0 }
+        }
+        .onReceive(downloads.$active.map { $0[track.id] }.removeDuplicates()) {
+            if downloadProgress != $0 { downloadProgress = $0 }
+        }
+        .onReceive(downloads.$entries.map { entries in entries.contains { $0.track.id == track.id } }.removeDuplicates()) {
+            if downloaded != $0 { downloaded = $0 }
+        }
+    }
+
+    private enum RowPlayback {
+        case other, paused, playing
+    }
+
+    private var playbackChanges: AnyPublisher<RowPlayback, Never> {
+        player.now.$id.combineLatest(player.now.$playing)
+            .map { id, playing -> RowPlayback in
+                guard id == track.id else { return .other }
+                return playing ? .playing : .paused
+            }
+            .removeDuplicates()
+            .eraseToAnyPublisher()
     }
 }
 
@@ -454,7 +479,7 @@ extension TrackRow {
     /// Слева обложка, а в альбоме — номер трека. У играющего трека вместо них значок.
     @ViewBuilder
     fileprivate func lead(_ playing: Bool) -> some View {
-        let mark = PlayingBars(playing: now.playing, size: 18)
+        let mark = PlayingBars(playing: playback == .playing, size: 18)
         if let number {
             ZStack {
                 if playing {
