@@ -731,9 +731,9 @@ final class API {
         state["tracks"].array.firstIndex { ($0["track"]["id"].idText ?? $0["id"].idText) == id }
     }
 
-    func addToPlaylist(uid: String, kind: String, tracks: [Track]) async throws {
-        try await change(uid: uid, kind: kind) { _ in
-            [["op": "insert", "at": 0, "tracks": tracks.map(Self.reference)]]
+    func addToPlaylist(uid: String, kind: String, tracks: [Track], atEnd: Bool = false) async throws {
+        try await change(uid: uid, kind: kind) { state in
+            [["op": "insert", "at": atEnd ? state["tracks"].array.count : 0, "tracks": tracks.map(Self.reference)]]
         }
     }
 

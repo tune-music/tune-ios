@@ -7,6 +7,7 @@ struct LibraryScreen: View {
     @EnvironmentObject private var downloads: Downloads
     @Environment(\.navigate) private var navigate
     @State private var creating = false
+    @State private var importing = false
     @State private var name = ""
     @AppStorage("playlistsByName") private var byName = false
     @ObservedObject private var updater = Updater.shared
@@ -95,12 +96,21 @@ struct LibraryScreen: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    Button {
-                        name = ""
-                        creating = true
+                    Menu {
+                        Button {
+                            name = ""
+                            creating = true
+                        } label: {
+                            Label("Создать плейлист", systemImage: "plus")
+                        }
+                        Button {
+                            importing = true
+                        } label: {
+                            Label("Импортировать плейлист", systemImage: "square.and.arrow.down")
+                        }
                     } label: {
                         Image(systemName: "plus")
-                            .accessibilityLabel("Создать")
+                            .accessibilityLabel("Добавить плейлист")
                             .font(.system(size: 17, weight: .semibold))
                             .foregroundStyle(Theme.text)
                             .frame(width: 36, height: 36)
@@ -155,6 +165,9 @@ struct LibraryScreen: View {
                 }
             }
             Button("Отмена", role: .cancel) {}
+        }
+        .sheet(isPresented: $importing) {
+            PlaylistImportSheet { navigate(.playlist($0)) }
         }
     }
 

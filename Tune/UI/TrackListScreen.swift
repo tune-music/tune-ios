@@ -861,6 +861,12 @@ struct TrackListScreen: View {
             ShareLink(item: exportText) {
                 Label("Экспортировать списком", systemImage: "doc.plaintext")
             }
+            let links = all.filter { !$0.isPrivate }.compactMap(\.shareURL)
+            if !links.isEmpty {
+                ShareLink(item: links.map(\.absoluteString).joined(separator: "\n")) {
+                    Label("Экспортировать ссылки", systemImage: "link")
+                }
+            }
         }
         if own {
             Divider()

@@ -386,6 +386,7 @@ final class Session: ObservableObject {
         guard let uid = profile?.uid, !name.isEmpty else { return nil }
         do {
             let playlist = try await API.shared.createPlaylist(uid: uid, title: name)
+            guard profile?.uid == uid else { return nil }
             playlists.insert(playlist, at: 0)
             save()
             return playlist
@@ -426,15 +427,21 @@ final class Session: ObservableObject {
         await add([track], to: playlist)
     }
 
-    func add(_ tracks: [Track], to playlist: Playlist) async {
-        guard let uid = profile?.uid, !tracks.isEmpty else { return }
+    @discardableResult
+    func add(_ tracks: [Track], to playlist: Playlist, atEnd: Bool = false, announce: Bool = true) async -> Bool {
+        guard let uid = profile?.uid, playlist.owner == uid, !tracks.isEmpty else { return false }
         do {
-            try await API.shared.addToPlaylist(uid: uid, kind: playlist.kind, tracks: tracks)
+            try await API.shared.addToPlaylist(uid: uid, kind: playlist.kind, tracks: tracks, atEnd: atEnd)
+            guard profile?.uid == uid else { return false }
             if let index = playlists.firstIndex(where: { $0.id == playlist.id }) { playlists[index].count += tracks.count }
-            show(tracks.count == 1 ? "Добавлено в «\(playlist.title)»" : "В «\(playlist.title)» добавлено: \(plural(tracks.count, "трек", "трека", "треков"))")
+            if announce {
+                show(tracks.count == 1 ? "Добавлено в «\(playlist.title)»" : "В «\(playlist.title)» добавлено: \(plural(tracks.count, "трек", "трека", "треков"))")
+            }
             save()
+            return true
         } catch {
-            fail("Не удалось добавить в плейлист")
+            if announce { fail("Не удалось добавить в плейлист") }
+            return false
         }
     }
 
