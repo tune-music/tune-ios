@@ -51,4 +51,5 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: dev.tune.music.widgets
         INFOPLIST_FILE: TuneWidgets/Info.plist
         APPLICATION_EXTENSION_API_ONLY: "YES"
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) TUNE_WIDGET_EXTENSION"
         SKIP_INSTALL: "YES"

@@ -144,8 +144,8 @@ final class Session: ObservableObject {
         refreshTask = nil
         Player.shared.stop()
         profile = nil
-        likedIds = []
         likedSet = []
+        likedIds = []
         pendingLikes.removeAll()
         likesRevision += 1
         playlists = []
@@ -176,16 +176,24 @@ final class Session: ObservableObject {
     }
 
     /// Профиль, лайки и плейлисты с сервера. Без сети остаётся то, что было.
-    func refresh() async {
-        guard token != nil else { return }
+    func refresh(interactive: Bool = false) async {
+        guard token != nil, !Task.isCancelled else { return }
         if let task = refreshTask {
-            await task.value
+            if !interactive { await task.value }
             return
         }
         let requestedToken = token
         let task = Task { await load() }
         refreshTask = task
-        await task.value
+        if interactive {
+            await withTaskCancellationHandler {
+                await task.value
+            } onCancel: {
+                task.cancel()
+            }
+        } else {
+            await task.value
+        }
         if token == requestedToken { refreshTask = nil }
     }
 

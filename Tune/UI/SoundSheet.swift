@@ -4,6 +4,7 @@ struct SoundSheet: View {
     @EnvironmentObject private var player: Player
     @Environment(\.dismiss) private var dismiss
     @State private var pendingSpeed: Float?
+    @State private var pendingReverb: Float?
 
     private var shownSpeed: Float { pendingSpeed ?? player.sound.speed }
 
@@ -17,12 +18,7 @@ struct SoundSheet: View {
                         setting.pitchWithSpeed = enabled
                         player.updateSound(setting)
                     }))
-                    valueSlider("Реверб", value: "\(Int((player.sound.echo * 100).rounded()))%",
-                                range: 0...1, step: 0.01, binding: Binding(get: { player.sound.echo }, set: { echo in
-                        var setting = player.sound
-                        setting.echo = (echo * 100).rounded() / 100
-                        player.updateSound(setting)
-                    }))
+                    reverbSlider
                 }
                 Section {
                     Toggle("Эквалайзер", isOn: Binding(get: { player.sound.eqEnabled }, set: { enabled in
@@ -83,6 +79,31 @@ struct SoundSheet: View {
     private func applySpeed(_ speed: Float) {
         var setting = player.sound
         setting.speed = speed
+        player.updateSound(setting)
+    }
+
+    private var reverbSlider: some View {
+        let level = pendingReverb ?? player.sound.echo
+        return valueSlider("Реверб", value: "\(Int((level * 100).rounded()))%", range: 0...1, step: 0.01,
+                           binding: Binding(get: { pendingReverb ?? player.sound.echo }, set: { value in
+            if pendingReverb != nil {
+                pendingReverb = value
+            } else {
+                applyReverb(value)
+            }
+        }), onEditingChanged: { editing in
+            if editing {
+                pendingReverb = player.sound.echo
+            } else if let pendingReverb {
+                applyReverb(pendingReverb)
+                self.pendingReverb = nil
+            }
+        })
+    }
+
+    private func applyReverb(_ level: Float) {
+        var setting = player.sound
+        setting.echo = level
         player.updateSound(setting)
     }
 

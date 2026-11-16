@@ -1,6 +1,38 @@
 import Combine
 import SwiftUI
 
+private struct ScreenRefresh: ViewModifier {
+    let action: @MainActor () async -> Void
+    @State private var task: Task<Void, Never>?
+
+    func body(content: Content) -> some View {
+        content
+            .refreshable { await refresh() }
+            .onReceive(Connectivity.shared.$online) { online in
+                if !online { task?.cancel() }
+            }
+            .onDisappear { task?.cancel() }
+    }
+
+    @MainActor
+    private func refresh() async {
+        guard task == nil, !Connectivity.shared.offline, !Task.isCancelled else { return }
+        let work = Task { await action() }
+        task = work
+        await withTaskCancellationHandler {
+            await work.value
+        } onCancel: {
+            work.cancel()
+        }
+        task = nil
+    }
+}
+
+extension View {
+    func screenRefresh(_ action: @escaping @MainActor () async -> Void) -> some View {
+        modifier(ScreenRefresh(action: action))
+    }
+}
 enum Theme {
     private static func pair(_ dark: UIColor, _ light: UIColor) -> Color {
         Color(UIColor { $0.userInterfaceStyle == .light ? light : dark })
@@ -356,14 +388,15 @@ struct TrackRow: View {
     @State private var playback = RowPlayback.other
     @State private var downloadProgress: Double?
     @State private var downloaded = false
+    @State private var liked = false
+    @State private var disliked = false
     private var player: Player { Player.shared }
     private var downloads: Downloads { Downloads.shared }
-    @EnvironmentObject private var session: Session
     @Environment(\.navigate) private var navigate
     @Environment(\.pickPlaylist) private var pickPlaylist
 
     private var dimmed: Bool {
-        (track.unavailable && !track.uncensored && !downloaded) || (fadesDisliked && session.disliked.contains(track.id))
+        (track.unavailable && !track.uncensored && !downloaded) || (fadesDisliked && disliked)
     }
 
     var body: some View {
@@ -411,7 +444,7 @@ struct TrackRow: View {
                 ProgressRing(value: value)
                     .frame(width: 20, height: 20)
                     .padding(.horizontal, 6)
-            } else if session.isLiked(track.id) {
+            } else if liked {
                 Image(systemName: "heart.fill")
                     .font(.system(size: 13))
                     .foregroundStyle(Theme.accentText)
@@ -470,6 +503,12 @@ struct TrackRow: View {
         }
         .onReceive(downloads.$entries.map { entries in entries.contains { $0.track.id == track.id } }.removeDuplicates()) {
             if downloaded != $0 { downloaded = $0 }
+        }
+        .onReceive(Session.shared.$likedIds.map { _ in Session.shared.isLiked(track.id) }.removeDuplicates()) {
+            if liked != $0 { liked = $0 }
+        }
+        .onReceive(Session.shared.$disliked.map { $0.contains(track.id) }.removeDuplicates()) {
+            if disliked != $0 { disliked = $0 }
         }
     }
 

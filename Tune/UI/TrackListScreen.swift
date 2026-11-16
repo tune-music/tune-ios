@@ -46,7 +46,7 @@ final class TrackListModel: ObservableObject {
     /// История: подпись дня у первого трека, который слушали в этот день.
     @Published var days: [String: String] = [:]
     @Published var historySources: [String: String] = [:]
-    @Published private(set) var likesLoading = false
+    private var likesLoading = false
     @Published private(set) var likesError: String?
     private var loaded = false
 
@@ -153,10 +153,15 @@ final class TrackListModel: ObservableObject {
     }
 
     /// Лайки: сначала сохранённый список, потом с сервера только то, чего в нём нет.
+    @Published private(set) var showsLikesProgress = false
+
     private func loadLikes() async throws {
         likesLoading = true
         likesError = nil
-        defer { likesLoading = false }
+        defer {
+            likesLoading = false
+            if showsLikesProgress { showsLikesProgress = false }
+        }
         do {
             try await fetchLikes()
         } catch {
@@ -177,7 +182,8 @@ final class TrackListModel: ObservableObject {
             await Session.shared.refresh()
         }
         guard let uid = Session.shared.profile?.uid else { throw APIError.network("") }
-        let entries = try await API.shared.likedEntries(uid: uid)
+        var seen = Set<String>()
+        let entries = try await API.shared.likedEntries(uid: uid).filter { seen.insert($0.id).inserted }
         try Task.checkCancellation()
         guard Session.shared.profile?.uid == uid else { return }
         let ids = entries.map(\.id)
@@ -185,6 +191,7 @@ final class TrackListModel: ObservableObject {
         var known: [String: Track] = [:]
         for track in tracks { known[track.id] = track }
         let publishPages = tracks.isEmpty
+        if publishPages { showsLikesProgress = true }
         var ordered: [Track] = []
         // Первую страницу показываем как можно раньше, остальное догружаем порциями.
         let first = Array(entries.prefix(60))
@@ -205,7 +212,11 @@ final class TrackListModel: ObservableObject {
                 loading = false
             }
         }
-        if ordered != tracks { tracks = ordered }
+        if ordered != tracks {
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { tracks = ordered }
+        }
         Downloads.shared.auto(ordered)
         if !Demo.on {
             Task.detached(priority: .utility) { Storage.save(ordered, "likes-tracks.json") }
@@ -416,6 +427,9 @@ struct TrackListScreen: View {
 
     private var page: some View {
         let tracks = shown
+        let rows = tracks.enumerated().map { offset, track in
+            TrackSlot(id: kind == .likes ? track.id : "offset-\(offset)", index: offset, track: track)
+        }
         return ScrollViewReader { proxy in
             List {
                 header(count: all.count)
@@ -433,7 +447,9 @@ struct TrackListScreen: View {
                 } else if tracks.isEmpty {
                     empty
                 }
-                ForEach(Array(tracks.enumerated()), id: \.offset) { index, track in
+                ForEach(rows) { row in
+                    let index = row.index
+                    let track = row.track
                     if kind == .history, plainOrder, let day = model.days[track.id] {
                         Text(day)
                             .font(.scaled(size: 20, weight: .bold))
@@ -459,7 +475,7 @@ struct TrackListScreen: View {
                             regularRow(track, index: index, tracks: tracks)
                         }
                     }
-                    .id(index)
+                    .id(row.id)
                 }
                 .onMove(perform: reordering ? move : nil)
                 if kind == .likes, !model.tracks.isEmpty {
@@ -475,7 +491,7 @@ struct TrackListScreen: View {
             .environment(\.editMode, .constant(reordering ? .active : .inactive))
             .onChange(of: model.tracks.count) { _ in
                 // Снимок прокрученной страницы: по нему проверяется читаемость шапки.
-                if Demo.screen == "albumscroll" { proxy.scrollTo(7, anchor: .top) }
+                if Demo.screen == "albumscroll" { proxy.scrollTo("offset-7", anchor: .top) }
             }
         }
         .background(alignment: .top) {
@@ -517,7 +533,7 @@ struct TrackListScreen: View {
             prepared = true
             if let playlist { auto = Settings.autoPlaylists.contains(playlist.id) }
             // Без сети и в офлайн-режиме сразу показано то, что можно слушать.
-            if kind != .downloads, Settings.offlineMode || session.offline { onlyDownloaded = true }
+            if kind != .downloads, Connectivity.shared.offline || session.offline { onlyDownloaded = true }
         }
         .task { await model.load(kind) }
         .task(id: cover) {
@@ -528,7 +544,7 @@ struct TrackListScreen: View {
                 withAnimation(.easeInOut(duration: 0.3)) { tone = color ?? Theme.tone }
             }
         }
-        .refreshable { await model.load(kind, force: true) }
+        .screenRefresh { await model.load(kind, force: true) }
         .toolbar {
             ToolbarItemGroup(placement: .navigationBarTrailing) {
                 if let liked {
@@ -585,6 +601,12 @@ struct TrackListScreen: View {
         }
     }
 
+    private struct TrackSlot: Identifiable {
+        let id: String
+        let index: Int
+        let track: Track
+    }
+
     private func regularRow(_ track: Track, index: Int, tracks: [Track]) -> some View {
         TrackRow(track: track, number: number(index), fadesDisliked: kind != .disliked,
                  onRemove: own ? { remove(track) } : nil, historySource: model.historySources[track.id]) {
@@ -593,7 +615,7 @@ struct TrackListScreen: View {
     }
 
     @ViewBuilder private var likesFooter: some View {
-        if model.likesLoading {
+        if model.showsLikesProgress {
             ProgressView("Загружаем остальные треки")
                 .frame(maxWidth: .infinity)
                 .listRowBackground(Color.clear)

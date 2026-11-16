@@ -1,4 +1,5 @@
 import AVKit
+import Combine
 import SwiftUI
 
 /// Сдвиг обложки под пальцем. Отдельный объект, чтобы жест жил на всём экране плеера,
@@ -793,22 +794,21 @@ private struct TrackFavoriteButton: View {
 /// Текст песни на месте обложки: звучащая строка подсвечена, нажатие на строку перематывает.
 private struct LyricsPane: View {
     let track: Track
-    @ObservedObject var progress: PlaybackProgress
+    let progress: PlaybackProgress
     @State private var lines: [LyricLine]?
     @State private var info: LyricsText?
     /// Нажали «Повторить»: поиск идёт заново.
     @State private var attempt = 0
     /// Когда текст последний раз листали пальцем: в это время он сам не прокручивается.
     @State private var touched = Date.distantPast
+    @GestureState private var touching = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// Строка, которая сейчас звучит. У текста без времени её нет.
-    private var active: Int? {
-        guard let lines else { return nil }
-        return lines.last { line in
-            guard let time = line.time else { return false }
-            return time <= progress.position + 0.25
-        }?.id
+    private static func currentLine(in lines: [LyricLine], at position: Double) -> Int? {
+        lines.last { ($0.time ?? .infinity) <= position + 0.25 }?.id
     }
+
+    @State private var active: Int?
 
     var body: some View {
         Group {
@@ -880,20 +880,20 @@ private struct LyricsPane: View {
     }
 
     private func text(_ lines: [LyricLine]) -> some View {
-        let current = active
-        let timed = lines.contains { $0.time != nil }
+        let first = lines.first?.id
+        let timed = lines.filter { $0.time != nil }
+        let anchor = active ?? first
         return ScrollViewReader { proxy in
             ScrollView(showsIndicators: false) {
                 LazyVStack(spacing: 18) {
                     ForEach(lines) { line in
-                        let on = !timed || line.id == current
+                        let on = timed.isEmpty || line.id == active
                         Text(line.text.isEmpty ? "♪" : line.text)
                             .font(.scaled(size: 24, weight: .bold))
                             .multilineTextAlignment(.center)
                             .foregroundStyle(Color.white.opacity(on ? 1 : 0.32))
-                            .scaleEffect(on ? 1 : 0.9)
                             .frame(maxWidth: .infinity)
-                            .animation(.spring(response: 0.45, dampingFraction: 0.8), value: on)
+                            .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: on)
                             .contentShape(Rectangle())
                             .onTapGesture {
                                 if let time = line.time { Player.shared.seek(to: time) }
@@ -912,17 +912,22 @@ private struct LyricsPane: View {
                     startPoint: .top, endPoint: .bottom)
             }
             .onAppear {
-                if let current { proxy.scrollTo(current, anchor: .center) }
+                let current = Self.currentLine(in: timed, at: progress.position)
+                active = current
+                if let current = current ?? first { proxy.scrollTo(current, anchor: .center) }
             }
             .simultaneousGesture(
                 DragGesture(minimumDistance: 4)
-                    .onChanged { _ in touched = Date() }
+                    .updating($touching) { _, state, _ in state = true }
                     .onEnded { _ in touched = Date() }
             )
-            .onChange(of: current) { line in
+            .onReceive(progress.$position.map { Self.currentLine(in: timed, at: $0) }.removeDuplicates()) { line in
+                if active != line { active = line }
+            }
+            .onChange(of: anchor) { line in
                 // Пока текст листают и ещё три секунды после, он не убегает к звучащей строке.
-                guard let line, Date().timeIntervalSince(touched) > 3 else { return }
-                withAnimation(.spring(response: 0.55, dampingFraction: 0.85)) {
+                guard let line, !touching, Date().timeIntervalSince(touched) > 3 else { return }
+                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.32)) {
                     proxy.scrollTo(line, anchor: .center)
                 }
             }

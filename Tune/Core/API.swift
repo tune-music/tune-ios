@@ -39,6 +39,8 @@ final class API {
     // MARK: - Транспорт
 
     private func send(_ method: String, _ path: String, query: [(String, String)] = [], body: Data? = nil, type: String? = nil) async throws -> JSON {
+        try Task.checkCancellation()
+        guard await Connectivity.shared.online else { throw APIError.network("") }
         guard let token = TokenStore.token else { throw APIError.needLogin }
         guard var parts = URLComponents(string: "\(base)/\(path)") else { throw APIError.server("Неверный адрес запроса") }
         if !query.isEmpty {
@@ -63,6 +65,7 @@ final class API {
             do {
                 answer = try await http.data(for: request)
             } catch {
+                try Task.checkCancellation()
                 if (error as? URLError)?.code != .cancelled {
                     Log.shared.add("сеть: \(parts.path): \(error.localizedDescription)")
                 }

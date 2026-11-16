@@ -20,6 +20,7 @@ final class HomeModel: ObservableObject {
         defer { loading = false }
         do {
             let fresh = try await API.shared.home()
+            try Task.checkCancellation()
             // Пустой ответ не стирает то, что уже показано.
             if !fresh.blocks.isEmpty || page.blocks.isEmpty { page = fresh }
             loaded = true
@@ -36,9 +37,10 @@ final class HomeModel: ObservableObject {
 
 /// Главная: «Моя волна», волны по настроению, быстрый доступ к своему и полки Яндекса.
 struct HomeScreen: View {
+    @ObservedObject private var connectivity = Connectivity.shared
     @EnvironmentObject private var session: Session
     @EnvironmentObject private var player: Player
-    @EnvironmentObject private var downloads: Downloads
+    @State private var downloadCount = Downloads.shared.entries.count
     @Environment(\.navigate) private var navigate
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject private var model = HomeModel()
@@ -85,7 +87,7 @@ struct HomeScreen: View {
                     if Settings.waveWheel {
                         WheelStrip(tune: { tuning = true })
                     }
-                    if session.offline || model.failed || Settings.offlineMode {
+                    if connectivity.offline || session.offline || model.failed {
                         offline
                     }
                     if !model.page.waves.isEmpty {
@@ -151,6 +153,9 @@ struct HomeScreen: View {
             WaveSettingsSheet()
         }
         .task { await model.load() }
+        .onReceive(Downloads.shared.$entries.map(\.count).removeDuplicates()) { count in
+            if downloadCount != count { downloadCount = count }
+        }
         .onChange(of: model.page.trends?.isEmpty ?? true) { empty in
             if empty { trending = false }
         }
@@ -166,14 +171,11 @@ struct HomeScreen: View {
                 lastWordCard = nil
             }
         }
-        .refreshable {
-            // Отдельная задача: жест обновления отменяет свою, и запрос обрывался на полпути.
-            await Task {
-                await model.load(force: true)
-                await WaveWheel.shared.load(seeds: WheelStrip.seeds(for: now), force: true)
-                await session.refresh()
-                await Updater.shared.check()
-            }.value
+        .screenRefresh {
+            async let page: Void = model.load(force: true)
+            async let wheel: Void = WaveWheel.shared.load(seeds: WheelStrip.seeds(for: now), force: true)
+            async let profile: Void = session.refresh(interactive: true)
+            _ = await (page, wheel, profile)
         }
     }
 
@@ -237,9 +239,9 @@ struct HomeScreen: View {
                 Image(systemName: "wifi.slash")
                     .font(.system(size: 20))
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Нет связи с Яндексом")
+                    Text("Слушать скачанное")
                         .font(.scaled(size: 16, weight: .semibold))
-                    Text(downloads.entries.isEmpty ? "Скачанной музыки пока нет" : "Скачано: \(plural(downloads.entries.count, "трек", "трека", "треков"))")
+                    Text(downloadCount == 0 ? "Скачанной музыки пока нет" : "Скачано: \(plural(downloadCount, "трек", "трека", "треков"))")
                         .font(.scaled(size: 14))
                         .foregroundStyle(Theme.dim)
                 }
@@ -251,6 +253,7 @@ struct HomeScreen: View {
             .foregroundStyle(Theme.text)
             .padding(16)
             .glass(in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 16)

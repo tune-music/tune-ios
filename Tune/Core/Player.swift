@@ -127,7 +127,7 @@ final class Player: NSObject, ObservableObject {
     }
 
     var current: Track? { queue.indices.contains(index) ? queue[index] : nil }
-    var isWave: Bool { wave != nil }
+    var isWave: Bool { wave != nil || offlineWave != nil }
 
     private enum EndReason {
         case finished, skipped
@@ -145,6 +145,15 @@ final class Player: NSObject, ObservableObject {
     private var fadedFor: String?
     private var context = PlayContext.various("")
     private var wave: String?
+    private struct WaveRequest: Equatable {
+        let seeds: [String]
+        let name: String
+        var id: String { seeds.joined(separator: ",") }
+        @MainActor var configuredSeeds: [String] { seeds == ["user:onyourwave"] ? seeds + Player.waveSettings : seeds }
+    }
+    private var offlineWave: WaveRequest?
+    private var startingWave: WaveRequest?
+    private var waveRequestTask: Task<Void, Never>?
     /// Семена играющей волны: по ним видно волну-сет, у неё свои точки перехода.
     private var waveSeeds: [String] = []
     private var extendTask: Task<Void, Never>?
@@ -156,7 +165,14 @@ final class Player: NSObject, ObservableObject {
     private var original: [Track]?
     /// Растёт с каждой сменой трека: ответ на устаревший запрос отбрасывается.
     private var generation = 0
+    private var loadTask: Task<Void, Never>?
     private var preloaded: (id: String, item: AVPlayerItem)?
+    private var preloadTask: Task<Void, Never>?
+    private struct NextTrack {
+        let track: Track
+        let index: Int?
+        var moveForward = false
+    }
     private var fromPreload = false
     /// Текущий трек играет потоком: если поток не пошёл, он скачивается целиком.
     private var streamed = false
@@ -187,6 +203,9 @@ final class Player: NSObject, ObservableObject {
                 if now.playing != playing { now.playing = playing }
             }
             .store(in: &bag)
+        Connectivity.shared.$online.dropFirst().sink { [weak self] _ in
+            Task { @MainActor [weak self] in self?.connectivityChanged() }
+        }.store(in: &bag)
     }
 
     // MARK: - Запуск
@@ -195,7 +214,8 @@ final class Player: NSObject, ObservableObject {
     func play(_ tracks: [Track], at start: Int = 0, context: PlayContext, shuffled: Bool = false) {
         let downloads = Downloads.shared
         func playable(_ track: Track) -> Bool {
-            !track.unavailable || track.uncensored || downloads.has(track.id)
+            if Connectivity.shared.offline { return downloads.has(track.id) }
+            return !track.unavailable || track.uncensored || downloads.has(track.id)
         }
         guard !tracks.isEmpty else { return }
         if !shuffled {
@@ -225,6 +245,10 @@ final class Player: NSObject, ObservableObject {
             first = tracks[..<start].filter(playable).count
         }
         endCurrent(.skipped)
+        waveRequestTask?.cancel()
+        waveRequestTask = nil
+        startingWave = nil
+        offlineWave = nil
         wave = nil
         waveSeeds = []
         continuation = nil
@@ -254,14 +278,25 @@ final class Player: NSObject, ObservableObject {
     }
 
     func playWave(seeds: [String] = ["user:onyourwave"], name: String = "Моя волна") {
+        waveRequestTask?.cancel()
+        waveRequestTask = nil
+        startingWave = nil
+        let request = WaveRequest(seeds: seeds, name: name)
+        if Connectivity.shared.offline {
+            startOfflineWave(request)
+            return
+        }
         isBuffering = true
-        let waveId = seeds.joined(separator: ",")
-        let seeds = seeds == ["user:onyourwave"] ? seeds + Self.waveSettings : seeds
-        Task { [weak self] in
+        startingWave = request
+        let seeds = request.configuredSeeds
+        waveRequestTask = Task { [weak self] in
             do {
                 let started = try await API.shared.waveNew(seeds: seeds)
-                guard let self else { return }
+                guard let self, !Task.isCancelled else { return }
                 guard !started.tracks.isEmpty else { throw TuneError("Волна не прислала треков") }
+                self.waveRequestTask = nil
+                self.startingWave = nil
+                self.offlineWave = nil
                 self.endCurrent(.skipped)
                 self.wave = started.session
                 self.waveSeeds = seeds
@@ -272,7 +307,7 @@ final class Player: NSObject, ObservableObject {
                 self.shuffle = false
                 self.context = PlayContext(kind: "radio", item: seeds.first, name: name)
                 self.contextName = name
-                self.mark("radio", waveId, name)
+                self.mark("radio", request.id, name)
                 self.queue = started.tracks
                 self.saveQueue()
                 let session = started.session
@@ -281,18 +316,75 @@ final class Player: NSObject, ObservableObject {
                 }
                 self.load(0, autoplay: true)
             } catch {
-                self?.isBuffering = false
-                self?.errorText = Self.text(error)
+                guard let self, !Task.isCancelled else { return }
+                self.waveRequestTask = nil
+                self.startingWave = nil
+                if Connectivity.shared.offline || (error as? APIError)?.isNetwork == true {
+                    self.startOfflineWave(request)
+                } else {
+                    self.isBuffering = false
+                    self.errorText = Self.text(error)
+                }
+            }
+        }
+    }
+
+    private func startOfflineWave(_ request: WaveRequest) {
+        let tracks = Downloads.shared.tracks.shuffled()
+        guard !tracks.isEmpty else {
+            isBuffering = false
+            errorText = "Скачайте музыку, чтобы включать волну без сети"
+            return
+        }
+        endCurrent(.skipped)
+        wave = nil
+        waveSeeds = request.seeds
+        offlineWave = request
+        continuation = nil
+        original = nil
+        shuffle = false
+        context = PlayContext(kind: "radio", item: request.seeds.first, name: request.name)
+        contextName = request.name
+        mark("radio", request.id, request.name)
+        queue = tracks
+        load(0, autoplay: true)
+        saveQueue()
+    }
+
+    private func resumeOnlineWave() {
+        guard let request = offlineWave, waveRequestTask == nil, !Connectivity.shared.offline else { return }
+        let seeds = request.configuredSeeds
+        waveRequestTask = Task { [weak self] in
+            let started = try? await API.shared.waveNew(seeds: seeds)
+            guard let self, !Task.isCancelled else { return }
+            self.waveRequestTask = nil
+            guard self.offlineWave == request, !Connectivity.shared.offline, let started else { return }
+            let tracks = started.tracks.filter { $0.id != self.current?.id }
+            guard !tracks.isEmpty else { return }
+            self.offlineWave = nil
+            self.wave = started.session
+            self.waveSeeds = seeds
+            let boundary = self.index + 1
+            self.queue = Array(self.queue.prefix(boundary)) + tracks
+            self.saveQueue()
+            self.preloadNext()
+            WaveWords.shared.load(queue: self.queue, from: self.index)
+            Task.detached(priority: .utility) {
+                try? await API.shared.waveFeedback(session: started.session, kind: "radioStarted", track: nil, played: nil)
             }
         }
     }
 
     private func load(_ target: Int, autoplay: Bool, resume: Double? = nil, viaFile: Bool = false) {
         guard queue.indices.contains(target) else { return }
+        loadTask?.cancel()
+        loadTask = nil
         effectsTask?.cancel()
         effectsTask = nil
         versionTask?.cancel()
         versionTask = nil
+        preloadTask?.cancel()
+        preloadTask = nil
         if queue[target].id != versionTrackID {
             versionTrackID = nil
             selectedVersion = nil
@@ -365,19 +457,21 @@ final class Player: NSObject, ObservableObject {
 
         // Следующий трек часто запускается с заблокированным экраном: просим у системы время на запрос.
         let background = UIApplication.shared.beginBackgroundTask(withName: "tune.load")
-        Task { [weak self] in
+        loadTask = Task { [weak self] in
             defer {
                 if background != .invalid { UIApplication.shared.endBackgroundTask(background) }
             }
             guard let self else { return }
             do {
                 let item = try await self.makeItem(track, viaFile: viaFile, version: version)
-                guard turn == self.generation else { return }
+                guard !Task.isCancelled, turn == self.generation else { return }
+                self.loadTask = nil
                 self.fromPreload = false
                 self.streamed = !viaFile && !((item.asset as? AVURLAsset)?.url.isFileURL ?? true)
                 self.attach(item, track: track, resume: resume)
             } catch {
-                guard turn == self.generation else { return }
+                guard !Task.isCancelled, turn == self.generation else { return }
+                self.loadTask = nil
                 self.fail(error)
             }
         }
@@ -396,6 +490,7 @@ final class Player: NSObject, ObservableObject {
         if let file = TrackFiles.existing(id: track.id, in: Storage.stream) {
             return await localAudioItem(file)
         }
+        guard !Connectivity.shared.offline else { throw APIError.network("") }
         let source = try await TrackFiles.source(for: track, quality: Settings.streamQuality)
         if !source.needsFile, !viaFile, !sound.needsAudioMix, let url = source.urls.first {
             let asset = AVURLAsset(url: url, options: ["AVURLAssetOutOfBandMIMETypeKey": source.mime])
@@ -518,7 +613,7 @@ final class Player: NSObject, ObservableObject {
                 try? await API.shared.waveFeedback(session: session, kind: "trackStarted", track: track, played: nil)
             }
         }
-        if wave != nil, queue.count - index <= 2 {
+        if wave != nil, !Connectivity.shared.offline, queue.count - index <= 2 {
             Task { [weak self] in await self?.extendWave() }
         }
         learnLoudness(track)
@@ -534,7 +629,7 @@ final class Player: NSObject, ObservableObject {
     /// Музыка не обрывается, даже если телефон заблокирован (после тишины iOS усыпляет
     /// приложение, и запрос в последний момент уже не уйдёт), а прошлые треки остаются в очереди.
     private func prepareContinuation() {
-        guard wave == nil, continuation == nil, continueTask == nil, repeatMode != .all, !sleepAfterTrack,
+        guard !Connectivity.shared.offline, !isWave, continuation == nil, continueTask == nil, repeatMode != .all, !sleepAfterTrack,
               let last = current, index == queue.count - 1 else { return }
         let seed = "track:\(last.id)"
         let name = "Волна по треку «\(last.title)»"
@@ -580,6 +675,16 @@ final class Player: NSObject, ObservableObject {
 
     private func fail(_ error: Error) {
         listen = nil
+        if selectedVersion == nil, let track = current, !Downloads.shared.has(track.id),
+           Connectivity.shared.offline || (error as? APIError)?.isNetwork == true {
+            if isPlaying, let next = nextTrack(localOnly: true) {
+                loadNext(next)
+            } else {
+                errorText = "Этот трек не скачан"
+                finishQueue()
+            }
+            return
+        }
         if let version = selectedVersion, let track = current {
             TrackFiles.remove(id: version.cacheID(track.id), in: Storage.stream)
             selectedVersion = nil
@@ -618,24 +723,114 @@ final class Player: NSObject, ObservableObject {
         (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
     }
 
+    private func nextTrack(localOnly: Bool = false) -> NextTrack? {
+        if localOnly || Connectivity.shared.offline || offlineWave != nil {
+            let downloads = Downloads.shared
+            if let next = queue.indices.dropFirst(index + 1).first(where: { downloads.has(queue[$0].id) }) {
+                return NextTrack(track: queue[next], index: next, moveForward: next > index + 1)
+            }
+            if repeatMode == .all, let next = queue.indices.prefix(index).first(where: { downloads.has(queue[$0].id) }) {
+                return NextTrack(track: queue[next], index: next)
+            }
+            // Keep the online queue intact. Only insert the local track when it actually plays.
+            let entries = downloads.entries
+            guard !entries.isEmpty else { return nil }
+            let previous = entries.firstIndex { $0.track.id == current?.id } ?? -1
+            let fallback = entries[(previous + 1) % entries.count].track
+            return NextTrack(track: fallback, index: nil)
+        }
+        if queue.indices.contains(index + 1) { return NextTrack(track: queue[index + 1], index: index + 1) }
+        if !isWave, repeatMode == .all, let first = queue.first { return NextTrack(track: first, index: 0) }
+        return nil
+    }
+
+    private func loadNext(_ next: NextTrack) {
+        if let target = next.index, !next.moveForward {
+            load(target, autoplay: true)
+        } else {
+            let target = index + 1
+            var updated = queue
+            if let previous = next.index {
+                updated.remove(at: previous)
+                if let boundary = continuation?.from, previous < boundary { continuation?.from -= 1 }
+            }
+            updated.insert(next.track, at: target)
+            if let boundary = continuation?.from, target <= boundary { continuation?.from += 1 }
+            queue = updated
+            load(target, autoplay: true)
+            saveQueue()
+        }
+    }
+
     private func preloadNext() {
+        preloadTask?.cancel()
+        preloadTask = nil
+        guard let next = nextTrack(), next.track.id != current?.id else {
+            preloaded = nil
+            return
+        }
+        let track = next.track
+        let needsLocal = Connectivity.shared.offline || offlineWave != nil
+        if let ready = preloaded, ready.id == track.id,
+           !needsLocal || (ready.item.asset as? AVURLAsset)?.url.isFileURL == true { return }
         preloaded = nil
-        let next = index + 1
-        guard queue.indices.contains(next) else { return }
-        let track = queue[next]
         let turn = generation
-        Task { [weak self] in
+        preloadTask = Task { [weak self] in
             guard let self else { return }
-            // Громкость следующего трека узнаём заранее: он начнётся сразу на нужном уровне.
-            if Settings.normalize { _ = await Loudness.shared.resolve(track) }
-            guard let item = try? await self.makeItem(track), turn == self.generation else { return }
+            if needsLocal, !Downloads.shared.has(track.id) { return }
+            guard let item = try? await self.makeItem(track), !Task.isCancelled, turn == self.generation else { return }
             // Запасной проигрыватель ещё доигрывает затихающий трек: ждём конца перехода.
             await self.fadeTask?.value
-            guard turn == self.generation else { return }
+            guard !Task.isCancelled, turn == self.generation, self.nextTrack()?.track.id == track.id else { return }
             self.spare.pause()
             self.spare.volume = 0
             self.spare.replaceCurrentItem(with: item)
             self.preloaded = (track.id, item)
+        }
+    }
+
+    func connectivityChanged() {
+        if Connectivity.shared.offline, let request = startingWave {
+            waveRequestTask?.cancel()
+            waveRequestTask = nil
+            startingWave = nil
+            startOfflineWave(request)
+            return
+        }
+        guard current != nil else { return }
+        if Connectivity.shared.offline {
+            continueTask?.cancel()
+            extendTask?.cancel()
+            if offlineWave != nil {
+                waveRequestTask?.cancel()
+                waveRequestTask = nil
+            }
+            recoverOfflineStream()
+        } else {
+            resumeOnlineWave()
+            if wave != nil, queue.count - index <= 2 {
+                Task { [weak self] in await self?.extendWave() }
+            } else {
+                prepareContinuation()
+            }
+        }
+        preloadNext()
+    }
+
+    private func recoverOfflineStream() {
+        guard isPlaying, let track = current, isBuffering || av.currentItem == nil,
+              av.currentItem == nil || streamed else { return }
+        if Downloads.shared.has(track.id) {
+            endCurrent(.skipped)
+            selectedVersion = nil
+            versionTrackID = nil
+            load(index, autoplay: true, resume: progress.position)
+        } else if let next = nextTrack(localOnly: true) {
+            endCurrent(.skipped)
+            loadNext(next)
+        } else {
+            endCurrent(.skipped)
+            finishQueue()
         }
     }
 
@@ -762,12 +957,19 @@ final class Player: NSObject, ObservableObject {
     /// Следит за играющим проигрывателем: время и состояние буфера.
     private func watch() {
         if let timeObserver { spare.removeTimeObserver(timeObserver) }
-        timeObserver = av.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.5, preferredTimescale: 600), queue: .main) { [weak self] time in
+        let source = av
+        timeObserver = source.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.5, preferredTimescale: 600), queue: .main) { [weak self, weak source] time in
             let seconds = time.seconds
-            Task { @MainActor [weak self] in self?.tick(seconds) }
+            Task { @MainActor [weak self, weak source] in
+                guard let self, self.av === source else { return }
+                self.tick(seconds)
+            }
         }
-        statusObservation = av.observe(\.timeControlStatus) { [weak self] _, _ in
-            Task { @MainActor [weak self] in self?.statusChanged() }
+        statusObservation = source.observe(\.timeControlStatus) { [weak self] player, _ in
+            Task { @MainActor [weak self, weak player] in
+                guard let self, self.av === player else { return }
+                self.statusChanged()
+            }
         }
     }
 
@@ -789,6 +991,7 @@ final class Player: NSObject, ObservableObject {
 
     func resume() {
         guard current != nil else { return }
+        resumeOnlineWave()
         if av.currentItem == nil {
             load(index, autoplay: true, resume: pendingSeek)
             return
@@ -800,22 +1003,28 @@ final class Player: NSObject, ObservableObject {
     }
 
     func next() {
-        guard index + 1 < queue.count || wave != nil || repeatMode == .all else { return }
+        guard nextTrack() != nil || isWave else { return }
         endCurrent(.skipped)
         advance(auto: false)
     }
 
     func previous() {
-        if progress.position > 3 || index == 0 {
+        let target = Connectivity.shared.offline ? queue.indices.prefix(index).last(where: { Downloads.shared.has(queue[$0].id) })
+            : (index > 0 ? index - 1 : nil)
+        if progress.position > 3 || target == nil {
             seek(to: 0)
-        } else {
+        } else if let target {
             endCurrent(.skipped)
-            load(index - 1, autoplay: true)
+            load(target, autoplay: true)
         }
     }
 
     func jump(to target: Int) {
         guard target != index, queue.indices.contains(target) else { return }
+        if Connectivity.shared.offline, !Downloads.shared.has(queue[target].id) {
+            errorText = "Этот трек не скачан"
+            return
+        }
         endCurrent(.skipped)
         load(target, autoplay: true)
     }
@@ -841,6 +1050,14 @@ final class Player: NSObject, ObservableObject {
     }
 
     func stop() {
+        loadTask?.cancel()
+        loadTask = nil
+        preloadTask?.cancel()
+        preloadTask = nil
+        waveRequestTask?.cancel()
+        waveRequestTask = nil
+        startingWave = nil
+        offlineWave = nil
         effectsTask?.cancel()
         effectsTask = nil
         versionTask?.cancel()
@@ -1018,8 +1235,13 @@ final class Player: NSObject, ObservableObject {
     }
 
     private func advance(auto: Bool) {
-        if index + 1 < queue.count {
-            load(index + 1, autoplay: true)
+        if let next = nextTrack() {
+            if offlineWave != nil { resumeOnlineWave() }
+            loadNext(next)
+            return
+        }
+        if Connectivity.shared.offline || offlineWave != nil {
+            finishQueue()
             return
         }
         if wave != nil {
@@ -1036,10 +1258,6 @@ final class Player: NSObject, ObservableObject {
                     self.continueAfterQueue()
                 }
             }
-            return
-        }
-        if repeatMode == .all, !queue.isEmpty {
-            load(0, autoplay: true)
             return
         }
         if auto { continueAfterQueue() }
@@ -1071,6 +1289,8 @@ final class Player: NSObject, ObservableObject {
     }
 
     private func finishQueue() {
+        loadTask?.cancel()
+        loadTask = nil
         crossOut = nil
         isPlaying = false
         isBuffering = false
@@ -1086,12 +1306,12 @@ final class Player: NSObject, ObservableObject {
             await task.value
             return
         }
-        guard let session = wave else { return }
+        guard !Connectivity.shared.offline, let session = wave else { return }
         let shown = queue.map(\.fullId)
         WaveMix.shared.refill(queue: queue)
         let task = Task { [weak self] in
             let more = try? await API.shared.waveMore(session: session, queue: shown)
-            guard let self, let more, self.wave == session else { return }
+            guard let self, !Task.isCancelled, let more, self.wave == session else { return }
             let known = Set(self.queue.map(\.id))
             var fresh = more.filter { !known.contains($0.id) }
             // Удалённый трек по вкусу, иначе иногда — свой.
@@ -1152,8 +1372,8 @@ final class Player: NSObject, ObservableObject {
         // Плавный переход: трек дошёл до начала своего окна затухания, и у следующего
         // тоже есть точки перехода. Повтор одного трека переходом не идёт.
         if Settings.crossfade != 0, av.rate > 0, repeatMode != .one, !sleepAfterTrack, let track = current, fadedFor != track.id,
-           let ready = preloaded, queue.indices.contains(index + 1), queue[index + 1].id == ready.id,
-           ready.item.status == .readyToPlay, let fade = points(track), points(queue[index + 1]) != nil {
+           let ready = preloaded, let next = nextTrack(), next.track.id == ready.id,
+           ready.item.status == .readyToPlay, let fade = points(track), points(next.track) != nil {
             let out = window(fade)
             if seconds >= out.0, seconds < out.1 {
                 fadedFor = track.id
@@ -1169,6 +1389,10 @@ final class Player: NSObject, ObservableObject {
     private func statusChanged() {
         guard av.currentItem != nil else { return }
         isBuffering = isPlaying && av.timeControlStatus == .waitingToPlayAtSpecifiedRate
+        if Connectivity.shared.offline, isBuffering, streamed {
+            recoverOfflineStream()
+            return
+        }
         refreshNowPlaying()
     }
 
@@ -1241,7 +1465,11 @@ final class Player: NSObject, ObservableObject {
 
     func refreshPlaybackActivity() {
         if #available(iOS 16.2, *) {
-            PlaybackActivity.shared.refresh(track: current, playing: isPlaying)
+            let time = av.currentTime().seconds
+            let elapsed = time.isFinite && av.currentItem != nil ? time : progress.position
+            let rate = av.timeControlStatus == .playing ? Double(av.rate) : 0
+            PlaybackActivity.shared.refresh(track: current, playing: isPlaying, elapsed: elapsed,
+                                            duration: progress.duration, rate: rate)
         }
     }
 
@@ -1341,9 +1569,10 @@ final class Player: NSObject, ObservableObject {
         let kind = saved.kind.flatMap { $0.isEmpty ? nil : $0 } ?? "various"
         context = PlayContext(kind: kind, item: saved.item, name: saved.name)
         mark(kind, saved.item, saved.name)
-        if kind == "radio", let session = saved.session {
-            wave = session
+        if kind == "radio" {
+            wave = saved.session
             waveSeeds = saved.seeds ?? []
+            if wave == nil, !waveSeeds.isEmpty { offlineWave = WaveRequest(seeds: waveSeeds, name: saved.name) }
         }
         index = min(max(UserDefaults.standard.integer(forKey: "playerIndex"), 0), saved.queue.count - 1)
         let position = UserDefaults.standard.double(forKey: "playerPosition")

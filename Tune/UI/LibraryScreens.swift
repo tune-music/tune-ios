@@ -141,12 +141,7 @@ struct LibraryScreen: View {
         }
         .background(Theme.background)
         .navigationTitle("Коллекция")
-        .refreshable {
-            await Task {
-                await session.refresh()
-                await Updater.shared.check()
-            }.value
-        }
+        .screenRefresh { await session.refresh(interactive: true) }
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button {
@@ -270,7 +265,7 @@ struct KidsScreen: View {
         .navigationTitle("Детям")
         .navigationBarTitleDisplayMode(.inline)
         .task { if blocks == nil { await load() } }
-        .refreshable { await load() }
+        .screenRefresh { await load() }
     }
 
     private func load() async {
@@ -330,7 +325,7 @@ struct DislikedArtistsScreen: View {
         .navigationTitle("Скрытые исполнители")
         .navigationBarTitleDisplayMode(.inline)
         .task { await load() }
-        .refreshable { await load() }
+        .screenRefresh { await load() }
     }
 
     private func load() async {
@@ -884,7 +879,10 @@ struct SettingsScreen: View {
         }
         .onChange(of: streamQuality) { Settings.streamQuality = $0 }
         .onChange(of: downloadQuality) { Settings.downloadQuality = $0 }
-        .onChange(of: offlineMode) { Settings.offlineMode = $0 }
+        .onChange(of: offlineMode) {
+            Settings.offlineMode = $0
+            Player.shared.connectivityChanged()
+        }
         .onChange(of: wifiOnly) { value in
             Settings.wifiOnly = value
             downloads.settingsChanged()

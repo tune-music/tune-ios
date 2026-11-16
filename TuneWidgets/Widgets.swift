@@ -86,28 +86,44 @@ private struct LauncherView: View {
 private struct TunePlaybackActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: PlaybackActivityAttributes.self) { context in
-            HStack(spacing: 14) {
-                statusIcon(playing: context.state.playing)
-                    .font(.title2)
-                track(context.state)
-                Spacer(minLength: 0)
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 10) {
+                    statusIcon(playing: context.state.playing)
+                        .font(.title3)
+                        .frame(width: 38, height: 38)
+                        .background(.white.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+                        .accessibilityHidden(true)
+                    track(context.state)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    controls(playing: context.state.playing)
+                }
+                progress(context.state)
             }
             .padding(16)
             .activityBackgroundTint(Color(red: 0.10, green: 0.10, blue: 0.11))
+            .activitySystemActionForegroundColor(.white)
             .widgetURL(URL(string: "tune://player"))
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    statusIcon(playing: context.state.playing)
+                    Label("Tune", systemImage: "waveform")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.yellow)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    track(context.state)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 8) {
+                            track(context.state).frame(maxWidth: .infinity, alignment: .leading)
+                            controls(playing: context.state.playing)
+                        }
+                        progress(context.state)
+                    }
+                    .padding(.horizontal, 5)
                 }
             } compactLeading: {
-                statusIcon(playing: context.state.playing)
+                Image(systemName: "waveform").foregroundStyle(.yellow)
             } compactTrailing: {
-                Text("Tune").font(.caption2.weight(.semibold))
+                statusIcon(playing: context.state.playing).font(.caption.weight(.medium))
             } minimal: {
                 statusIcon(playing: context.state.playing)
             }
@@ -117,10 +133,58 @@ private struct TunePlaybackActivity: Widget {
 
     private func track(_ state: PlaybackActivityAttributes.ContentState) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(state.title).font(.headline).foregroundStyle(.white)
-            Text(state.artist).font(.subheadline).foregroundStyle(.white.opacity(0.75))
+            Text(state.title).font(.subheadline.weight(.semibold)).foregroundStyle(.white)
+            if !state.artist.isEmpty {
+                Text(state.artist).font(.caption).foregroundStyle(.white.opacity(0.75))
+            }
         }
         .lineLimit(1)
+        .truncationMode(.tail)
+        .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder
+    private func progress(_ state: PlaybackActivityAttributes.ContentState) -> some View {
+        if let progress = state.progress {
+            Group {
+                if let interval = progress.interval {
+                    ProgressView(timerInterval: interval, countsDown: false) {
+                        EmptyView()
+                    } currentValueLabel: {
+                        EmptyView()
+                    }
+                } else {
+                    ProgressView(value: progress.elapsed, total: progress.duration)
+                }
+            }
+            .progressViewStyle(.linear)
+            .tint(.yellow)
+            .accessibilityLabel("Позиция в треке")
+        }
+    }
+
+    @ViewBuilder
+    private func controls(playing: Bool) -> some View {
+        if #available(iOS 17.0, *) {
+            HStack(spacing: 2) {
+                Button(intent: ToggleTunePlaybackIntent()) {
+                    Image(systemName: playing ? "pause.fill" : "play.fill")
+                        .frame(width: 32, height: 36)
+                        .contentShape(Rectangle())
+                }
+                .accessibilityLabel(playing ? Text("Пауза") : Text("Продолжить"))
+                Button(intent: NextTuneTrackIntent()) {
+                    Image(systemName: "forward.end.fill")
+                        .frame(width: 32, height: 36)
+                        .contentShape(Rectangle())
+                }
+                .accessibilityLabel("Следующий трек")
+            }
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(.white)
+            .buttonStyle(.plain)
+            .fixedSize()
+        }
     }
 
     private func statusIcon(playing: Bool) -> some View {

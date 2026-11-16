@@ -121,7 +121,7 @@ struct ConcertsScreen: View {
             if let found = try? await API.shared.concertCities(), !Task.isCancelled { cities = found }
         }
         .task(id: "\(savedCity)#\(retry)") { await load(city: savedCity) }
-        .refreshable { await load(city: savedCity) }
+        .screenRefresh { await load(city: savedCity) }
     }
 
     private func load(city requested: String) async {
