@@ -128,7 +128,7 @@ final class Player: NSObject, ObservableObject {
     }
 
     var current: Track? { queue.indices.contains(index) ? queue[index] : nil }
-    var isWave: Bool { wave != nil || offlineWave != nil }
+    var isWave: Bool { wave != nil || offlineWave != nil || context.kind == "radio" }
 
     private enum EndReason {
         case finished, skipped
@@ -284,7 +284,8 @@ final class Player: NSObject, ObservableObject {
                                        position: position, duration: duration, speed: Double(sound.speed))
     }
 
-    func applyYnison(tracks: [Track], index target: Int, position: Double, playing: Bool) {
+    func applyYnison(tracks: [Track], index target: Int, position: Double, playing: Bool,
+                     entity: String, entityID: String) {
         guard tracks.indices.contains(target) else { return }
         if target == index, tracks.map(\.id) == queue.map(\.id) {
             if av.currentItem == nil {
@@ -307,7 +308,10 @@ final class Player: NSObject, ObservableObject {
         continuation = nil
         original = nil
         shuffle = false
-        context = .various("С другого устройства")
+        let kind = entity.lowercased()
+        let catalogSource = ["radio", "album", "playlist", "artist"].contains(kind) && !entityID.isEmpty
+        context = PlayContext(kind: catalogSource ? kind : "various", item: catalogSource ? entityID : nil,
+                              name: kind == "radio" && entityID == "user:onyourwave" ? "Моя волна" : "С другого устройства")
         contextName = context.name
         mark(context.kind, context.item, context.name)
         queue = tracks
@@ -1309,6 +1313,10 @@ final class Player: NSObject, ObservableObject {
         }
         if Connectivity.shared.offline || offlineWave != nil {
             finishQueue()
+            return
+        }
+        if wave == nil, context.kind == "radio", let seeds = context.item, !seeds.isEmpty {
+            playWave(seeds: seeds.components(separatedBy: ","), name: context.name)
             return
         }
         if wave != nil {

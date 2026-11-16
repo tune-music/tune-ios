@@ -243,8 +243,13 @@ final class Ynison: ObservableObject {
             return
         }
         guard !working else { return }
-        let queueChanged = incoming.queueBy != deviceID && (incoming.queueVersion != previous.queueVersion || previous.active != deviceID)
-        let statusChanged = incoming.statusBy != deviceID && (incoming.statusVersion != previous.statusVersion || previous.active != deviceID)
+        let activatedHere = previous.active != deviceID
+        let queueChanged = incoming.queueBy != deviceID && (incoming.queueVersion != previous.queueVersion
+            || activatedHere || !incoming.playback.sameQueue(as: previous.playback))
+        let fallbackStatusChanged = incoming.statusVersion == nil
+            && (incoming.playback.paused != previous.playback.paused || incoming.playback.position != previous.playback.position)
+        let statusChanged = incoming.statusBy != deviceID
+            && (incoming.statusVersion != previous.statusVersion || activatedHere || fallbackStatusChanged)
         guard queueChanged || statusChanged, incoming.playback.current != nil else { return }
         applying?.cancel()
         applying = Task { [weak self] in
@@ -267,6 +272,7 @@ final class Ynison: ObservableObject {
         guard id == deviceID || state.devices.contains(where: { $0.id == id }) else { return }
         working = true
         let turn = epoch
+        let wasPlaying = Player.shared.isPlaying
         defer { if turn == epoch { working = false } }
         do {
             if id == deviceID {
@@ -298,7 +304,13 @@ final class Ynison: ObservableObject {
                 }
             }
         } catch {
-            if epoch == turn, !(error is CancellationError) { errorText = error.localizedDescription }
+            if epoch == turn, !(error is CancellationError) {
+                if id == deviceID, !wasPlaying, state.active != deviceID, Player.shared.isPlaying {
+                    Player.shared.pause()
+                    sent = (Player.shared.ynisonPlayback(), .now)
+                }
+                errorText = error.localizedDescription
+            }
         }
     }
 
@@ -326,12 +338,16 @@ final class Ynison: ObservableObject {
     }
 
     private func apply(_ playback: Playback, at time: Date, play: Bool = false, stillCurrent: () -> Bool) async throws {
-        guard let current = playback.current else { throw TuneError("Устройство не прислало текущий трек") }
+        guard let originalIndex = playback.index, playback.current != nil else {
+            throw TuneError("Устройство не прислало текущий трек")
+        }
         let player = Player.shared
         let same = playback.songs.map(\.id) == player.queue.map(\.id)
         let tracks: [Track]
+        let target: Int?
         if same {
             tracks = player.queue
+            target = originalIndex
         } else {
             var loaded: [Track] = []
             for chunk in playback.songs.map(\.id).filter({ !$0.isEmpty }).chunked(100) {
@@ -339,14 +355,19 @@ final class Ynison: ObservableObject {
                 try Task.checkCancellation()
                 guard stillCurrent() else { throw CancellationError() }
             }
-            tracks = loaded
+            let byID = Dictionary(loaded.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            let available = playback.songs.enumerated().compactMap { offset, song in
+                byID[song.id].map { (sourceIndex: offset, track: $0) }
+            }
+            tracks = available.map(\.track)
+            target = available.firstIndex { $0.sourceIndex == originalIndex }
         }
-        let index = same ? playback.index : tracks.firstIndex { $0.id == current.id }
-        guard let index, tracks.indices.contains(index) else { throw TuneError("Этот трек недоступен на iPhone") }
+        guard let target, tracks.indices.contains(target) else { throw TuneError("Этот трек недоступен на iPhone") }
         try Task.checkCancellation()
         guard stillCurrent() else { throw CancellationError() }
         let position = playback.predicted(after: Date().timeIntervalSince(time))
-        player.applyYnison(tracks: tracks, index: index, position: position, playing: play || !playback.paused)
+        player.applyYnison(tracks: tracks, index: target, position: position, playing: play || !playback.paused,
+                           entity: playback.entityType, entityID: playback.entityID)
     }
 
     private struct HubError: Error { let retryAfter: Int? }
