@@ -880,6 +880,12 @@ private struct LyricsPane: View {
     }
 
     private func text(_ lines: [LyricLine]) -> some View {
+        GeometryReader { viewport in
+            scrollText(lines, verticalPadding: max(0, viewport.size.height / 2 - 16))
+        }
+    }
+
+    private func scrollText(_ lines: [LyricLine], verticalPadding: CGFloat) -> some View {
         let first = lines.first?.id
         let timed = lines.filter { $0.time != nil }
         let anchor = active ?? first
@@ -903,7 +909,7 @@ private struct LyricsPane: View {
                     credits
                 }
                 // Запас сверху и снизу: первая и последняя строки тоже встают по центру.
-                .padding(.vertical, 130)
+                .padding(.vertical, verticalPadding)
             }
             // Строки растворяются у верхнего и нижнего края.
             .mask {
@@ -914,7 +920,7 @@ private struct LyricsPane: View {
             .onAppear {
                 let current = Self.currentLine(in: timed, at: progress.position)
                 active = current
-                if let current = current ?? first { proxy.scrollTo(current, anchor: .center) }
+                if let current, current != first { proxy.scrollTo(current, anchor: .center) }
             }
             .simultaneousGesture(
                 DragGesture(minimumDistance: 4)

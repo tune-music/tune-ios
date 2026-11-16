@@ -157,6 +157,7 @@ final class Player: NSObject, ObservableObject {
     /// Семена играющей волны: по ним видно волну-сет, у неё свои точки перехода.
     private var waveSeeds: [String] = []
     private var extendTask: Task<Void, Never>?
+    private var advanceTask: Task<Void, Never>?
     /// Волна, что продолжит очередь после последнего трека: её треки дописаны в конец очереди,
     /// а источник сменится на волну, когда до них дойдёт очередь.
     private var continuation: (from: Int, wave: PlayContext, waveId: String, before: PlayContext)?
@@ -379,6 +380,8 @@ final class Player: NSObject, ObservableObject {
         guard queue.indices.contains(target) else { return }
         loadTask?.cancel()
         loadTask = nil
+        advanceTask?.cancel()
+        advanceTask = nil
         effectsTask?.cancel()
         effectsTask = nil
         versionTask?.cancel()
@@ -429,7 +432,7 @@ final class Player: NSObject, ObservableObject {
             spare = old
             watch()
             let level = Self.level(for: track)
-            if autoplay, let out, old.rate > 0, let fade = points(track) {
+            if autoplay, let out, old.rate > 0, let fade = points(track, duration: ready.item.duration.seconds) {
                 // Новый трек нарастает ровно столько, сколько затихает прежний; в волне-сете — по
                 // своим точкам и с начала сведения.
                 let rise = mixWave ? (fade.inStart, fade.inStop) : (fade.inStart, fade.inStart + (out.1 - out.0))
@@ -638,7 +641,8 @@ final class Player: NSObject, ObservableObject {
             let started = try? await API.shared.waveNew(seeds: [seed])
             guard let self else { return }
             self.continueTask = nil
-            guard let started, self.wave == nil, self.continuation == nil, self.current?.id == last.id, self.index == self.queue.count - 1 else { return }
+            guard !Task.isCancelled, let started, self.wave == nil, self.continuation == nil,
+                  self.current?.id == last.id, self.index == self.queue.count - 1 else { return }
             let known = Set(self.queue.map(\.id))
             let more = started.tracks.filter { !known.contains($0.id) }
             guard !more.isEmpty else { return }
@@ -864,8 +868,8 @@ final class Player: NSObject, ObservableObject {
     /// Точки перехода трека. «Авто»: разметка Яндекса, в волне-сете своя, плотнее обычной;
     /// без разметки — ровный переход на 6 секунд, чтобы перетекали любые треки. С заданной
     /// длиной — ровный переход на неё. Короткие треки, подкасты и книги без перехода.
-    private func points(_ track: Track) -> FadePoints? {
-        let length = track.duration
+    private func points(_ track: Track, duration: Double) -> FadePoints? {
+        let length = duration.isFinite && duration > 0 ? duration : track.duration
         let setting = Settings.crossfade
         if setting > 0 {
             let span = Double(setting)
@@ -980,6 +984,8 @@ final class Player: NSObject, ObservableObject {
     }
 
     func pause() {
+        advanceTask?.cancel()
+        advanceTask = nil
         isPlaying = false
         isBuffering = false
         endFade()
@@ -1050,6 +1056,8 @@ final class Player: NSObject, ObservableObject {
     }
 
     func stop() {
+        advanceTask?.cancel()
+        advanceTask = nil
         loadTask?.cancel()
         loadTask = nil
         preloadTask?.cancel()
@@ -1246,11 +1254,17 @@ final class Player: NSObject, ObservableObject {
         }
         if wave != nil {
             isBuffering = true
-            Task { [weak self] in
+            let turn = generation
+            advanceTask?.cancel()
+            advanceTask = Task { [weak self] in
                 guard let self else { return }
                 await self.extendWave()
-                if self.index + 1 < self.queue.count {
-                    self.load(self.index + 1, autoplay: true)
+                guard !Task.isCancelled, turn == self.generation else { return }
+                self.advanceTask = nil
+                if let next = self.nextTrack() {
+                    self.loadNext(next)
+                } else if Connectivity.shared.offline {
+                    self.finishQueue()
                 } else if self.now.kind == "radio", let seeds = self.now.item, !seeds.isEmpty {
                     // Сессия волны устарела (например, после перезапуска): начинаем её заново.
                     self.playWave(seeds: seeds.components(separatedBy: ","), name: self.now.name)
@@ -1277,11 +1291,14 @@ final class Player: NSObject, ObservableObject {
             return
         }
         isBuffering = true
-        Task { [weak self] in
+        let turn = generation
+        advanceTask?.cancel()
+        advanceTask = Task { [weak self] in
             await task.value
-            guard let self else { return }
-            if self.index + 1 < self.queue.count {
-                self.load(self.index + 1, autoplay: true)
+            guard let self, !Task.isCancelled, turn == self.generation else { return }
+            self.advanceTask = nil
+            if let next = self.nextTrack() {
+                self.loadNext(next)
             } else {
                 self.finishQueue()
             }
@@ -1373,7 +1390,8 @@ final class Player: NSObject, ObservableObject {
         // тоже есть точки перехода. Повтор одного трека переходом не идёт.
         if Settings.crossfade != 0, av.rate > 0, repeatMode != .one, !sleepAfterTrack, let track = current, fadedFor != track.id,
            let ready = preloaded, let next = nextTrack(), next.track.id == ready.id,
-           ready.item.status == .readyToPlay, let fade = points(track), points(next.track) != nil {
+           ready.item.status == .readyToPlay, let fade = points(track, duration: progress.duration),
+           points(next.track, duration: ready.item.duration.seconds) != nil {
             let out = window(fade)
             if seconds >= out.0, seconds < out.1 {
                 fadedFor = track.id

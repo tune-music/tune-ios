@@ -207,6 +207,9 @@ struct RootView: View {
         .onReceive(Player.shared.now.$id.map { $0 != nil }.removeDuplicates()) { visible in
             if hasTrack != visible { hasTrack = visible }
         }
+        .onReceive(Connectivity.shared.$online.dropFirst()) { online in
+            if online, !Settings.offlineMode, session.offline { Task { await session.refresh() } }
+        }
         .alert("Tune", isPresented: errorShown) {
             Button("Понятно", role: .cancel) {}
         } message: {
