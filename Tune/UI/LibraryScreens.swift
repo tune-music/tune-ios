@@ -744,6 +744,11 @@ struct SettingsScreen: View {
                 Text("«Авто» — как в Tune Native: переход по точкам, которые Яндекс размечает для каждого трека, не дольше 6 секунд; в волнах-сетах — по их сведению. Треки без разметки, в том числе свои и без цензуры, перетекают ровно за 6 секунд. Выравнивание приводит треки к одной громкости по данным Яндекса, а у скачанных без них — по самому файлу.")
             }
             Section {
+                Button { navigate(.devices) } label: {
+                    Label("Устройства Яндекс Музыки", systemImage: "hifispeaker.and.homepod")
+                }
+            }
+            Section {
                 Toggle(isOn: $waveWheel) {
                     setting("Колесо волны", "Подсказки волн по настроению, жанру и артистам под Моей волной")
                 }
@@ -887,6 +892,7 @@ struct SettingsScreen: View {
         .onChange(of: offlineMode) {
             Settings.offlineMode = $0
             Player.shared.connectivityChanged()
+            Ynison.shared.updateConnection()
         }
         .onChange(of: wifiOnly) { value in
             Settings.wifiOnly = value

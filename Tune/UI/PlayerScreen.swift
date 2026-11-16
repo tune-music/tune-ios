@@ -503,6 +503,12 @@ private struct TrackActionsSheet: View {
             .listRowSeparator(.hidden)
             .listRowInsets(EdgeInsets(top: 18, leading: 20, bottom: 10, trailing: 20))
             Group {
+                Button {
+                    dismiss()
+                    navigate(.devices)
+                } label: {
+                    Label("Устройства Яндекс Музыки", systemImage: "hifispeaker.and.homepod")
+                }
                 TrackMenu(track: track, inPlayer: true, navigate: navigate, pick: pick, done: { dismiss() })
             }
             .font(.system(size: 17))

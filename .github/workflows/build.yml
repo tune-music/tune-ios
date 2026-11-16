@@ -32,6 +32,11 @@ jobs:
           brew install xcodegen
           xcodegen generate
 
+      - name: Проверка протокола Ynison
+        run: |
+          swiftc Tune/Core/Models.swift Tune/Core/YnisonProtocol.swift Tests/YnisonProtocolTests.swift -o ynison-tests
+          ./ynison-tests
+
       - name: Сборка
         run: |
           set -o pipefail
@@ -46,6 +51,23 @@ jobs:
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
             | tee build.log | grep -E "error:|BUILD|\*\*" || true
           grep -q "BUILD SUCCEEDED" build.log
+
+      - name: Конфигурация CarPlay
+        run: |
+          xcodebuild -project Tune.xcodeproj -scheme Tune-CarPlay -configuration CarPlay \
+            -sdk iphoneos -showBuildSettings -json > carplay-settings.json
+          python3 - <<'EOF'
+          import json, plistlib
+          from pathlib import Path
+
+          settings = json.loads(Path("carplay-settings.json").read_text())
+          tune = next(item["buildSettings"] for item in settings if item["target"] == "Tune")
+          assert tune["CODE_SIGNING_ALLOWED"] == "YES"
+          assert tune["CODE_SIGN_STYLE"] == "Automatic"
+          assert tune["CODE_SIGN_ENTITLEMENTS"] == "Config/TuneCarPlay.entitlements"
+          with Path(tune["CODE_SIGN_ENTITLEMENTS"]).open("rb") as file:
+              assert plistlib.load(file)["com.apple.developer.carplay-audio"] is True
+          EOF
 
       - name: Ошибки сборки
         if: failure()

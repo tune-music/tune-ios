@@ -270,6 +270,51 @@ final class Player: NSObject, ObservableObject {
         if now.name != name { now.name = name }
     }
 
+    func ynisonPlayback() -> YnisonProtocol.Playback {
+        let position = progress.position.isFinite ? max(0, progress.position) : 0
+        let duration = progress.duration.isFinite ? max(0, progress.duration) : 0
+        let type: String
+        switch context.kind {
+        case "album", "playlist", "artist", "radio": type = context.kind.uppercased()
+        default: type = "VARIOUS"
+        }
+        return YnisonProtocol.Playback(songs: queue.map(YnisonProtocol.Song.init(track:)),
+                                       index: current == nil ? nil : index, entityID: context.item ?? "",
+                                       entityType: type, paused: !isPlaying,
+                                       position: position, duration: duration, speed: Double(sound.speed))
+    }
+
+    func applyYnison(tracks: [Track], index target: Int, position: Double, playing: Bool) {
+        guard tracks.indices.contains(target) else { return }
+        if target == index, tracks.map(\.id) == queue.map(\.id) {
+            if av.currentItem == nil {
+                pendingSeek = position
+                progress.position = position
+            } else if abs(progress.position - position) > 3 {
+                seek(to: position)
+            }
+            if playing && !isPlaying { resume() }
+            if !playing && isPlaying { pause() }
+            return
+        }
+        endCurrent(.skipped)
+        waveRequestTask?.cancel()
+        waveRequestTask = nil
+        startingWave = nil
+        offlineWave = nil
+        wave = nil
+        waveSeeds = []
+        continuation = nil
+        original = nil
+        shuffle = false
+        context = .various("С другого устройства")
+        contextName = context.name
+        mark(context.kind, context.item, context.name)
+        queue = tracks
+        load(target, autoplay: playing, resume: position)
+        saveQueue()
+    }
+
     /// Нажатие на волну: играющая ставится на паузу и снимается с неё, другая — запускается.
     func tapWave(seeds: [String] = ["user:onyourwave"], name: String = "Моя волна") {
         if isWave, now.from("radio", seeds.joined(separator: ",")) {

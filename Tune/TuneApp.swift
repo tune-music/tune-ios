@@ -1,4 +1,5 @@
 import Combine
+import CarPlay
 import SwiftUI
 
 /// Быстрые действия: меню по долгому нажатию на значок приложения.
@@ -28,6 +29,12 @@ enum QuickAction {
 
 final class AppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication, configurationForConnecting session: UISceneSession, options: UIScene.ConnectionOptions) -> UISceneConfiguration {
+        if session.role.rawValue == "CPTemplateApplicationSceneSessionRoleApplication" {
+            let config = UISceneConfiguration(name: "Tune CarPlay", sessionRole: session.role)
+            config.sceneClass = CPTemplateApplicationScene.self
+            config.delegateClass = TuneCarPlayScene.self
+            return config
+        }
         if let item = options.shortcutItem { QuickAction.pending = item.type }
         let config = UISceneConfiguration(name: nil, sessionRole: session.role)
         config.delegateClass = SceneDelegate.self
@@ -111,6 +118,7 @@ struct TuneApp: App {
 
 enum Route: Hashable {
     case likes
+    case devices
     case downloads
     case history
     case disliked
@@ -190,6 +198,7 @@ struct RootView: View {
         }
         .onChange(of: phase) { now in
             if now == .active {
+                Ynison.shared.updateConnection()
                 Player.shared.refreshPlaybackActivity()
                 Task {
                     async let update: Void = Updater.shared.check()
@@ -211,9 +220,13 @@ struct RootView: View {
             if hasTrack != visible { hasTrack = visible }
         }
         .onReceive(Connectivity.shared.$online.dropFirst()) { online in
+            Ynison.shared.updateConnection()
             guard online, !Settings.offlineMode else { return }
             Uploads.shared.resume()
             if session.offline { Task { await session.refresh() } }
+        }
+        .onReceive(session.$token.removeDuplicates()) { _ in
+            Task { @MainActor in Ynison.shared.updateConnection() }
         }
         .alert("Tune", isPresented: errorShown) {
             Button("Понятно", role: .cancel) {}
@@ -321,6 +334,7 @@ struct TabRoot<Content: View>: View {
     @ViewBuilder private func destination(_ route: Route) -> some View {
         switch route {
         case .likes: TrackListScreen(kind: .likes)
+        case .devices: DevicesScreen()
         case .downloads: TrackListScreen(kind: .downloads)
         case .history: TrackListScreen(kind: .history)
         case .disliked: TrackListScreen(kind: .disliked)

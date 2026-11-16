@@ -33,6 +33,10 @@ brew install xcodegen
 xcodegen generate && open Tune.xcodeproj
 ```
 
+Для CarPlay выберите схему **Tune-CarPlay** и укажите свою команду в **Signing & Capabilities**. Профиль подписи для `dev.tune.music` должен содержать разрешение CarPlay Audio. Если у вашей команды зарегистрирован другой Bundle ID, укажите его для приложения и расширения виджета. [Разрешения CarPlay](https://developer.apple.com/documentation/carplay/requesting-carplay-entitlements)
+
+Схема **Tune** используется для релиза AltStore. Для проверки интерфейса CarPlay на Mac можно выбрать схему **Tune-CarPlay** и открыть внешний дисплей CarPlay в iOS Simulator. [Симулятор CarPlay](https://developer.apple.com/documentation/carplay/using-the-carplay-simulator)
+
 ## Где что лежит
 
 - `Tune/Core/API.swift` — запросы к API Яндекс Музыки.

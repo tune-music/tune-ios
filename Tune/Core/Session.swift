@@ -146,6 +146,7 @@ final class Session: ObservableObject {
 
     /// Убирает всё, что относится к текущему аккаунту. Скачанная музыка остаётся.
     private func reset() {
+        Ynison.shared.disconnect()
         refreshTask?.cancel()
         refreshTask = nil
         Player.shared.stop()
