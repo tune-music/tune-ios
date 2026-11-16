@@ -9,6 +9,7 @@ final class Stats: ObservableObject {
         var id: String
         var seconds: Double
         var date: Date
+        var waveAccount: String? = nil
     }
 
     private struct Saved: Codable {
@@ -38,10 +39,11 @@ final class Stats: ObservableObject {
     }
 
     /// Запоминает прослушивание. Короткие включения не считаются: трек просто пролистали.
-    func add(_ track: Track, seconds: Double) {
+    func add(_ track: Track, seconds: Double, waveAccount: String? = nil) {
         guard !Demo.on, seconds >= 20 else { return }
         tracks[track.id] = track
-        plays.append(Play(id: track.id, seconds: min(seconds, max(track.duration, seconds)), date: Date()))
+        plays.append(Play(id: track.id, seconds: min(seconds, max(track.duration, seconds)), date: Date(),
+                          waveAccount: waveAccount.map(Storage.hash)))
         if plays.count > 20_000 {
             plays.removeFirst(plays.count - 20_000)
             let alive = Set(plays.map(\.id))
@@ -49,6 +51,16 @@ final class Stats: ObservableObject {
         }
         let snapshot = Saved(plays: plays, tracks: tracks)
         Task.detached(priority: .utility) { Storage.save(snapshot, "stats.json") }
+    }
+
+    func recentRestoredWaveTracks(account: String) -> [Track] {
+        let key = Storage.hash(account)
+        var seen = Set<String>()
+        return plays.reversed().compactMap { play in
+            guard play.waveAccount == key, seen.insert(play.id).inserted,
+                  let track = tracks[play.id], track.uncensored, track.yandexAvailable == false else { return nil }
+            return track
+        }
     }
 
     func clear() {

@@ -75,6 +75,7 @@ struct ReplacementScreen: View {
             }
             Section {
                 Toggle("Применять данные FckCensor", isOn: $draft.usePlugin)
+                    .tint(Theme.accentText)
                 if original != MetadataOverride() {
                     Button("Сбросить подмену", role: .destructive) { save(nil) }
                 }

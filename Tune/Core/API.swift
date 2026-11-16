@@ -302,7 +302,15 @@ final class API {
     func tracks(ids: [String]) async throws -> [Track] {
         guard !ids.isEmpty else { return [] }
         if Demo.on { return Demo.data.tracks.filter { ids.contains($0.id) } }
-        let value = try await post("tracks", form: "track-ids=" + ids.map(Self.encode).joined(separator: "%2C"))
+        let value: JSON
+        do {
+            value = try await post("tracks", form: "track-ids=" + ids.map(Self.encode).joined(separator: "%2C"))
+        } catch {
+            try Task.checkCancellation()
+            let local = ids.compactMap(Uncensor.shared.catalogTrack).compactMap(Self.parseTrack)
+            if local.count != ids.count { throw error }
+            return local
+        }
         var found: [String: Track] = [:]
         for track in value["result"].array.compactMap(Self.parseTrack) where found[track.id] == nil {
             found[track.id] = track
@@ -609,8 +617,45 @@ final class API {
         let kind = wave ? "wave" : "collection"
         let query = [("waveTracksLimit", wave ? "50" : "0"),
                      ("collectionTracksLimit", wave ? "0" : "50"), ("collectionAlbumsLimit", "0")]
-        let response = result(try await get("artists/\(id)/familiar-you", query))
-        return response[kind]["tracks"].array.compactMap(Self.parseTrack)
+        let remote: [Track]
+        do {
+            let response = result(try await get("artists/\(id)/familiar-you", query))
+            remote = response[kind]["tracks"].array.compactMap { entry in
+                let track = entry["track"].isObject ? entry["track"] : entry
+                let id = track["id"].idText ?? entry["trackId"].idText ?? entry.idText
+                return Self.parseTrack(track) ?? id.flatMap(Uncensor.shared.catalogTrack).flatMap(Self.parseTrack)
+            }
+        } catch {
+            try Task.checkCancellation()
+            let local = await Self.familiarOnDevice(artist: id, wave: wave)
+            if local.isEmpty { throw error }
+            return local
+        }
+        let local = await Self.familiarOnDevice(artist: id, wave: wave)
+        var seen = Set<String>()
+        return (remote + local).filter { seen.insert($0.id).inserted }
+    }
+
+    @MainActor
+    private static func familiarOnDevice(artist id: String, wave: Bool) -> [Track] {
+        let session = Session.shared
+        let catalogIDs = Uncensor.shared.inserts(artist: id).tracks
+        let catalogSet = Set(catalogIDs)
+        func belongs(_ track: Track) -> Bool {
+            catalogSet.contains(track.id) || track.artistList.contains { $0.id == id }
+        }
+        if wave {
+            guard let uid = session.profile?.uid else { return [] }
+            return Stats.shared.recentRestoredWaveTracks(account: uid).filter(belongs)
+        }
+        let localLikes = session.localLikedTracks.filter(belongs)
+        let annotated = catalogIDs.compactMap { trackID -> Track? in
+            guard let value = Uncensor.shared.catalogTrack(trackID), let track = parseTrack(value),
+                  session.isLiked(trackID) || track.albumId.map(session.likedAlbums.contains) == true else { return nil }
+            return track
+        }
+        var seen = Set<String>()
+        return (localLikes + annotated).filter { seen.insert($0.id).inserted }
     }
 
     /// Подсказки: как Яндекс предлагает закончить запрос.

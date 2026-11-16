@@ -274,6 +274,7 @@ struct TrackListScreen: View {
     @State private var accountID: String?
     @State private var pageLiked = false
     @State private var dislikedIDs = Set<String>()
+    @State private var familiarLikes: Set<String>?
     @Environment(\.dismiss) private var dismiss
     @Environment(\.navigate) private var navigate
     @State private var filter = ""
@@ -451,7 +452,15 @@ struct TrackListScreen: View {
     var body: some View {
         observedPage
             .onReceive(Session.shared.$localLikedTracks.removeDuplicates()) {
-                if kind == .likes { model.updateLocalLikes($0) }
+                if kind == .likes {
+                    model.updateLocalLikes($0)
+                } else if case .artistFamiliar(_, _, false) = kind {
+                    let updated = Set($0.map(\.id))
+                    if let familiarLikes, familiarLikes != updated {
+                        Task { await model.load(kind, force: true) }
+                    }
+                    if familiarLikes != updated { familiarLikes = updated }
+                }
             }
             .onReceive(downloads.$entries.removeDuplicates()) { entries in
                 if (kind == .downloads || onlyDownloaded), downloadEntries != entries { downloadEntries = entries }

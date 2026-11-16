@@ -485,6 +485,7 @@ struct TrackRow: View {
                 } label: {
                     Label("Удалить", systemImage: "trash")
                 }
+                .tint(Color(uiColor: .systemRed))
             } else {
                 Button {
                     downloads.download(track)

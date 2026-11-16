@@ -1272,7 +1272,10 @@ final class Player: NSObject, ObservableObject {
     private func endCurrent(_ reason: EndReason) {
         guard let finished = listen else { return }
         listen = nil
-        Stats.shared.add(finished.track, seconds: finished.played)
+        let restoredInWave = finished.context.kind == "radio" && finished.track.uncensored
+            && finished.track.yandexAvailable == false
+        Stats.shared.add(finished.track, seconds: finished.played,
+                         waveAccount: restoredInWave ? Session.shared.profile?.uid : nil)
         let position = reason == .finished ? finished.track.duration : progress.position
         let report = finished.report(position: position, first: false)
         let kind = reason == .finished ? "trackFinished" : "skip"
