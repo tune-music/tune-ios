@@ -22,6 +22,7 @@ final class Session: ObservableObject {
     @Published private(set) var profile: Profile?
     @Published private(set) var likedIds: [String] = []
     @Published private(set) var localLikedTracks: [Track] = []
+    static let restoredLikesSynced = Notification.Name("tune.restoredLikesSynced")
     @Published private(set) var playlists: [Playlist] = []
     @Published private(set) var likedPlaylists: [Playlist] = []
     @Published private(set) var likedAlbums: Set<String> = []
@@ -39,6 +40,8 @@ final class Session: ObservableObject {
     @Published private(set) var epoch = 0
     private var likedSet: Set<String> = []
     private var pendingLikes = Set<String>()
+    private var restoredChanges: [String: Bool] = [:]
+    private var restoredSyncTask: Task<Void, Never>?
     private var likesRevision = 0
     private var refreshTask: Task<Void, Never>?
     private var toastTask: Task<Void, Never>?
@@ -56,7 +59,7 @@ final class Session: ObservableObject {
         if let saved: Saved = Storage.load("session.json") {
             profile = saved.profile
             if let uid = saved.profile?.uid {
-                localLikedTracks = Storage.load(Self.localLikesFile(uid)) ?? []
+                loadRestoredLikes(uid)
             }
             let localIDs = localLikedTracks.map(\.id)
             let local = Set(localIDs)
@@ -72,6 +75,10 @@ final class Session: ObservableObject {
 
     func isLiked(_ id: String) -> Bool {
         likedSet.contains(id)
+    }
+
+    func hasPendingRestoredUnlike(_ id: String) -> Bool {
+        restoredChanges[id] == false
     }
 
     /// Свой плейлист можно править, чужой — только добавить в коллекцию.
@@ -154,6 +161,9 @@ final class Session: ObservableObject {
         likedSet = []
         likedIds = []
         localLikedTracks = []
+        restoredChanges = [:]
+        restoredSyncTask?.cancel()
+        restoredSyncTask = nil
         pendingLikes.removeAll()
         likesRevision += 1
         playlists = []
@@ -210,13 +220,15 @@ final class Session: ObservableObject {
         do {
             let profile = try await API.shared.profile()
             guard !Task.isCancelled, token == requestedToken else { return }
+            let previousUID = self.profile?.uid
             self.profile = profile
             remember(profile)
             offline = false
             let uid = profile.uid
-            if localLikedTracks.isEmpty, let stored: [Track] = Storage.load(Self.localLikesFile(uid)), !stored.isEmpty {
-                localLikedTracks = stored
-                for track in stored.reversed() { apply(track.id, true) }
+            if previousUID != uid {
+                loadRestoredLikes(uid)
+                for track in localLikedTracks.reversed() { apply(track.id, true) }
+                for (id, liked) in restoredChanges where !liked { apply(id, false) }
             }
             let revision = likesRevision
             async let likedTask = API.shared.likedIds(uid: uid)
@@ -236,6 +248,7 @@ final class Session: ObservableObject {
             if let ids = snapshot.5, Set(ids) != disliked { disliked = Set(ids) }
             save()
             Uploads.shared.resume()
+            syncRestoredLikes()
         } catch APIError.needLogin {
             if !Task.isCancelled, token == requestedToken { logout() }
         } catch {
@@ -248,7 +261,7 @@ final class Session: ObservableObject {
     func setLiked(_ ids: [String]) {
         let local = localLikedTracks.map(\.id)
         let localIDs = Set(local)
-        let ids = local + ids.filter { !localIDs.contains($0) }
+        let ids = local + ids.filter { !localIDs.contains($0) && restoredChanges[$0] != false }
         guard pendingLikes.isEmpty, ids != likedIds else { return }
         likedSet = Set(ids)
         likedIds = ids
@@ -284,8 +297,10 @@ final class Session: ObservableObject {
                 updated.insert(copy, at: 0)
             }
             localLikedTracks = updated
-            Storage.save(updated, Self.localLikesFile(uid))
+            restoredChanges[track.id] = liked
+            saveRestoredLikes(uid)
             save()
+            syncRestoredLikes()
             return
         }
         Task {
@@ -309,6 +324,66 @@ final class Session: ObservableObject {
 
     private static func localLikesFile(_ uid: String) -> String {
         "restored-likes-\(Storage.hash(uid)).json"
+    }
+
+    private struct RestoredLikes: Codable {
+        var tracks: [Track]
+        var changes: [String: Bool]
+    }
+
+    private func loadRestoredLikes(_ uid: String) {
+        let name = Self.localLikesFile(uid)
+        if let stored: RestoredLikes = Storage.load(name) {
+            localLikedTracks = stored.tracks
+            restoredChanges = stored.changes
+        } else {
+            let legacy: [Track] = Storage.load(name) ?? []
+            localLikedTracks = legacy
+            restoredChanges = Dictionary(legacy.map { ($0.id, true) }, uniquingKeysWith: { a, _ in a })
+        }
+    }
+
+    private func saveRestoredLikes(_ uid: String) {
+        Storage.save(RestoredLikes(tracks: localLikedTracks, changes: restoredChanges), Self.localLikesFile(uid))
+    }
+
+    func syncRestoredLikes() {
+        guard restoredSyncTask == nil, !restoredChanges.isEmpty, !Demo.on, !Connectivity.shared.offline,
+              let uid = profile?.uid, let requestedToken = token else { return }
+        let batch = restoredChanges
+        restoredSyncTask = Task {
+            defer {
+                if token == requestedToken {
+                    restoredSyncTask = nil
+                    if restoredChanges.contains(where: { batch[$0.key] != $0.value }) { syncRestoredLikes() }
+                }
+            }
+            do {
+                let before = Set(try await API.shared.fullLikedEntries().map(\.id))
+                for (id, liked) in batch where before.contains(id) != liked {
+                    try Task.checkCancellation()
+                    guard token == requestedToken, profile?.uid == uid, restoredChanges[id] == liked else { continue }
+                    _ = try? await API.shared.setLiked(uid: uid, track: id, liked: liked)
+                }
+                try Task.checkCancellation()
+                let ids = try await API.shared.fullLikedEntries().map(\.id)
+                let confirmed = Set(ids)
+                guard !Task.isCancelled, token == requestedToken, profile?.uid == uid else { return }
+                let acknowledged = Set(batch.compactMap { id, liked in
+                    restoredChanges[id] == liked && confirmed.contains(id) == liked ? id : nil
+                })
+                guard !acknowledged.isEmpty else { return }
+                likesRevision += 1
+                for id in acknowledged { restoredChanges[id] = nil }
+                localLikedTracks.removeAll { acknowledged.contains($0.id) }
+                saveRestoredLikes(uid)
+                setLiked(ids)
+                save()
+                NotificationCenter.default.post(name: Self.restoredLikesSynced, object: nil)
+            } catch {
+                if !Task.isCancelled { Log.shared.add("Синхронизация восстановленных лайков: \(error.localizedDescription)") }
+            }
+        }
     }
 
     /// Возвращает true, если трек теперь с дизлайком.

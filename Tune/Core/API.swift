@@ -270,10 +270,26 @@ final class API {
 
     func likedEntries(uid: String) async throws -> [(id: String, addedAt: Date?)] {
         if Demo.on { return Demo.data.tracks.enumerated().map { ($0.element.id, Date(timeIntervalSince1970: Double($0.offset))) } }
+        do {
+            return try await fullLikedEntries()
+        } catch {
+            try Task.checkCancellation()
+        }
         let value = result(try await get("users/\(uid)/likes/tracks"))
         let parseDate = Self.listDateParser()
         return value["library"]["tracks"].array.compactMap { item in
             item["id"].idText.map { ($0, parseDate(item["timestamp"])) }
+        }
+    }
+
+    func fullLikedEntries() async throws -> [(id: String, addedAt: Date?)] {
+        let value = result(try await post("collection/sync", json: ["likedTracks": ["revision": 0]]))
+        let entries = value["values"]["likedTracks"]["values"]["liked"]
+        guard entries.isArray else { throw APIError.server("Яндекс не прислал полный список лайков") }
+        let parseDate = Self.listDateParser()
+        return entries.array.compactMap { item in
+            guard let id = item["trackId"].idText ?? item["id"].idText else { return nil }
+            return (id, parseDate(item["timestamp"]))
         }
     }
 

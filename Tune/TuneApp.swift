@@ -222,6 +222,7 @@ struct RootView: View {
         .onReceive(Connectivity.shared.$online.dropFirst()) { online in
             Ynison.shared.updateConnection()
             guard online, !Settings.offlineMode else { return }
+            session.syncRestoredLikes()
             Uploads.shared.resume()
             if session.offline { Task { await session.refresh() } }
         }

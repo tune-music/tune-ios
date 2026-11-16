@@ -212,7 +212,9 @@ final class TrackListModel: ObservableObject {
         }
         guard let uid = Session.shared.profile?.uid else { throw APIError.network("") }
         var seen = Set<String>()
-        let entries = try await API.shared.likedEntries(uid: uid).filter { seen.insert($0.id).inserted }
+        let entries = try await API.shared.likedEntries(uid: uid).filter {
+            !Session.shared.hasPendingRestoredUnlike($0.id) && seen.insert($0.id).inserted
+        }
         try Task.checkCancellation()
         guard Session.shared.profile?.uid == uid else { return }
         let ids = entries.map(\.id)
@@ -477,6 +479,9 @@ struct TrackListScreen: View {
             .onReceive(NotificationCenter.default.publisher(for: Uploads.likesChanged)) { _ in
                 if kind == .likes { Task { await model.load(kind, force: true) } }
             }
+            .onReceive(NotificationCenter.default.publisher(for: Session.restoredLikesSynced)) { _ in
+                if kind == .likes || isArtistCollection { Task { await model.load(kind, force: true) } }
+            }
             .onReceive(NotificationCenter.default.publisher(for: MetadataOverrides.changed)) { note in
                 guard let target = note.object as? ReplacementTarget else { return }
                 if kind == .likes { model.metadataChanged(target) }
@@ -515,6 +520,11 @@ struct TrackListScreen: View {
             .onReceive(session.$disliked.removeDuplicates()) { ids in
                 if kind == .disliked, dislikedIDs != ids { dislikedIDs = ids }
             }
+    }
+
+    private var isArtistCollection: Bool {
+        if case .artistFamiliar(_, _, false) = kind { return true }
+        return false
     }
 
     private var downloadPanelVisibility: AnyPublisher<Bool, Never> {

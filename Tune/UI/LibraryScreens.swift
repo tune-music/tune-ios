@@ -893,6 +893,7 @@ struct SettingsScreen: View {
             Settings.offlineMode = $0
             Player.shared.connectivityChanged()
             Ynison.shared.updateConnection()
+            if !$0 { session.syncRestoredLikes() }
         }
         .onChange(of: wifiOnly) { value in
             Settings.wifiOnly = value
