@@ -7,6 +7,7 @@ struct DevicesScreen: View {
         List {
             Section {
                 Toggle("Синхронизация устройств", isOn: Binding(get: { sync.enabled }, set: sync.setEnabled))
+                    .tint(Theme.accentText)
             } footer: {
                 Text("Переносите очередь, текущий трек и позицию между устройствами одного аккаунта Яндекса.")
             }
