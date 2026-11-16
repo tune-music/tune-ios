@@ -270,7 +270,10 @@ struct TrackListScreen: View {
     @State private var downloadEntries: [Downloads.Entry] = []
     @State private var hasDownloadQueue = false
     @State private var hasDownloadPanel = false
-    @EnvironmentObject private var session: Session
+    private var session: Session { Session.shared }
+    @State private var accountID: String?
+    @State private var pageLiked = false
+    @State private var dislikedIDs = Set<String>()
     @Environment(\.dismiss) private var dismiss
     @Environment(\.navigate) private var navigate
     @State private var filter = ""
@@ -304,7 +307,7 @@ struct TrackListScreen: View {
         switch kind {
         case .downloads: return downloadEntries.map(\.track)
         // Трек пропадает из списка, как только с него сняли дизлайк.
-        case .disliked: return model.tracks.filter { session.disliked.contains($0.id) }
+        case .disliked: return model.tracks.filter { dislikedIDs.contains($0.id) }
         default: return model.tracks
         }
     }
@@ -367,7 +370,8 @@ struct TrackListScreen: View {
     }
 
     private var own: Bool {
-        playlist.map(session.isOwn) ?? false
+        guard let playlist, let accountID else { return false }
+        return playlist.owner == accountID
     }
 
     private var context: PlayContext {
@@ -430,8 +434,8 @@ struct TrackListScreen: View {
     /// Сердечко есть у альбома и чужого плейлиста: оно добавляет их в коллекцию.
     private var liked: Bool? {
         switch kind {
-        case .album(let id): return session.likedAlbums.contains(id)
-        case .playlist(let playlist): return own ? nil : session.isLiked(playlist)
+        case .album: return pageLiked
+        case .playlist: return own ? nil : pageLiked
         default: return nil
         }
     }
@@ -445,7 +449,7 @@ struct TrackListScreen: View {
     }
 
     var body: some View {
-        page
+        observedPage
             .onReceive(Session.shared.$localLikedTracks.removeDuplicates()) {
                 if kind == .likes { model.updateLocalLikes($0) }
             }
@@ -485,6 +489,25 @@ struct TrackListScreen: View {
             }
     }
 
+    private var observedPage: some View {
+        page
+            .onReceive(session.$profile.map { $0?.uid }.removeDuplicates()) { uid in
+                if playlist != nil, accountID != uid { accountID = uid }
+            }
+            .onReceive(session.$likedAlbums.removeDuplicates()) { ids in
+                if case .album(let id) = kind, pageLiked != ids.contains(id) { pageLiked = ids.contains(id) }
+            }
+            .onReceive(session.$likedPlaylists.removeDuplicates()) { lists in
+                if let playlist {
+                    let liked = lists.contains { $0.id == playlist.id }
+                    if pageLiked != liked { pageLiked = liked }
+                }
+            }
+            .onReceive(session.$disliked.removeDuplicates()) { ids in
+                if kind == .disliked, dislikedIDs != ids { dislikedIDs = ids }
+            }
+    }
+
     private var downloadPanelVisibility: AnyPublisher<Bool, Never> {
         downloads.$queue.combineLatest(downloads.$failed)
             .map { !$0.0.isEmpty || !$0.1.isEmpty }
@@ -514,34 +537,7 @@ struct TrackListScreen: View {
                 } else if tracks.isEmpty {
                     empty
                 }
-                if kind == .likes {
-                    ForEach(rows) { row in
-                        listTrack(row, tracks: tracks)
-                    }
-                } else {
-                ForEach(rows) { row in
-                    let index = row.index
-                    let track = row.track
-                    if kind == .history, plainOrder, let day = model.days[track.id] {
-                        Text(day)
-                            .font(.scaled(size: 20, weight: .bold))
-                            .foregroundStyle(Theme.text)
-                            .listRowBackground(Color.clear)
-                            .listRowSeparator(.hidden)
-                            .listRowInsets(EdgeInsets(top: index == 0 ? 4 : 20, leading: 16, bottom: 6, trailing: 16))
-                    }
-                    if let disk = diskStart(index) {
-                        Text("Диск \(disk)")
-                            .font(.scaled(size: 15, weight: .semibold))
-                            .foregroundStyle(Theme.dim)
-                            .listRowBackground(Color.clear)
-                            .listRowSeparator(.hidden)
-                            .listRowInsets(EdgeInsets(top: 16, leading: 16, bottom: 4, trailing: 16))
-                    }
-                    listTrack(row, tracks: tracks).id(row.id)
-                }
-                .onMove(perform: reordering ? move : nil)
-                }
+                trackRows(rows, tracks: tracks)
                 if kind == .likes, !model.tracks.isEmpty {
                     likesFooter
                 }
@@ -669,6 +665,36 @@ struct TrackListScreen: View {
         let id: String
         let index: Int
         let track: Track
+    }
+
+    @ViewBuilder
+    private func trackRows(_ rows: TrackSlots, tracks: [Track]) -> some View {
+        if kind == .likes {
+            ForEach(rows) { row in
+                listTrack(row, tracks: tracks)
+            }
+        } else {
+            ForEach(rows) { row in
+                if kind == .history, plainOrder, let day = model.days[row.track.id] {
+                    Text(day)
+                        .font(.scaled(size: 20, weight: .bold))
+                        .foregroundStyle(Theme.text)
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                        .listRowInsets(EdgeInsets(top: row.index == 0 ? 4 : 20, leading: 16, bottom: 6, trailing: 16))
+                }
+                if let disk = diskStart(row.index) {
+                    Text("Диск \(disk)")
+                        .font(.scaled(size: 15, weight: .semibold))
+                        .foregroundStyle(Theme.dim)
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                        .listRowInsets(EdgeInsets(top: 16, leading: 16, bottom: 4, trailing: 16))
+                }
+                listTrack(row, tracks: tracks).id(row.id)
+            }
+            .onMove(perform: reordering ? move : nil)
+        }
     }
 
     private struct TrackSlots: RandomAccessCollection {

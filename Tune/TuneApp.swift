@@ -211,7 +211,9 @@ struct RootView: View {
             if hasTrack != visible { hasTrack = visible }
         }
         .onReceive(Connectivity.shared.$online.dropFirst()) { online in
-            if online, !Settings.offlineMode, session.offline { Task { await session.refresh() } }
+            guard online, !Settings.offlineMode else { return }
+            Uploads.shared.resume()
+            if session.offline { Task { await session.refresh() } }
         }
         .alert("Tune", isPresented: errorShown) {
             Button("Понятно", role: .cancel) {}

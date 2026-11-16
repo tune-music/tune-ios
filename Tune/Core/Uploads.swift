@@ -75,12 +75,16 @@ final class Uploads {
                     var liked = Set<String>()
                     for id in ready {
                         guard Session.shared.profile?.uid == uid else { return }
-                        try await API.shared.setLiked(uid: uid, track: id, liked: true)
-                        liked.insert(id)
-                        pending[uid]?.removeAll { $0 == id }
-                        save()
+                        do {
+                            try await API.shared.setLiked(uid: uid, track: id, liked: true)
+                            liked.insert(id)
+                            pending[uid]?.removeAll { $0 == id }
+                            save()
+                        } catch {
+                            if Task.isCancelled { return }
+                        }
                     }
-                    if !liked.isEmpty {
+                    if !liked.isEmpty, Session.shared.profile?.uid == uid {
                         Session.shared.registerUploadedLikes(liked)
                         NotificationCenter.default.post(name: Self.likesChanged, object: nil)
                     }

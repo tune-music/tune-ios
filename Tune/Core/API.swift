@@ -122,7 +122,11 @@ final class API {
             guard let name = artist["name"].string else { return nil }
             return ArtistRef(id: artist["id"].idText ?? "", name: name)
         }
-        let album = value["albums"][0]
+        var album = value["albums"][0]
+        if let fields = album.dict, let albumID = album["id"].idText,
+           let patch = Uncensor.shared.patch(album: fields, id: albumID) {
+            album = JSON(patch)
+        }
         let cover = value["coverUri"].string ?? album["coverUri"].string
         let lyrics = value["lyricsInfo"]
         return Track(
@@ -166,7 +170,7 @@ final class API {
             value = JSON(patched)
         }
         guard let id = value["id"].idText, let title = value["title"].string else { return nil }
-        var subtitle = value["artists"].array.compactMap { $0["name"].string }.joined(separator: ", ")
+        var subtitle = value["artists"].array.map(Uncensor.shared.patch(artist:)).compactMap { $0["name"].string }.joined(separator: ", ")
         if let year = value["year"].int {
             subtitle = subtitle.isEmpty ? "\(year)" : "\(subtitle) · \(year)"
         }
@@ -176,10 +180,11 @@ final class API {
 
     /// Новинка с главной: альбом и исполнители лежат рядом.
     private static func releaseCard(_ value: JSON) -> Card? {
-        let album = value["album"]
-        guard let id = album["id"].idText, let title = album["title"].string else { return nil }
-        let names = value["artists"].array.compactMap { $0["name"].string }.joined(separator: ", ")
-        return Card(id: id, title: title, subtitle: names, cover: album["coverUri"].string ?? album["cover"]["uri"].string ?? value["cover"]["uri"].string)
+        guard var fields = value["album"].dict else { return nil }
+        if fields["artists"] == nil { fields["artists"] = value["artists"].array.compactMap(\.dict) }
+        guard var card = albumCard(JSON(fields)) else { return nil }
+        if card.cover == nil { card.cover = value["cover"]["uri"].string }
+        return card
     }
 
     /// Карточка полки главной: плейлист, исполнитель, альбом или волна.
