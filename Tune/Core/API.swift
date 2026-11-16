@@ -118,7 +118,7 @@ final class API {
             uncensored = patched.file
         }
         guard let id = value["id"].idText, let title = value["title"].string else { return nil }
-        let artists = value["artists"].array.compactMap { artist -> ArtistRef? in
+        let artists = value["artists"].array.map(Uncensor.shared.patch(artist:)).compactMap { artist -> ArtistRef? in
             guard let name = artist["name"].string else { return nil }
             return ArtistRef(id: artist["id"].idText ?? "", name: name)
         }
@@ -145,7 +145,7 @@ final class API {
             // Точки перехода есть только у музыки: у подкастов и книг их нет.
             fade: value["type"].string == "music" ? FadePoints.parse(value["fade"]) : nil,
             mixFade: value["type"].string == "music" ? FadePoints.parse(value["mixFade"]) : nil,
-            ugc: value["trackSource"].string == "UGC",
+            ugc: value["trackSource"].string.map { $0 == "UGC" },
             yandexAvailable: source["available"].bool)
     }
 
@@ -231,7 +231,8 @@ final class API {
         return items.filter { seen.insert($0.id).inserted }
     }
 
-    private static func artistCard(_ value: JSON) -> Card? {
+    private static func artistCard(_ source: JSON) -> Card? {
+        let value = Uncensor.shared.patch(artist: source)
         guard let id = value["id"].idText, let name = value["name"].string else { return nil }
         let cover = value["cover"]["uri"].string ?? value["ogImage"].string
         return Card(id: id, title: name, subtitle: "Исполнитель", cover: cover)
@@ -283,7 +284,8 @@ final class API {
 
     func setLiked(uid: String, track: String, liked: Bool) async throws {
         if Demo.on { return }
-        let path = liked ? "users/\(uid)/likes/tracks/add?track-id=\(track)" : "users/\(uid)/likes/tracks/\(track)/remove"
+        let encoded = Self.encode(track)
+        let path = liked ? "users/\(uid)/likes/tracks/add?track-id=\(encoded)" : "users/\(uid)/likes/tracks/\(encoded)/remove"
         let value = result(try await post(path))
         if value["revision"].exists { return }
         // Успешное изменение иногда возвращается без номера ревизии.
@@ -295,7 +297,7 @@ final class API {
     func tracks(ids: [String]) async throws -> [Track] {
         guard !ids.isEmpty else { return [] }
         if Demo.on { return Demo.data.tracks.filter { ids.contains($0.id) } }
-        let value = try await post("tracks", form: "track-ids=" + ids.joined(separator: "%2C"))
+        let value = try await post("tracks", form: "track-ids=" + ids.map(Self.encode).joined(separator: "%2C"))
         var found: [String: Track] = [:]
         for track in value["result"].array.compactMap(Self.parseTrack) where found[track.id] == nil {
             found[track.id] = track
@@ -353,7 +355,7 @@ final class API {
             page.versions = Array(all.filter { $0.id != card.id }.prefix(2))
             return page
         }
-        let value: JSON
+        var value: JSON
         do {
             let remote = result(try await get("albums/\(id)/with-tracks"))
             if remote["error"].exists || remote["id"].idText == nil {
@@ -388,12 +390,13 @@ final class API {
                 }
             }
             let rest = disks.flatMap { $0 }.filter { !listed.contains($0.id) }
-            if !rest.isEmpty { rebuilt.append(rest) }
+            if !rest.isEmpty, Uncensor.shared.customDisks(album: id) == nil { rebuilt.append(rest) }
             disks = rebuilt
         }
         guard let card = Self.albumCard(value) else { throw APIError.server("Яндекс не прислал альбом") }
         var page = AlbumPage(card: card, year: value["year"].int, tracks: disks.flatMap { $0 })
-        let artist = value["artists"][0]
+        if let fields = value.dict, let patch = Uncensor.shared.patch(album: fields, id: id) { value = JSON(patch) }
+        let artist = Uncensor.shared.patch(artist: value["artists"][0])
         if let artistId = artist["id"].idText, let name = artist["name"].string {
             page.artist = ArtistRef(id: artistId, name: name)
         }
@@ -407,8 +410,17 @@ final class API {
 
     func albums(ids: [String]) async throws -> [Card] {
         guard !ids.isEmpty else { return [] }
-        let value = try await post("albums", form: "album-ids=" + ids.joined(separator: "%2C"))
-        return value["result"].array.compactMap(Self.albumCard)
+        do {
+            let value = try await post("albums", form: "album-ids=" + ids.map(Self.encode).joined(separator: "%2C"))
+            let cards = value["result"].array.compactMap(Self.albumCard)
+            let byID = Dictionary(cards.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            return ids.compactMap { byID[$0] ?? Uncensor.shared.catalogAlbum($0).flatMap(Self.albumCard) }
+        } catch {
+            try Task.checkCancellation()
+            let restored = ids.compactMap(Uncensor.shared.catalogAlbum).compactMap(Self.albumCard)
+            if restored.isEmpty { throw error }
+            return restored
+        }
     }
 
     func artist(id: String, includeExtras: Bool = false) async throws -> ArtistPage {
@@ -423,25 +435,26 @@ final class API {
             return page
         }
         let value = result(try await get("artists/\(id)/brief-info"))
-        let artist = value["artist"]
+        let artist = Uncensor.shared.patch(artist: value["artist"])
         guard let name = artist["name"].string, artist["error"].string != "not-found" else { throw APIError.server("Исполнитель не найден") }
         async let clips = includeExtras ? artistClips(id, legacy: value["videos"]) : []
         async let concerts = includeExtras ? artistConcerts(id) : []
         var popular = value["popularTracks"].array.compactMap(Self.parseTrack)
         let releases = value["albums"].array
         var albums = releases.filter { $0["type"].string != "single" }.compactMap(Self.albumCard)
-        let singles = releases.filter { $0["type"].string == "single" }.compactMap(Self.albumCard)
+        var singles = releases.filter { $0["type"].string == "single" }.compactMap(Self.albumCard)
         let playlists = value["playlists"].array.compactMap { item -> Playlist? in
             guard let owner = item["uid"].idText ?? item["owner"]["uid"].idText else { return nil }
             return Self.parsePlaylist(item, owner: owner)
         }
         // Добавленные в профиль треки — в начало популярных, альбомы — в начало альбомов.
         let inserts = Uncensor.shared.inserts(artist: id)
-        if let extra = try? await tracks(ids: inserts.tracks) {
-            popular.insert(contentsOf: extra.filter { track in !popular.contains { $0.id == track.id } }, at: 0)
-        }
+        popular = await mergeArtistTracks(popular, restoredIDs: inserts.tracks)
         if let extra = try? await self.albums(ids: inserts.albums) {
-            albums.insert(contentsOf: extra.filter { card in !albums.contains { $0.id == card.id } }, at: 0)
+            let known = Set((albums + singles).map(\.id))
+            let added = extra.filter { !known.contains($0.id) }
+            albums.insert(contentsOf: added.filter { $0.kind != "single" }, at: 0)
+            singles.insert(contentsOf: added.filter { $0.kind == "single" }, at: 0)
         }
         var page = ArtistPage(
             id: id, name: name, cover: artist["cover"]["uri"].string ?? artist["ogImage"].string, popular: popular, albums: albums,
@@ -564,8 +577,35 @@ final class API {
 
     func artistTracks(id: String) async throws -> [Track] {
         if Demo.on { return Demo.data.tracks }
-        let value = result(try await get("artists/\(id)/tracks", [("page-size", "200")]))
-        return value["tracks"].array.compactMap(Self.parseTrack)
+        let restoredIDs = Uncensor.shared.inserts(artist: id).tracks
+        do {
+            let value = result(try await get("artists/\(id)/tracks", [("page-size", "200")]))
+            return await mergeArtistTracks(value["tracks"].array.compactMap(Self.parseTrack), restoredIDs: restoredIDs)
+        } catch {
+            try Task.checkCancellation()
+            let restored = restoredIDs.compactMap(Uncensor.shared.catalogTrack).compactMap(Self.parseTrack)
+            if restored.isEmpty { throw error }
+            return restored
+        }
+    }
+
+    private func mergeArtistTracks(_ remote: [Track], restoredIDs: [String]) async -> [Track] {
+        let known = Set(remote.map(\.id))
+        let missing = restoredIDs.filter { !known.contains($0) }
+        let local = missing.compactMap(Uncensor.shared.catalogTrack).compactMap(Self.parseTrack)
+        let localIDs = Set(local.map(\.id))
+        let unresolved = missing.filter { !localIDs.contains($0) }
+        let extra = (try? await tracks(ids: unresolved)) ?? []
+        return local + extra + remote
+    }
+
+    func familiarTracks(artist id: String, wave: Bool) async throws -> [Track] {
+        if Demo.on { return Array(Demo.data.tracks.prefix(wave ? 4 : 6)) }
+        let kind = wave ? "wave" : "collection"
+        let query = [("waveTracksLimit", wave ? "50" : "0"),
+                     ("collectionTracksLimit", wave ? "0" : "50"), ("collectionAlbumsLimit", "0")]
+        let response = result(try await get("artists/\(id)/familiar-you", query))
+        return response[kind]["tracks"].array.compactMap(Self.parseTrack)
     }
 
     /// Подсказки: как Яндекс предлагает закончить запрос.
@@ -797,6 +837,70 @@ final class API {
 
     func renamePlaylist(uid: String, kind: String, title: String) async throws {
         _ = try await post("users/\(uid)/playlists/\(kind)/name?value=\(Self.encode(title))")
+    }
+
+    func uploadTrack(_ file: URL, to playlist: Playlist) async throws -> String {
+        let hasAccess = file.startAccessingSecurityScopedResource()
+        defer { if hasAccess { file.stopAccessingSecurityScopedResource() } }
+        let name = file.lastPathComponent
+        let query = [("uid", playlist.owner), ("playlist-id", "\(playlist.owner):\(playlist.kind)"), ("path", name)]
+        let value = try await send("POST", "loader/upload-url", query: query, body: Data(),
+                                   type: "application/x-www-form-urlencoded")
+        if value["result"].string == "TOO_MANY_FILES" {
+            throw APIError.server("Превышен лимит по количеству загруженных треков")
+        }
+        let place = value["post-target"].string == nil ? result(value) : value
+        guard let raw = place["post-target"].string, let url = URL(string: raw),
+              url.scheme == "https", url.host != nil, url.user == nil, url.password == nil,
+              let id = place["ugc-track-id"].idText, !id.isEmpty else {
+            throw APIError.server("Яндекс не дал ссылку для загрузки")
+        }
+        let boundary = "Tune-" + UUID().uuidString
+        let temporary = FileManager.default.temporaryDirectory.appendingPathComponent(boundary)
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        try Self.writeUploadBody(file: file, to: temporary, boundary: boundary)
+        var request = URLRequest(url: url, timeoutInterval: 600)
+        request.httpMethod = "POST"
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        // Signed upload URL. The account token stays with the Music API.
+        let (_, response) = try await URLSession.shared.upload(for: request, fromFile: temporary)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if status == 413 { throw APIError.server("Аудиофайл слишком большой") }
+        guard (200..<300).contains(status) else { throw APIError.server("Ошибка загрузки аудиофайла (\(status))") }
+        return id
+    }
+
+    private static func writeUploadBody(file: URL, to destination: URL, boundary: String) throws {
+        let mime: String
+        switch file.pathExtension.lowercased() {
+        case "mp3": mime = "audio/mpeg"
+        case "m4a", "aac": mime = "audio/mp4"
+        case "flac": mime = "audio/flac"
+        case "ogg", "opus": mime = "audio/ogg"
+        case "wav": mime = "audio/wav"
+        default: mime = "application/octet-stream"
+        }
+        let name = file.lastPathComponent.replacingOccurrences(of: "\r", with: "").replacingOccurrences(of: "\n", with: "")
+            .replacingOccurrences(of: "\"", with: "%22").replacingOccurrences(of: "\\", with: "%5C")
+        let header = "--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"\(name)\"\r\nContent-Type: \(mime)\r\n\r\n"
+        try Data(header.utf8).write(to: destination)
+        let input = try FileHandle(forReadingFrom: file)
+        defer { try? input.close() }
+        let output = try FileHandle(forWritingTo: destination)
+        defer { try? output.close() }
+        try output.seekToEnd()
+        while let chunk = try input.read(upToCount: 256 * 1024), !chunk.isEmpty {
+            try Task.checkCancellation()
+            try output.write(contentsOf: chunk)
+        }
+        try output.write(contentsOf: Data("\r\n--\(boundary)--\r\n".utf8))
+    }
+
+    func readyUploads(_ ids: [String]) async throws -> Set<String> {
+        guard !ids.isEmpty else { return [] }
+        let body = "track-ids=" + ids.map(Self.encode).joined(separator: "%2C") + "&withProgress=true"
+        let value = result(try await post("tracks", form: body))
+        return Set(value.array.filter { $0["state"].string == "playable" }.compactMap { $0["id"].idText })
     }
 
     func uploadPlaylistCover(_ playlist: Playlist, jpeg: Data) async throws -> String {

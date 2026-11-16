@@ -119,6 +119,8 @@ enum Route: Hashable {
     case album(String)
     case artist(String, String)
     case artistTracks(String, String)
+    case artistFamiliar(String, String, Bool)
+    case replacement(ReplacementTarget)
     case block(HomeBlock)
     case likedAlbums
     case likedArtists
@@ -173,6 +175,7 @@ struct RootView: View {
     @Environment(\.scenePhase) private var phase
     @Environment(\.dynamicTypeSize) private var typeSize
     @State private var hasTrack = Player.shared.now.id != nil
+    @AppStorage("minimizeMiniPlayer") private var minimizeMiniPlayer = true
 
     var body: some View {
         Group {
@@ -239,7 +242,7 @@ struct RootView: View {
     @ViewBuilder private var tabsWithPlayer: some View {
         if #available(iOS 26.1, *) {
             tabPages
-                .tabBarMinimizeBehavior(.onScrollDown)
+                .tabBarMinimizeBehavior(minimizeMiniPlayer ? .onScrollDown : .never)
                 .tabViewBottomAccessory(isEnabled: hasTrack) { TabMiniPlayer() }
         } else {
             tabPages
@@ -323,6 +326,8 @@ struct TabRoot<Content: View>: View {
         case .playlist(let playlist): TrackListScreen(kind: .playlist(playlist))
         case .album(let id): TrackListScreen(kind: .album(id))
         case .artistTracks(let id, let name): TrackListScreen(kind: .artist(id, name))
+        case .artistFamiliar(let id, let name, let wave): TrackListScreen(kind: .artistFamiliar(id, name, wave))
+        case .replacement(let target): ReplacementScreen(target: target)
         case .artist(let id, let name): ArtistScreen(id: id, name: name)
         case .block(let block): ItemGridScreen(title: block.title, items: block.items)
         case .likedAlbums: CardGridScreen(kind: .albums)

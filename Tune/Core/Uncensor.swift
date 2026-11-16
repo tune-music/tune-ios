@@ -19,6 +19,7 @@ final class Uncensor {
         var albums: [String: [String: Any]] = [:]
         var inserts: [String: (tracks: [String], albums: [String])] = [:]
         var trackAlbums: [String: [String: Any]] = [:]
+        var byArtist: [String: (tracks: [String], albums: [String])] = [:]
     }
 
     private let lock = NSLock()
@@ -94,6 +95,8 @@ final class Uncensor {
 
     /// Ссылки на версию трека без цензуры: сначала с зеркала, которое отдало список.
     func files(for id: String) -> [URL] {
+        if let local = localAudio(id) { return [local] }
+        if MetadataOverrides.shared.value(.track, id)?.usePlugin == false { return [] }
         guard let raw = current?.files[id] else { return [] }
         let full = raw.hasPrefix("http://") || raw.hasPrefix("https://") ? raw : "https://" + raw
         lock.lock()
@@ -117,17 +120,25 @@ final class Uncensor {
     }
 
     func has(_ id: String) -> Bool {
-        current?.files[id] != nil
+        localAudio(id) != nil || (MetadataOverrides.shared.value(.track, id)?.usePlugin != false && current?.files[id] != nil)
+    }
+
+    func localAudio(_ id: String) -> URL? {
+        guard let name = MetadataOverrides.shared.value(.track, id)?.audio,
+              let url = MetadataOverrides.file(name), FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return url
     }
 
     /// Трек из ответа Яндекса с подменой; nil — подменять нечего.
     func patch(track: [String: Any], id: String) -> (fields: [String: Any], file: Bool)? {
-        guard let list = current else { return nil }
-        let spoof = list.tracks[id]
-        let file = list.files[id] != nil
-        if spoof == nil && !file { return nil }
+        let user = MetadataOverrides.shared.value(.track, id)
+        let list = user?.usePlugin == false ? nil : current
+        let spoof = list?.tracks[id]
+        let file = user?.audio != nil ? localAudio(id) != nil : list?.files[id] != nil
+        if spoof == nil && !file && user == nil { return nil }
         var out = track
         if let spoof { Self.apply(&out, spoof) }
+        if let user { Self.applyUser(user, to: &out) }
         if file {
             // Удалённый или закрытый в Яндексе трек с файлом снова играет.
             out["available"] = true
@@ -137,14 +148,51 @@ final class Uncensor {
     }
 
     func patch(album: [String: Any], id: String) -> [String: Any]? {
-        guard let spoof = current?.albums[id] else { return nil }
+        let user = MetadataOverrides.shared.value(.album, id)
+        let spoof = user?.usePlugin == false ? nil : current?.albums[id]
+        guard spoof != nil || user != nil else { return nil }
         var out = album
-        Self.apply(&out, spoof)
+        if let spoof { Self.apply(&out, spoof) }
+        if let user { Self.applyUser(user, to: &out) }
         return out
+    }
+
+    func patch(artist: JSON) -> JSON {
+        guard let id = artist["id"].idText, let user = MetadataOverrides.shared.value(.artist, id),
+              var fields = artist.dict else { return artist }
+        if !user.title.isEmpty { fields["name"] = user.title }
+        if let cover = user.coverURI {
+            fields["ogImage"] = cover
+            fields["cover"] = ["uri": cover]
+        }
+        return JSON(fields)
+    }
+
+    private static func applyUser(_ user: MetadataOverride, to fields: inout [String: Any]) {
+        if !user.title.isEmpty { fields["title"] = user.title }
+        if let cover = user.coverURI { fields["coverUri"] = cover }
+        let names = user.artists.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        if !names.isEmpty {
+            let old = JSON(fields["artists"]).array
+            fields["artists"] = names.enumerated().map { index, name -> [String: Any] in
+                var artist: [String: Any] = ["name": name]
+                if old.indices.contains(index), let id = old[index]["id"].idText { artist["id"] = id }
+                return artist
+            }
+        }
+    }
+
+    func customDisks(album id: String) -> [[String]]? {
+        guard let user = MetadataOverrides.shared.value(.album, id), !user.tracks.isEmpty else { return nil }
+        let disks = user.tracks.components(separatedBy: "\n\n").map { MetadataOverride.ids($0, kind: "track") }
+            .filter { !$0.isEmpty }
+        return disks.isEmpty ? nil : disks
     }
 
     /// Треки альбома по дискам, как в списке: туда возвращаются удалённые Яндексом.
     func volumes(album id: String) -> [[String]]? {
+        if let disks = customDisks(album: id) { return disks }
+        if MetadataOverrides.shared.value(.album, id)?.usePlugin == false { return nil }
         guard let volumes = current?.albums[id]?["volumes"] as? [Any] else { return nil }
         let disks = volumes.compactMap { disk in (disk as? [Any])?.compactMap { Self.id(of: $0) } }
         return disks.contains { !$0.isEmpty } ? disks : nil
@@ -152,7 +200,16 @@ final class Uncensor {
 
     /// Треки и альбомы, добавленные в профиль исполнителя.
     func inserts(artist id: String) -> (tracks: [String], albums: [String]) {
-        current?.inserts[id] ?? ([], [])
+        let user = MetadataOverrides.shared.value(.artist, id)
+        let list = user?.usePlugin == false ? nil : current
+        let extra = list?.inserts[id] ?? ([], [])
+        let catalog = list?.byArtist[id] ?? ([], [])
+        func unique(_ ids: [String]) -> [String] {
+            var seen = Set<String>()
+            return ids.filter { seen.insert($0).inserted }
+        }
+        return (unique(MetadataOverride.ids(user?.tracks ?? "", kind: "track") + extra.tracks + catalog.tracks),
+                unique(MetadataOverride.ids(user?.albums ?? "", kind: "album") + extra.albums + catalog.albums))
     }
 
     func search(_ query: String, tracks: Bool, albums: Bool) -> (tracks: [JSON], albums: [JSON]) {
@@ -187,7 +244,7 @@ final class Uncensor {
     }
 
     func catalogTrack(_ id: String) -> JSON? {
-        guard let list = current, list.files[id] != nil else { return nil }
+        guard let list = current, has(id) else { return nil }
         let track = Self.catalogTrack(id, in: list)
         return track["title"].string?.isEmpty == false ? track : nil
     }
@@ -301,6 +358,17 @@ final class Uncensor {
                     }
                 }
             }
+        }
+        func artists(_ fields: [String: Any]) -> [String] {
+            JSON(fields)["artists"].array.compactMap { $0["id"].idText }
+        }
+        for (id, album) in list.albums.sorted(by: { $0.key < $1.key }) {
+            for artist in artists(album) { list.byArtist[artist, default: ([], [])].albums.append(id) }
+        }
+        for id in list.files.keys.sorted() {
+            let track = list.tracks[id] ?? [:]
+            let owners = Set(artists(track) + (list.trackAlbums[id].map(artists) ?? []))
+            for artist in owners { list.byArtist[artist, default: ([], [])].tracks.append(id) }
         }
         return list
     }

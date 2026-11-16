@@ -8,6 +8,7 @@ struct TrackSource {
     /// Файл надо сначала скачать: он зашифрован или сервер отдаёт его не как аудио.
     var needsFile: Bool
     var codec = "mp3"
+    var version: TrackFiles.Version = .yandex
 
     /// Тип содержимого для плеера: сервер Яндекса отдаёт поток как application/octet-stream,
     /// и без подсказки AVPlayer его не играет.
@@ -22,7 +23,7 @@ struct TrackSource {
 }
 
 enum TrackFiles {
-    enum Version: String, CaseIterable {
+    enum Version: String, CaseIterable, Codable {
         case yandex, uncensored
 
         var title: String {
@@ -42,7 +43,7 @@ enum TrackFiles {
         if version != .yandex {
             let uncensored = Uncensor.shared.files(for: track.id)
             if !uncensored.isEmpty {
-                return TrackSource(urls: uncensored, key: nil, needsFile: true)
+                return TrackSource(urls: uncensored, key: nil, needsFile: true, version: .uncensored)
             }
             if version == .uncensored { throw TuneError("Версия без цензуры недоступна") }
         }
@@ -64,6 +65,7 @@ enum TrackFiles {
     }
 
     static func versionFile(for track: Track, version: Version, quality: String) async throws -> URL {
+        if version == .uncensored, let local = Uncensor.shared.localAudio(track.id) { return local }
         let id = version.cacheID(track.id)
         if let file = existing(id: id, in: Storage.stream) { return file }
         if Settings.offlineMode { throw TuneError("Для этой версии нужно подключение к интернету") }
@@ -76,6 +78,17 @@ enum TrackFiles {
         var last: Error = TuneError("Не удалось получить файл трека")
         for url in source.urls {
             do {
+                if url.isFileURL {
+                    try Task.checkCancellation()
+                    let temporary = directory.appendingPathComponent(UUID().uuidString)
+                    defer { try? FileManager.default.removeItem(at: temporary) }
+                    try FileManager.default.copyItem(at: url, to: temporary)
+                    let target = directory.appendingPathComponent("\(id).\(url.pathExtension)")
+                    remove(id: id, in: directory)
+                    try FileManager.default.moveItem(at: temporary, to: target)
+                    progress(1)
+                    return target
+                }
                 var request = URLRequest(url: url)
                 request.timeoutInterval = 60
                 // Скачивание «насовсем» идёт через фоновую сессию: оно продолжается и при
@@ -130,7 +143,7 @@ enum TrackFiles {
 
     /// Уже скачанный файл трека в папке.
     static func existing(id: String, in directory: URL) -> URL? {
-        for ext in ["mp3", "m4a", "flac", "aac"] {
+        for ext in ["mp3", "m4a", "flac", "aac", "wav", "aiff", "caf", "mp4"] {
             let url = directory.appendingPathComponent("\(id).\(ext)")
             if FileManager.default.fileExists(atPath: url.path) { return url }
         }

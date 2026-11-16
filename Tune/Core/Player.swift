@@ -111,7 +111,8 @@ final class Player: NSObject, ObservableObject {
     /// Таймер сна: когда музыка остановится сама.
     @Published private(set) var sleepAt: Date?
     @Published private(set) var sleepAfterTrack = false
-    @Published private(set) var selectedVersion: TrackFiles.Version?
+    private var selectedVersion: TrackFiles.Version?
+    @Published private(set) var audibleVersion: TrackFiles.Version?
     @Published private(set) var sound = SoundSettings.read()
     private let audioEffects = AudioEffects()
     private var effectsTask: Task<Void, Never>?
@@ -167,7 +168,7 @@ final class Player: NSObject, ObservableObject {
     /// Растёт с каждой сменой трека: ответ на устаревший запрос отбрасывается.
     private var generation = 0
     private var loadTask: Task<Void, Never>?
-    private var preloaded: (id: String, item: AVPlayerItem)?
+    private var preloaded: (id: String, item: AVPlayerItem, version: TrackFiles.Version?)?
     private var preloadTask: Task<Void, Never>?
     private struct NextTrack {
         let track: Track
@@ -215,8 +216,8 @@ final class Player: NSObject, ObservableObject {
     func play(_ tracks: [Track], at start: Int = 0, context: PlayContext, shuffled: Bool = false) {
         let downloads = Downloads.shared
         func playable(_ track: Track) -> Bool {
-            if Connectivity.shared.offline { return downloads.has(track.id) }
-            return !track.unavailable || track.uncensored || downloads.has(track.id)
+            if Connectivity.shared.offline { return downloads.has(track.id) || Uncensor.shared.localAudio(track.id) != nil }
+            return !track.unavailable || track.uncensored || downloads.has(track.id) || Uncensor.shared.has(track.id)
         }
         guard !tracks.isEmpty else { return }
         if !shuffled {
@@ -407,6 +408,7 @@ final class Player: NSObject, ObservableObject {
         generation += 1
         let turn = generation
         let track = queue[target]
+        audibleVersion = nil
         pendingSeek = nil
         isPlaying = autoplay
         isBuffering = autoplay
@@ -425,6 +427,7 @@ final class Player: NSObject, ObservableObject {
         if version == nil, !viaFile, resume == nil, let ready = preloaded, ready.id == track.id,
            spare.currentItem === ready.item, !sound.needsAudioMix || ready.item.audioMix != nil {
             preloaded = nil
+            audibleVersion = ready.version
             fromPreload = true
             streamed = !((ready.item.asset as? AVURLAsset)?.url.isFileURL ?? true)
             let old = av
@@ -466,9 +469,10 @@ final class Player: NSObject, ObservableObject {
             }
             guard let self else { return }
             do {
-                let item = try await self.makeItem(track, viaFile: viaFile, version: version)
+                let (item, audible) = try await self.makeItem(track, viaFile: viaFile, version: version)
                 guard !Task.isCancelled, turn == self.generation else { return }
                 self.loadTask = nil
+                self.audibleVersion = audible
                 self.fromPreload = false
                 self.streamed = !viaFile && !((item.asset as? AVURLAsset)?.url.isFileURL ?? true)
                 self.attach(item, track: track, resume: resume)
@@ -482,16 +486,24 @@ final class Player: NSObject, ObservableObject {
 
     /// Скачанный файл, кэш или поток. Версия без цензуры и зашифрованный файл сначала
     /// скачиваются целиком.
-    private func makeItem(_ track: Track, viaFile: Bool = false, version: TrackFiles.Version? = nil) async throws -> AVPlayerItem {
+    private func makeItem(_ track: Track, viaFile: Bool = false, version: TrackFiles.Version? = nil) async throws -> (AVPlayerItem, TrackFiles.Version?) {
         if let version {
             let file = try await TrackFiles.versionFile(for: track, version: version, quality: Settings.streamQuality)
-            return await localAudioItem(file)
+            return (await localAudioItem(file), version)
+        }
+        if let file = Uncensor.shared.localAudio(track.id) {
+            return (await localAudioItem(file), .uncensored)
         }
         if let file = Downloads.shared.fileURL(for: track.id) {
-            return await localAudioItem(file)
+            return (await localAudioItem(file), Downloads.shared.version(for: track.id))
         }
-        if let file = TrackFiles.existing(id: track.id, in: Storage.stream) {
-            return await localAudioItem(file)
+        if Uncensor.shared.has(track.id),
+           let file = TrackFiles.existing(id: TrackFiles.Version.uncensored.cacheID(track.id), in: Storage.stream) {
+            return (await localAudioItem(file), .uncensored)
+        }
+        if (!Uncensor.shared.has(track.id) || Connectivity.shared.offline),
+           let file = TrackFiles.existing(id: track.id, in: Storage.stream) {
+            return (await localAudioItem(file), nil)
         }
         guard !Connectivity.shared.offline else { throw APIError.network("") }
         let source = try await TrackFiles.source(for: track, quality: Settings.streamQuality)
@@ -499,11 +511,12 @@ final class Player: NSObject, ObservableObject {
             let asset = AVURLAsset(url: url, options: ["AVURLAssetOutOfBandMIMETypeKey": source.mime])
             let item = AVPlayerItem(asset: asset)
             item.audioTimePitchAlgorithm = sound.pitchAlgorithm
-            return item
+            return (item, source.version)
         }
-        let file = try await TrackFiles.download(id: track.id, from: source, to: Storage.stream)
+        let cacheID = source.version == .uncensored ? source.version.cacheID(track.id) : track.id
+        let file = try await TrackFiles.download(id: cacheID, from: source, to: Storage.stream)
         Task.detached(priority: .utility) { TrackFiles.trimStreamCache() }
-        return await localAudioItem(file)
+        return (await localAudioItem(file), source.version)
     }
 
     private func localAudioItem(_ url: URL) async -> AVPlayerItem {
@@ -562,7 +575,7 @@ final class Player: NSObject, ObservableObject {
     }
 
     func selectVersion(_ version: TrackFiles.Version, for track: Track) {
-        guard current?.id == track.id, selectedVersion != version,
+        guard current?.id == track.id, audibleVersion != version,
               version != .yandex || track.yandexAvailable != false else { return }
         versionTask?.cancel()
         let turn = generation
@@ -782,14 +795,14 @@ final class Player: NSObject, ObservableObject {
         preloadTask = Task { [weak self] in
             guard let self else { return }
             if needsLocal, !Downloads.shared.has(track.id) { return }
-            guard let item = try? await self.makeItem(track), !Task.isCancelled, turn == self.generation else { return }
+            guard let (item, version) = try? await self.makeItem(track), !Task.isCancelled, turn == self.generation else { return }
             // Запасной проигрыватель ещё доигрывает затихающий трек: ждём конца перехода.
             await self.fadeTask?.value
             guard !Task.isCancelled, turn == self.generation, self.nextTrack()?.track.id == track.id else { return }
             self.spare.pause()
             self.spare.volume = 0
             self.spare.replaceCurrentItem(with: item)
-            self.preloaded = (track.id, item)
+            self.preloaded = (track.id, item, version)
         }
     }
 
@@ -1073,6 +1086,7 @@ final class Player: NSObject, ObservableObject {
         selectedVersion = nil
         versionTrackID = nil
         endCurrent(.skipped)
+        audibleVersion = nil
         generation += 1
         itemObservation = nil
         endFade()

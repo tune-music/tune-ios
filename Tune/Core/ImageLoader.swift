@@ -90,6 +90,11 @@ final class ImageLoader {
     }
 
     private func fetch(_ uri: String, _ side: Int) async -> UIImage? {
+        if uri.hasPrefix("tune-override:") {
+            let name = String(uri.dropFirst("tune-override:".count))
+            guard let url = MetadataOverrides.file(name), let data = try? Data(contentsOf: url) else { return nil }
+            return Self.decode(data, side: side)
+        }
         // Обложка скачанного трека лежит рядом с ним и видна без сети.
         if let data = try? Data(contentsOf: pinned(uri)), let image = Self.decode(data, side: side) { return image }
         let file = Storage.images.appendingPathComponent("\(Storage.hash(uri))-\(side)")

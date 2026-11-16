@@ -128,7 +128,6 @@ struct HomeScreen: View {
         }
         .overlay {
             Color.clear
-                .topScrim(Theme.background)
                 .opacity(scrolled ? 1 : 0)
                 .animation(.easeInOut(duration: 0.2), value: scrolled)
                 .allowsHitTesting(false)
@@ -384,7 +383,7 @@ private struct WaveHero: View {
 
     @EnvironmentObject private var player: Player
     @ObservedObject private var now = Player.shared.now
-    @State private var moving = false
+    @State private var lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
 
     private var active: Bool { now.from("radio", "user:onyourwave") }
 
@@ -403,7 +402,9 @@ private struct WaveHero: View {
     var body: some View {
         let playing = active && now.playing
         ZStack {
-            blob
+            WaveGlow(animated: playing && phase == .active && !reduceMotion && !lowPower)
+                .accessibilityHidden(true)
+                .allowsHitTesting(false)
             VStack(spacing: 18) {
                 if let other {
                     HStack(spacing: 7) {
@@ -453,45 +454,55 @@ private struct WaveHero: View {
         }
         .frame(maxWidth: .infinity)
         .frame(height: 300)
-        .onAppear { animate(playing && phase == .active && !reduceMotion) }
-        .onChange(of: playing && phase == .active && !reduceMotion) { animate($0) }
-        .onDisappear { moving = false }
-    }
-
-    /// Пятно движется, только пока волна играет: в покое оно не тратит заряд.
-    private func animate(_ on: Bool) {
-        if on && !ProcessInfo.processInfo.isLowPowerModeEnabled {
-            withAnimation(.easeInOut(duration: 3.2).repeatForever(autoreverses: true)) { moving = true }
-        } else {
-            withAnimation(.easeOut(duration: 0.8)) { moving = false }
+        .onReceive(NotificationCenter.default.publisher(for: .NSProcessInfoPowerStateDidChange)) { _ in
+            lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
         }
     }
+}
 
-    private var blob: some View {
-        ZStack {
-            Circle()
-                .fill(Color(red: 1, green: 0.78, blue: 0.18))
-                .frame(width: 240, height: 240)
-                .offset(x: moving ? -70 : 30, y: moving ? -10 : 40)
-            Circle()
-                .fill(Color(red: 1, green: 0.52, blue: 0.1))
-                .frame(width: 210, height: 210)
-                .offset(x: moving ? 70 : -40, y: moving ? 50 : -20)
-            Circle()
-                .fill(Color(red: 0.86, green: 0.34, blue: 0.08))
-                .frame(width: 180, height: 180)
-                .offset(x: moving ? 10 : -80, y: moving ? -70 : 60)
+private struct WaveGlow: View {
+    let animated: Bool
+    @State private var phase: Double = 0
+    @State private var started: Date?
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 60, paused: !animated)) { frame in
+            let time = phase + (started.map { max(0, frame.date.timeIntervalSince($0)) } ?? 0)
+            Canvas { context, size in
+                let radius = min(size.width * 0.53, 208)
+                let speeds = [0.69, 0.42, 0.53]
+                let colors = [
+                    Color(red: 1, green: 0.72, blue: 0.12),
+                    Color(red: 1, green: 0.43, blue: 0.08),
+                    Color(red: 0.91, green: 0.25, blue: 0.05)
+                ]
+                for index in colors.indices {
+                    let angle = time * speeds[index] + Double(index) * 2.1
+                    let center = CGPoint(x: size.width / 2 + CGFloat(cos(angle)) * radius * 0.4,
+                                         y: size.height * 0.44 + CGFloat(sin(angle * 1.2)) * radius * 0.24)
+                    let spread = radius * CGFloat(0.82 + 0.1 * sin(angle + 1))
+                    let gradient = Gradient(colors: [colors[index].opacity(0.58), colors[index].opacity(0.22), .clear])
+                    context.fill(Path(CGRect(origin: .zero, size: size)),
+                                 with: .radialGradient(gradient, center: center, startRadius: 0, endRadius: spread))
+                }
+            }
         }
-        .opacity(0.7)
-        .scaleEffect(moving ? 1.1 : 0.95)
-        .blur(radius: 56)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        // Сверху пятно не обрезается: когда страницу тянут вниз, свечение уходит под часы плавно.
+        .onAppear { setAnimated(animated) }
+        .onChange(of: animated) { setAnimated($0) }
+        .onDisappear { setAnimated(false) }
         .mask {
-            Rectangle().padding(.top, -500)
+            LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.22),
+                                   .init(color: .black, location: 0.72), .init(color: .clear, location: 1)],
+                           startPoint: .top, endPoint: .bottom)
         }
-        .overlay {
-            LinearGradient(colors: [.clear, .clear, Theme.background], startPoint: .top, endPoint: .bottom)
+    }
+
+    private func setAnimated(_ enabled: Bool) {
+        if enabled {
+            if started == nil { started = .now }
+        } else if let started {
+            phase += Date().timeIntervalSince(started)
+            self.started = nil
         }
     }
 }

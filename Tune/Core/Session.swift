@@ -21,6 +21,7 @@ final class Session: ObservableObject {
     @Published private(set) var token: String?
     @Published private(set) var profile: Profile?
     @Published private(set) var likedIds: [String] = []
+    @Published private(set) var localLikedTracks: [Track] = []
     @Published private(set) var playlists: [Playlist] = []
     @Published private(set) var likedPlaylists: [Playlist] = []
     @Published private(set) var likedAlbums: Set<String> = []
@@ -54,8 +55,13 @@ final class Session: ObservableObject {
         accounts = AccountStore.load()
         if let saved: Saved = Storage.load("session.json") {
             profile = saved.profile
-            likedIds = saved.liked
-            likedSet = Set(saved.liked)
+            if let uid = saved.profile?.uid {
+                localLikedTracks = Storage.load(Self.localLikesFile(uid)) ?? []
+            }
+            let localIDs = localLikedTracks.map(\.id)
+            let local = Set(localIDs)
+            likedIds = localIDs + saved.liked.filter { !local.contains($0) }
+            likedSet = Set(likedIds)
             playlists = saved.playlists
             likedPlaylists = saved.likedPlaylists ?? []
             likedAlbums = Set(saved.albums ?? [])
@@ -146,6 +152,7 @@ final class Session: ObservableObject {
         profile = nil
         likedSet = []
         likedIds = []
+        localLikedTracks = []
         pendingLikes.removeAll()
         likesRevision += 1
         playlists = []
@@ -206,6 +213,10 @@ final class Session: ObservableObject {
             remember(profile)
             offline = false
             let uid = profile.uid
+            if localLikedTracks.isEmpty, let stored: [Track] = Storage.load(Self.localLikesFile(uid)), !stored.isEmpty {
+                localLikedTracks = stored
+                for track in stored.reversed() { apply(track.id, true) }
+            }
             let revision = likesRevision
             async let likedTask = API.shared.likedIds(uid: uid)
             async let listsTask = API.shared.playlists(uid: uid)
@@ -223,6 +234,7 @@ final class Session: ObservableObject {
             if let ids = snapshot.4, Set(ids) != likedArtists { likedArtists = Set(ids) }
             if let ids = snapshot.5, Set(ids) != disliked { disliked = Set(ids) }
             save()
+            Uploads.shared.resume()
         } catch APIError.needLogin {
             if !Task.isCancelled, token == requestedToken { logout() }
         } catch {
@@ -233,9 +245,18 @@ final class Session: ObservableObject {
     // MARK: - Лайки и дизлайки
 
     func setLiked(_ ids: [String]) {
+        let local = localLikedTracks.map(\.id)
+        let localIDs = Set(local)
+        let ids = local + ids.filter { !localIDs.contains($0) }
         guard pendingLikes.isEmpty, ids != likedIds else { return }
         likedSet = Set(ids)
         likedIds = ids
+        save()
+    }
+
+    func registerUploadedLikes(_ ids: Set<String>) {
+        likesRevision += 1
+        for id in ids { apply(id, true) }
         save()
     }
 
@@ -252,6 +273,19 @@ final class Session: ObservableObject {
         if liked {
             disliked.remove(track.id)
             Downloads.shared.auto([track])
+        }
+        if localLikedTracks.contains(where: { $0.id == track.id }) || (track.uncensored && track.yandexAvailable == false) {
+            pendingLikes.remove(track.id)
+            var updated = localLikedTracks.filter { $0.id != track.id }
+            if liked {
+                var copy = track
+                copy.addedAt = .now
+                updated.insert(copy, at: 0)
+            }
+            localLikedTracks = updated
+            Storage.save(updated, Self.localLikesFile(uid))
+            save()
+            return
         }
         Task {
             defer {
@@ -270,6 +304,10 @@ final class Session: ObservableObject {
                 fail("Не удалось сохранить лайк")
             }
         }
+    }
+
+    private static func localLikesFile(_ uid: String) -> String {
+        "restored-likes-\(Storage.hash(uid)).json"
     }
 
     /// Возвращает true, если трек теперь с дизлайком.
@@ -491,8 +529,9 @@ final class Session: ObservableObject {
 
     private func save() {
         if Demo.on { return }
+        let local = Set(localLikedTracks.map(\.id))
         let saved = Saved(
-            profile: profile, liked: likedIds, playlists: playlists, likedPlaylists: likedPlaylists,
+            profile: profile, liked: likedIds.filter { !local.contains($0) }, playlists: playlists, likedPlaylists: likedPlaylists,
             albums: Array(likedAlbums), artists: Array(likedArtists), disliked: Array(disliked))
         Task.detached(priority: .utility) { Storage.save(saved, "session.json") }
     }

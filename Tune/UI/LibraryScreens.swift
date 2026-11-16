@@ -611,6 +611,7 @@ struct SettingsScreen: View {
     @State private var uncensor = Settings.uncensor
     @State private var appearance = Settings.appearance
     @AppStorage("playbackLiveActivity") private var playbackLiveActivity = false
+    @AppStorage("minimizeMiniPlayer") private var minimizeMiniPlayer = true
     @State private var crossfade = Settings.crossfade
     @State private var lyricsExternal = Settings.lyricsExternal
     @State private var waveWheel = Settings.waveWheel
@@ -721,6 +722,10 @@ struct SettingsScreen: View {
                     Toggle("Текущий трек в Live Activity", isOn: $playbackLiveActivity)
                         .tint(Theme.accentText)
                         .onChange(of: playbackLiveActivity) { _ in Player.shared.refreshPlaybackActivity() }
+                }
+                if #available(iOS 26.1, *) {
+                    Toggle("Сворачивать мини-плеер при прокрутке", isOn: $minimizeMiniPlayer)
+                        .tint(Theme.accentText)
                 }
             }
             Section {

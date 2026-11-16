@@ -284,15 +284,16 @@ struct TrackMenu: View {
         } label: {
             Label(disliked ? "Снять дизлайк" : "Не нравится", systemImage: disliked ? "hand.thumbsup" : "hand.thumbsdown")
         }
-        if inPlayer, Uncensor.shared.has(track.id), track.yandexAvailable != false {
-            ForEach(TrackFiles.Version.allCases, id: \.rawValue) { version in
+        if inPlayer, Uncensor.shared.has(track.id) || player.audibleVersion == .uncensored {
+            let versions: [TrackFiles.Version] = track.yandexAvailable == false ? [.uncensored] : TrackFiles.Version.allCases
+            ForEach(versions, id: \.rawValue) { version in
                 Button {
                     player.selectVersion(version, for: track)
                     done()
                 } label: {
-                    Label(version.title, systemImage: player.selectedVersion == version ? "checkmark" : "waveform")
+                    Label(version.title, systemImage: player.audibleVersion == version ? "checkmark" : "waveform")
                 }
-                .disabled(player.selectedVersion == version)
+                .disabled(player.audibleVersion == version || (!Uncensor.shared.has(track.id) && version == .uncensored))
             }
         }
         Button {
@@ -300,6 +301,12 @@ struct TrackMenu: View {
             pick(track)
         } label: {
             Label("Добавить в плейлист", systemImage: "text.badge.plus")
+        }
+        Button {
+            done()
+            navigate(.replacement(ReplacementTarget(kind: .track, id: track.id, title: track.title)))
+        } label: {
+            Label("Подменить трек", systemImage: "pencil")
         }
         if downloads.has(track.id) {
             Button(role: .destructive) {

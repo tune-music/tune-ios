@@ -1,6 +1,7 @@
 import Combine
 import PhotosUI
 import SwiftUI
+import UniformTypeIdentifiers
 
 enum ListKind: Hashable {
     case likes
@@ -10,6 +11,7 @@ enum ListKind: Hashable {
     case playlist(Playlist)
     case album(String)
     case artist(String, String)
+    case artistFamiliar(String, String, Bool)
 }
 
 /// Порядок треков на странице.
@@ -49,6 +51,27 @@ final class TrackListModel: ObservableObject {
     private var likesLoading = false
     @Published private(set) var likesError: String?
     private var loaded = false
+    private var localLikeIDs = Set<String>()
+    private var cachedLikesLoaded = false
+    private var staleLikedTracks = Set<String>()
+
+    func updateLocalLikes(_ local: [Track]) {
+        let newIDs = Set(local.map(\.id))
+        let excluded = localLikeIDs.union(newIDs)
+        localLikeIDs = newIDs
+        let updated = local + tracks.filter { !excluded.contains($0.id) }
+        applyLikes(updated)
+    }
+
+    func metadataChanged(_ target: ReplacementTarget) {
+        switch target.kind {
+        case .track: staleLikedTracks.insert(target.id)
+        case .album:
+            staleLikedTracks.formUnion(tracks.filter { $0.albumId == target.id }.map(\.id))
+        case .artist:
+            staleLikedTracks.formUnion(tracks.filter { $0.artistList.contains { $0.id == target.id } }.map(\.id))
+        }
+    }
 
     /// Сохранённая копия списка: с неё страница открывается мгновенно и без сети.
     private struct Cached: Codable {
@@ -67,6 +90,7 @@ final class TrackListModel: ObservableObject {
         case .playlist(let playlist): key = "playlist:" + playlist.id
         case .album(let id): key = "album:" + id
         case .artist(let id, _): key = "artist-tracks:" + id
+        case .artistFamiliar(let id, _, let wave): key = "artist-familiar:\(id):\(wave)"
         case .history: key = "history"
         default: return nil
         }
@@ -135,6 +159,9 @@ final class TrackListModel: ObservableObject {
             case .artist(let id, let name):
                 title = name
                 tracks = try await API.shared.artistTracks(id: id)
+            case .artistFamiliar(let id, let name, let wave):
+                title = name
+                tracks = try await API.shared.familiarTracks(artist: id, wave: wave)
             }
             loaded = true
             if !Demo.on, !tracks.isEmpty, let name = Self.cacheName(kind) {
@@ -171,10 +198,12 @@ final class TrackListModel: ObservableObject {
     }
 
     private func fetchLikes() async throws {
-        if tracks.isEmpty, !Demo.on {
+        if !cachedLikesLoaded, !Demo.on {
+            cachedLikesLoaded = true
             let cached = await Task.detached(priority: .userInitiated) { Storage.load("likes-tracks.json", as: [Track].self) }.value
-            if let cached, tracks.isEmpty {
+            if let cached, tracks.allSatisfy({ localLikeIDs.contains($0.id) }) {
                 tracks = cached
+                updateLocalLikes(Session.shared.localLikedTracks)
                 loading = false
             }
         }
@@ -189,7 +218,7 @@ final class TrackListModel: ObservableObject {
         let ids = entries.map(\.id)
         Session.shared.setLiked(ids)
         var known: [String: Track] = [:]
-        for track in tracks { known[track.id] = track }
+        for track in tracks where !staleLikedTracks.contains(track.id) { known[track.id] = track }
         let publishPages = tracks.isEmpty
         if publishPages { showsLikesProgress = true }
         var ordered: [Track] = []
@@ -212,14 +241,21 @@ final class TrackListModel: ObservableObject {
                 loading = false
             }
         }
+        let local = Session.shared.localLikedTracks
+        localLikeIDs = Set(local.map(\.id))
+        applyLikes(local + ordered.filter { !localLikeIDs.contains($0.id) })
+        staleLikedTracks.removeAll()
+        Downloads.shared.auto(ordered)
+        if !Demo.on {
+            Task.detached(priority: .utility) { Storage.save(ordered, "likes-tracks.json") }
+        }
+    }
+
+    private func applyLikes(_ ordered: [Track]) {
         if ordered != tracks {
             var transaction = Transaction()
             transaction.disablesAnimations = true
             withTransaction(transaction) { tracks = ordered }
-        }
-        Downloads.shared.auto(ordered)
-        if !Demo.on {
-            Task.detached(priority: .utility) { Storage.save(ordered, "likes-tracks.json") }
         }
     }
 }
@@ -246,6 +282,8 @@ struct TrackListScreen: View {
     @State private var choosingCover = false
     @State private var coverPhoto: PhotosPickerItem?
     @State private var uploadingCover = false
+    @State private var importingAudio = false
+    @State private var uploadingAudio = false
     @State private var name = ""
     @State private var tone = Theme.tone
     @State private var sort = TrackSort.original
@@ -341,6 +379,8 @@ struct TrackListScreen: View {
         case .playlist(let playlist): return PlayContext(kind: "playlist", item: playlist.id, name: title)
         case .album(let id): return PlayContext(kind: "album", item: id, name: model.title)
         case .artist(let id, let name): return PlayContext(kind: "artist", item: id, name: name)
+        case .artistFamiliar(let id, let name, let wave):
+            return PlayContext(kind: "artist", item: "\(id):\(wave)", name: name)
         }
     }
 
@@ -352,6 +392,7 @@ struct TrackListScreen: View {
         case .disliked: return "Не нравится"
         case .playlist(let playlist): return model.title.isEmpty ? playlist.title : model.title
         case .artist(_, let name): return name
+        case .artistFamiliar(_, _, let wave): return wave ? "Слушали в Волне" : "У вас в коллекции"
         case .album: return model.title
         }
     }
@@ -366,6 +407,7 @@ struct TrackListScreen: View {
             default: return "Альбом"
             }
         case .artist: return "Все треки"
+        case .artistFamiliar(_, let name, _): return name
         case .history: return "Вы слушали"
         case .downloads: return "На устройстве"
         case .disliked: return "Скрыто из рекомендаций"
@@ -404,6 +446,9 @@ struct TrackListScreen: View {
 
     var body: some View {
         page
+            .onReceive(Session.shared.$localLikedTracks.removeDuplicates()) {
+                if kind == .likes { model.updateLocalLikes($0) }
+            }
             .onReceive(downloads.$entries.removeDuplicates()) { entries in
                 if (kind == .downloads || onlyDownloaded), downloadEntries != entries { downloadEntries = entries }
             }
@@ -416,6 +461,28 @@ struct TrackListScreen: View {
             .onReceive(downloadPanelVisibility) {
                 if kind == .downloads, hasDownloadPanel != $0 { hasDownloadPanel = $0 }
             }
+            .onReceive(NotificationCenter.default.publisher(for: Uploads.likesChanged)) { _ in
+                if kind == .likes { Task { await model.load(kind, force: true) } }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: MetadataOverrides.changed)) { note in
+                guard let target = note.object as? ReplacementTarget else { return }
+                if kind == .likes { model.metadataChanged(target) }
+                Task { await model.load(kind, force: true) }
+            }
+            .fileImporter(isPresented: $importingAudio, allowedContentTypes: [.audio], allowsMultipleSelection: true) { result in
+                switch result {
+                case .success(let files):
+                    let destination = own ? playlist : nil
+                    uploadingAudio = true
+                    Task {
+                        await Uploads.shared.add(files, to: destination)
+                        uploadingAudio = false
+                        await model.load(kind, force: true)
+                    }
+                case .failure(let error):
+                    session.show(error.localizedDescription)
+                }
+            }
     }
 
     private var downloadPanelVisibility: AnyPublisher<Bool, Never> {
@@ -427,15 +494,15 @@ struct TrackListScreen: View {
 
     private var page: some View {
         let tracks = shown
-        let rows = tracks.enumerated().map { offset, track in
-            TrackSlot(id: kind == .likes ? track.id : "offset-\(offset)", index: offset, track: track)
-        }
+        let rows = TrackSlots(tracks: tracks, stableIDs: kind == .likes)
         return ScrollViewReader { proxy in
             List {
                 header(count: all.count)
                     // Шапка почти ушла под панель навигации: пора показать название в панели.
-                    .background { HeaderWatch(hidden: $compact) }
-                    .onDisappear { compact = true }
+                    .background {
+                        if kind != .likes { HeaderWatch(hidden: $compact) }
+                    }
+                    .onDisappear { if kind != .likes { compact = true } }
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
                     .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 14, trailing: 16))
@@ -447,6 +514,11 @@ struct TrackListScreen: View {
                 } else if tracks.isEmpty {
                     empty
                 }
+                if kind == .likes {
+                    ForEach(rows) { row in
+                        listTrack(row, tracks: tracks)
+                    }
+                } else {
                 ForEach(rows) { row in
                     let index = row.index
                     let track = row.track
@@ -466,18 +538,10 @@ struct TrackListScreen: View {
                             .listRowSeparator(.hidden)
                             .listRowInsets(EdgeInsets(top: 16, leading: 16, bottom: 4, trailing: 16))
                     }
-                    Group {
-                        if selecting {
-                            SelectRow(track: track, on: selected.contains(track.id)) {
-                                if selected.contains(track.id) { selected.remove(track.id) } else { selected.insert(track.id) }
-                            }
-                        } else {
-                            regularRow(track, index: index, tracks: tracks)
-                        }
-                    }
-                    .id(row.id)
+                    listTrack(row, tracks: tracks).id(row.id)
                 }
                 .onMove(perform: reordering ? move : nil)
+                }
                 if kind == .likes, !model.tracks.isEmpty {
                     likesFooter
                 }
@@ -516,9 +580,9 @@ struct TrackListScreen: View {
         .sheet(isPresented: $pickingMany, onDismiss: endModes) {
             PlaylistPicker(tracks: chosen)
         }
-        .navigationTitle(compact && !searching ? title : "")
+        .navigationTitle((kind == .likes || compact) && !searching ? title : "")
         .navigationBarTitleDisplayMode(.inline)
-        .background(BarFade(title: compact && !searching ? title : ""))
+        .background(BarFade(title: (kind == .likes || compact) && !searching ? title : ""))
         .onDisappear {
             // Строка поиска убирается при уходе со страницы: открытая, она при возврате
             // выскакивала рывком. Сам фильтр остаётся, строка вернётся вместе со страницей.
@@ -605,6 +669,30 @@ struct TrackListScreen: View {
         let id: String
         let index: Int
         let track: Track
+    }
+
+    private struct TrackSlots: RandomAccessCollection {
+        let tracks: [Track]
+        let stableIDs: Bool
+        var startIndex: Int { tracks.startIndex }
+        var endIndex: Int { tracks.endIndex }
+        func index(after i: Int) -> Int { i + 1 }
+        func index(before i: Int) -> Int { i - 1 }
+        subscript(index: Int) -> TrackSlot {
+            let track = tracks[index]
+            return TrackSlot(id: stableIDs ? track.id : "offset-\(index)", index: index, track: track)
+        }
+    }
+
+    @ViewBuilder
+    private func listTrack(_ row: TrackSlot, tracks: [Track]) -> some View {
+        if selecting {
+            SelectRow(track: row.track, on: selected.contains(row.track.id)) {
+                if !selected.insert(row.track.id).inserted { selected.remove(row.track.id) }
+            }
+        } else {
+            regularRow(row.track, index: row.index, tracks: tracks)
+        }
     }
 
     private func regularRow(_ track: Track, index: Int, tracks: [Track]) -> some View {
@@ -856,6 +944,17 @@ struct TrackListScreen: View {
     }
 
     @ViewBuilder private var menu: some View {
+        if case .album(let id) = kind {
+            Button { navigate(.replacement(ReplacementTarget(kind: .album, id: id, title: title))) } label: {
+                Label("Подменить альбом", systemImage: "pencil")
+            }
+        }
+        if kind == .likes || own {
+            Button { importingAudio = true } label: {
+                Label(uploadingAudio ? "Загружаем аудиофайлы" : "Загрузить свои треки", systemImage: "square.and.arrow.up")
+            }
+            .disabled(uploadingAudio)
+        }
         if kind == .downloads {
             Button(role: .destructive) {
                 confirmRemove = true
@@ -1340,6 +1439,16 @@ struct ArtistScreen: View {
                         }
                     }
                 }
+                Section {
+                    Button { navigate(.artistFamiliar(id, page.name, false)) } label: {
+                        Label("У вас в коллекции", systemImage: "heart")
+                    }
+                    Button { navigate(.artistFamiliar(id, page.name, true)) } label: {
+                        Label("Слушали в Волне", systemImage: "waveform")
+                    }
+                }
+                .foregroundStyle(Theme.text)
+                .listRowBackground(Color.clear)
                 if !page.albums.isEmpty {
                     shelf("Альбомы", page.albums.map { .album($0) })
                 }
@@ -1384,15 +1493,24 @@ struct ArtistScreen: View {
         .background(BarFade(title: compact ? (page?.name ?? name) : ""))
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
-                if let url = URL(string: "https://music.yandex.ru/artist/\(id)") {
-                    ShareLink(item: url) {
-                        Image(systemName: "square.and.arrow.up")
-                            .accessibilityLabel("Поделиться")
+                Menu {
+                    Button {
+                        navigate(.replacement(ReplacementTarget(kind: .artist, id: id, title: page?.name ?? name)))
+                    } label: {
+                        Label("Подменить исполнителя", systemImage: "pencil")
                     }
+                    if let url = URL(string: "https://music.yandex.ru/artist/\(id)") {
+                        ShareLink(item: url) { Label("Поделиться", systemImage: "square.and.arrow.up") }
+                    }
+                } label: {
+                    Image(systemName: "ellipsis").accessibilityLabel("Ещё")
                 }
             }
         }
         .task { if page == nil { await load() } }
+        .onReceive(NotificationCenter.default.publisher(for: MetadataOverrides.changed)) { _ in
+            Task { await load() }
+        }
         .task(id: page?.cover) {
             let color = await ImageLoader.shared.tone(page?.cover)
             withAnimation(.easeInOut(duration: 0.3)) { tone = color ?? Theme.tone }

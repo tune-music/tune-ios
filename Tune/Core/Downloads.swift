@@ -11,6 +11,7 @@ final class Downloads: ObservableObject {
         var file: String
         var bytes: Int64
         var date: Date
+        var version: TrackFiles.Version? = nil
     }
 
     /// То, что переживает перезапуск: недокачанное и то, что скачать не вышло.
@@ -81,6 +82,11 @@ final class Downloads: ObservableObject {
 
     func fileURL(for id: String) -> URL? {
         files[id].map { Storage.tracks.appendingPathComponent($0) }
+    }
+
+    func version(for id: String) -> TrackFiles.Version? {
+        guard let entry = entries.first(where: { $0.track.id == id }) else { return nil }
+        return entry.version ?? (entry.track.uncensored ? .uncensored : .yandex)
     }
 
     func isBusy(_ id: String) -> Bool {
@@ -202,7 +208,7 @@ final class Downloads: ObservableObject {
             _ = try? await API.shared.lyrics(for: track)
             let bytes = Int64((try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
             entries.removeAll { $0.track.id == track.id }
-            entries.insert(Entry(track: track, file: file.lastPathComponent, bytes: bytes, date: Date()), at: 0)
+            entries.insert(Entry(track: track, file: file.lastPathComponent, bytes: bytes, date: Date(), version: source.version), at: 0)
             files[track.id] = file.lastPathComponent
             save()
         } catch {
