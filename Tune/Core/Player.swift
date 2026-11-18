@@ -1076,6 +1076,13 @@ final class Player: NSObject, ObservableObject {
         advance(auto: false)
     }
 
+    func updateUploadedMetadata(id: String, title: String, artist: String) {
+        guard queue.contains(where: { $0.id == id }) else { return }
+        queue = queue.map { $0.id == id ? $0.withUploadedMetadata(title: title, artist: artist) : $0 }
+        refreshNowPlaying()
+        saveQueue()
+    }
+
     func previous() {
         let target = Connectivity.shared.offline ? queue.indices.prefix(index).last(where: { Downloads.shared.has(queue[$0].id) })
             : (index > 0 ? index - 1 : nil)

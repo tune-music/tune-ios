@@ -482,6 +482,12 @@ struct TrackListScreen: View {
             .onReceive(NotificationCenter.default.publisher(for: Session.restoredLikesSynced)) { _ in
                 if kind == .likes || isArtistCollection { Task { await model.load(kind, force: true) } }
             }
+            .onReceive(NotificationCenter.default.publisher(for: Session.uploadedTrackEdited)) { note in
+                guard let edited = note.object as? Track, model.tracks.contains(where: { $0.id == edited.id }) else { return }
+                model.tracks = model.tracks.map {
+                    $0.id == edited.id ? $0.withUploadedMetadata(title: edited.title, artist: edited.artists) : $0
+                }
+            }
             .onReceive(NotificationCenter.default.publisher(for: MetadataOverrides.changed)) { note in
                 guard let target = note.object as? ReplacementTarget else { return }
                 if kind == .likes { model.metadataChanged(target) }

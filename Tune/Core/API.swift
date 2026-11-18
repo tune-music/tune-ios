@@ -905,6 +905,10 @@ final class API {
         _ = try await post("users/\(uid)/playlists/\(kind)/name?value=\(Self.encode(title))")
     }
 
+    func changeUploadedTrack(id: String, title: String, artist: String) async throws {
+        _ = try await post("ugc/tracks/\(Self.encode(id))/change", json: ["title": title, "artist": artist])
+    }
+
     func uploadTrack(_ file: URL, to playlist: Playlist) async throws -> String {
         let hasAccess = file.startAccessingSecurityScopedResource()
         defer { if hasAccess { file.stopAccessingSecurityScopedResource() } }
