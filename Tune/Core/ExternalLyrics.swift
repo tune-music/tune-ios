@@ -14,12 +14,13 @@ enum ExternalLyrics {
     private static let offsetRegex = try! NSRegularExpression(pattern: #"(?im)^\[offset:([+-]?\d+)\]"#)
 
     private static let noRedirect = NoRedirectDelegate()
+    private static let memory = HostMemory()
     private static let session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
         config.httpShouldSetCookies = false
         config.httpCookieAcceptPolicy = .never
         config.httpCookieStorage = nil
-        config.timeoutIntervalForResource = 12
+        config.timeoutIntervalForResource = 8
         return URLSession(configuration: config, delegate: noRedirect, delegateQueue: nil)
     }()
     typealias Request = @Sendable (URLRequest) async throws -> (Data, URLResponse)
@@ -93,7 +94,7 @@ enum ExternalLyrics {
 
     private static func get(_ path: String, hosts: [String], netease: Bool = false, request: Request) async throws -> JSON {
         var failure: Error = URLError(.cannotConnectToHost)
-        for host in hosts {
+        for host in await memory.order(hosts) {
             try Task.checkCancellation()
             guard let url = URL(string: host + path), url.scheme == "https", let domain = url.host else { continue }
             var urlRequest = URLRequest(url: url, timeoutInterval: 6)
@@ -110,10 +111,11 @@ enum ExternalLyrics {
                 continue
             }
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-            if status == 403 || status == 429 || status >= 500 || status == 0 {
+            if (300..<400).contains(status) || status == 403 || status == 429 || status >= 500 || status == 0 {
                 failure = RequestFailure(host: domain, path: url.path, details: "HTTP \(status)")
                 continue
             }
+            await memory.worked(host, among: hosts)
             guard (200..<300).contains(status) else { return JSON(nil) }
             guard data.count <= maxResponseBytes else {
                 failure = RequestFailure(host: domain, path: url.path, details: "Неверный ответ (\(data.count) байт)")
@@ -458,6 +460,19 @@ enum ExternalLyrics {
         }
         if let fallback { return (fallback, true) }
         return (empty, complete)
+    }
+}
+
+private actor HostMemory {
+    private var last: [String: String] = [:]
+
+    func order(_ hosts: [String]) -> [String] {
+        guard let key = hosts.last, let good = last[key], hosts.contains(good) else { return hosts }
+        return [good] + hosts.filter { $0 != good }
+    }
+
+    func worked(_ host: String, among hosts: [String]) {
+        if let key = hosts.last { last[key] = host }
     }
 }
 
