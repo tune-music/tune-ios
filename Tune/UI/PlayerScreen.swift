@@ -945,9 +945,10 @@ private struct LyricsPane: View {
                             .font(.scaled(size: 24, weight: .bold))
                             .multilineTextAlignment(.center)
                             .foregroundStyle(.white)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity)
                             .opacity(on ? 1 : 0.32)
                             .scaleEffect(on ? 1 : 0.96)
-                            .frame(maxWidth: .infinity)
                             .animation(reduceMotion ? nil : .easeOut(duration: 0.24), value: on)
                             .contentShape(Rectangle())
                             .onTapGesture {
