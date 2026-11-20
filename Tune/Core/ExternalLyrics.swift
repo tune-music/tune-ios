@@ -1,4 +1,5 @@
 import Foundation
+import Network
 
 /// Синхронный текст песен не только от Яндекса, как в Tune Native: из LRCLIB (открытая база)
 /// и NetEase Cloud Music (много синхронных текстов, в том числе русских).
@@ -13,19 +14,13 @@ enum ExternalLyrics {
     private static let timestampRegex = try! NSRegularExpression(pattern: #"\[(\d+):([0-5]?\d(?:[.,]\d+)?)\]"#)
     private static let offsetRegex = try! NSRegularExpression(pattern: #"(?im)^\[offset:([+-]?\d+)\]"#)
 
-    private static let noRedirect = NoRedirectDelegate()
     private static let memory = HostMemory()
     typealias Request = @Sendable (URLRequest) async throws -> (Data, URLResponse)
 
+    /// Запрос по чистому HTTP/1.1 поверх TCP+TLS без HTTP/2, HTTP/3 и пулов соединений —
+    /// так же, как HttpURLConnection на Android.
     static let liveRequest: Request = { request in
-        let config = URLSessionConfiguration.ephemeral
-        config.httpShouldSetCookies = false
-        config.httpCookieAcceptPolicy = .never
-        config.httpCookieStorage = nil
-        config.timeoutIntervalForResource = 12
-        let session = URLSession(configuration: config, delegate: noRedirect, delegateQueue: nil)
-        defer { session.finishTasksAndInvalidate() }
-        return try await session.data(for: request)
+        try await HTTP11Client.send(request, maxBytes: maxResponseBytes)
     }
 
     struct RequestFailure: LocalizedError {
@@ -103,20 +98,15 @@ enum ExternalLyrics {
             urlRequest.assumesHTTP3Capable = false
             urlRequest.setValue(netease ? agent : "\(agent) (https://github.com/tune-music/tune-ios)", forHTTPHeaderField: "User-Agent")
             if netease { urlRequest.setValue("https://music.163.com/", forHTTPHeaderField: "Referer") }
-            var result: (Data, URLResponse)?
-            for attempt in 0..<(hosts.count == 1 ? 2 : 1) {
-                do {
-                    result = try await request(urlRequest)
-                    break
-                } catch {
-                    try Task.checkCancellation()
-                    let code = error as NSError
-                    failure = RequestFailure(host: domain, path: url.path, details: "\(code.domain) (\(code.code))")
-                    if attempt == 0 && (error as? URLError)?.code == .timedOut { continue }
-                    break
-                }
+            let (data, response): (Data, URLResponse)
+            do {
+                (data, response) = try await request(urlRequest)
+            } catch {
+                try Task.checkCancellation()
+                let code = error as NSError
+                failure = RequestFailure(host: domain, path: url.path, details: "\(code.domain) (\(code.code))")
+                continue
             }
-            guard let (data, response) = result else { continue }
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             if (300..<400).contains(status) || status == 403 || status == 429 || status >= 500 || status == 0 {
                 failure = RequestFailure(host: domain, path: url.path, details: "HTTP \(status)")
@@ -483,14 +473,223 @@ private actor HostMemory {
     }
 }
 
-private final class NoRedirectDelegate: NSObject, URLSessionTaskDelegate {
-    func urlSession(
-        _ session: URLSession,
-        task: URLSessionTask,
-        willPerformHTTPRedirection response: HTTPURLResponse,
-        newRequest request: URLRequest,
-        completionHandler: @escaping (URLRequest?) -> Void
-    ) {
-        completionHandler(nil)
+/// Минимальный HTTP/1.1-клиент поверх NWConnection: без HTTP/2, HTTP/3 и переиспользования
+/// сокетов, которые в некоторых сетях зависают после первых запросов.
+enum HTTP11Client {
+    static func send(_ request: URLRequest, maxBytes: Int) async throws -> (Data, URLResponse) {
+        guard let url = request.url, let host = url.host, !host.isEmpty else {
+            throw URLError(.badURL)
+        }
+        let portValue = UInt16(url.port ?? (url.scheme == "http" ? 80 : 443))
+        guard let port = NWEndpoint.Port(rawValue: portValue) else { throw URLError(.badURL) }
+
+        let path = url.path.isEmpty ? "/" : url.path
+        let query = url.query.map { "?\($0)" } ?? ""
+        var head = "GET \(path)\(query) HTTP/1.1\r\n"
+        head += "Host: \(host)\r\n"
+        head += "Accept: application/json\r\n"
+        head += "Accept-Encoding: identity\r\n"
+        head += "Connection: close\r\n"
+        for (name, value) in request.allHTTPHeaderFields ?? [:] {
+            let lower = name.lowercased()
+            if lower == "host" || lower == "accept-encoding" || lower == "connection" { continue }
+            head += "\(name): \(value)\r\n"
+        }
+        head += "\r\n"
+
+        let params = url.scheme == "http" ? NWParameters.tcp : NWParameters(tls: NWProtocolTLS.Options(), tcp: NWProtocolTCP.Options())
+        let connection = NWConnection(host: NWEndpoint.Host(host), port: port, using: params)
+        let queue = DispatchQueue(label: "tune.http11")
+        let state = TransferState(connection: connection, url: url, maxBytes: maxBytes)
+
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                state.start(continuation: continuation, payload: Data(head.utf8), timeout: request.timeoutInterval, queue: queue)
+            }
+        } onCancel: {
+            state.finish(with: .failure(CancellationError()))
+        }
+    }
+
+    static func parseResponse(_ raw: Data, url: URL) throws -> (Data, HTTPURLResponse) {
+        let separator = Data([13, 10, 13, 10])
+        guard let range = raw.range(of: separator) else { throw URLError(.badServerResponse) }
+        let headerData = raw.subdata(in: raw.startIndex..<range.lowerBound)
+        let bodyData = raw.subdata(in: range.upperBound..<raw.endIndex)
+        guard let headerText = String(data: headerData, encoding: .utf8) ?? String(data: headerData, encoding: .ascii) else {
+            throw URLError(.badServerResponse)
+        }
+        let lines = headerText.components(separatedBy: "\r\n")
+        guard let statusLine = lines.first,
+              let codeText = statusLine.split(separator: " ").dropFirst().first,
+              let status = Int(codeText) else {
+            throw URLError(.badServerResponse)
+        }
+        var headers: [String: String] = [:]
+        var isChunked = false
+        for line in lines.dropFirst() {
+            guard let colon = line.firstIndex(of: ":") else { continue }
+            let name = String(line[..<colon]).trimmingCharacters(in: .whitespaces)
+            let value = String(line[line.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
+            headers[name] = value
+            if name.lowercased() == "transfer-encoding", value.lowercased().contains("chunked") {
+                isChunked = true
+            }
+        }
+        let decoded = isChunked ? try decodeChunked(bodyData) : bodyData
+        guard let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: headers) else {
+            throw URLError(.badServerResponse)
+        }
+        return (decoded, response)
+    }
+
+    private static func decodeChunked(_ data: Data) throws -> Data {
+        var out = Data()
+        var index = data.startIndex
+        let crlf = Data([13, 10])
+        while index < data.endIndex {
+            guard let lineEnd = data[index...].range(of: crlf) else { break }
+            let sizeLine = String(data: data[index..<lineEnd.lowerBound], encoding: .ascii) ?? ""
+            let hex = sizeLine.split(separator: ";").first?.trimmingCharacters(in: .whitespaces) ?? ""
+            guard let size = Int(hex, radix: 16) else { throw URLError(.cannotDecodeContentData) }
+            index = lineEnd.upperBound
+            if size == 0 { break }
+            guard data.distance(from: index, to: data.endIndex) >= size else { throw URLError(.cannotDecodeContentData) }
+            let end = data.index(index, offsetBy: size)
+            out.append(data[index..<end])
+            index = end
+            if data[index...].starts(with: crlf) {
+                index = data.index(index, offsetBy: 2)
+            }
+        }
+        return out
+    }
+}
+
+private final class TransferState: @unchecked Sendable {
+    private let lock = NSLock()
+    private let connection: NWConnection
+    private let url: URL
+    private let maxBytes: Int
+    private var continuation: CheckedContinuation<(Data, URLResponse), Error>?
+    private var buffer = Data()
+    private var timer: DispatchSourceTimer?
+    private var done = false
+
+    init(connection: NWConnection, url: URL, maxBytes: Int) {
+        self.connection = connection
+        self.url = url
+        self.maxBytes = maxBytes
+    }
+
+    func start(continuation: CheckedContinuation<(Data, URLResponse), Error>, payload: Data, timeout: TimeInterval, queue: DispatchQueue) {
+        lock.lock()
+        if done {
+            lock.unlock()
+            continuation.resume(throwing: CancellationError())
+            return
+        }
+        self.continuation = continuation
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + max(1, timeout))
+        timer.setEventHandler { [weak self] in
+            self?.finish(with: .failure(URLError(.timedOut)))
+        }
+        self.timer = timer
+        timer.resume()
+        lock.unlock()
+
+        connection.stateUpdateHandler = { [weak self] state in
+            switch state {
+            case .ready:
+                self?.sendRequest(payload)
+            case .failed(let error):
+                self?.finish(with: .failure(error))
+            case .cancelled:
+                self?.finish(with: .failure(CancellationError()))
+            default:
+                break
+            }
+        }
+        connection.start(queue: queue)
+    }
+
+    private func sendRequest(_ payload: Data) {
+        connection.send(content: payload, completion: .contentProcessed { [weak self] error in
+            if let error {
+                self?.finish(with: .failure(error))
+                return
+            }
+            self?.receiveNext()
+        })
+    }
+
+    private func receiveNext() {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 32 * 1024) { [weak self] data, _, isComplete, error in
+            guard let self else { return }
+            if let data, !data.isEmpty {
+                let overflow = self.append(data)
+                if overflow {
+                    self.finish(with: .failure(URLError(.dataLengthExceedsMaximum)))
+                    return
+                }
+            }
+            if let error {
+                if self.hasCompleteResponse() {
+                    self.completeFromBuffer()
+                } else {
+                    self.finish(with: .failure(error))
+                }
+                return
+            }
+            if isComplete {
+                self.completeFromBuffer()
+                return
+            }
+            self.receiveNext()
+        }
+    }
+
+    private func append(_ data: Data) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        buffer.append(data)
+        return buffer.count > maxBytes + 16 * 1024
+    }
+
+    private func hasCompleteResponse() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return buffer.range(of: Data([13, 10, 13, 10])) != nil
+    }
+
+    private func completeFromBuffer() {
+        lock.lock()
+        let raw = buffer
+        lock.unlock()
+        do {
+            let parsed = try HTTP11Client.parseResponse(raw, url: url)
+            finish(with: .success(parsed))
+        } catch {
+            finish(with: .failure(error))
+        }
+    }
+
+    func finish(with result: Result<(Data, URLResponse), Error>) {
+        lock.lock()
+        guard !done else {
+            lock.unlock()
+            return
+        }
+        done = true
+        let cont = continuation
+        continuation = nil
+        let activeTimer = timer
+        timer = nil
+        lock.unlock()
+
+        activeTimer?.cancel()
+        connection.cancel()
+        cont?.resume(with: result)
     }
 }

@@ -52,6 +52,7 @@ struct LyricsTests {
         await testProviderOrder()
         try await testExternalProviderFallbacks()
         testAcceptCachedPolicy()
+        try testHTTP11Parser()
         print("Lyrics unit checks passed")
 
         if CommandLine.arguments.contains("--live") {
@@ -255,6 +256,17 @@ struct LyricsTests {
 
         let stub = LyricsText(lines: [LyricLine(id: 0, time: nil, text: "Текст доступен по подписке")], authors: nil, source: LyricsText.yandex, searched: key1)
         assertCheck(ExternalLyrics.acceptCached(stub, options: opts1, anySource: true) == nil, "Stub cache must always be rejected")
+    }
+
+    private static func testHTTP11Parser() throws {
+        let url = URL(string: "https://lrclib.net/api/search")!
+        let plain = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n[{\"id\":1}]"
+        let (plainBody, plainResp) = try HTTP11Client.parseResponse(Data(plain.utf8), url: url)
+        assertCheck(plainResp.statusCode == 200 && String(data: plainBody, encoding: .utf8) == "[{\"id\":1}]", "Plain HTTP/1.1 response parse failed")
+
+        let chunked = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n"
+        let (chunkedBody, chunkedResp) = try HTTP11Client.parseResponse(Data(chunked.utf8), url: url)
+        assertCheck(chunkedResp.statusCode == 200 && String(data: chunkedBody, encoding: .utf8) == "hello world", "Chunked HTTP/1.1 response parse failed")
     }
 
     private static func testLiveNetEase() async throws {
