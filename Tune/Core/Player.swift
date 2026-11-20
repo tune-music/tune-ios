@@ -171,7 +171,6 @@ final class Player: NSObject, ObservableObject {
     private var loadTask: Task<Void, Never>?
     private var preloaded: (id: String, item: AVPlayerItem, version: TrackFiles.Version?)?
     private var preloadTask: Task<Void, Never>?
-    private var lyricsPrefetchTask: Task<Void, Never>?
     private struct NextTrack {
         let track: Track
         let index: Int?
@@ -440,8 +439,6 @@ final class Player: NSObject, ObservableObject {
         versionTask = nil
         preloadTask?.cancel()
         preloadTask = nil
-        lyricsPrefetchTask?.cancel()
-        lyricsPrefetchTask = nil
         if queue[target].id != versionTrackID {
             versionTrackID = nil
             selectedVersion = nil
@@ -688,21 +685,9 @@ final class Player: NSObject, ObservableObject {
         learnLoudness(track)
         preloadNext()
         prepareContinuation()
-        prefetchLyrics(track)
         if wave != nil {
             WaveWords.shared.load(queue: queue, from: index)
             WaveWords.shared.shown(track)
-        }
-    }
-
-    private func prefetchLyrics(_ track: Track) {
-        lyricsPrefetchTask?.cancel()
-        lyricsPrefetchTask = nil
-        guard !Demo.on, !Connectivity.shared.offline, API.cachedLyrics(for: track) == nil else { return }
-        lyricsPrefetchTask = Task.detached(priority: .utility) {
-            try? await Task.sleep(nanoseconds: 1_200_000_000)
-            guard !Task.isCancelled else { return }
-            _ = await API.shared.prefetchLyrics(for: track)
         }
     }
 
@@ -1147,8 +1132,6 @@ final class Player: NSObject, ObservableObject {
         loadTask = nil
         preloadTask?.cancel()
         preloadTask = nil
-        lyricsPrefetchTask?.cancel()
-        lyricsPrefetchTask = nil
         waveRequestTask?.cancel()
         waveRequestTask = nil
         startingWave = nil

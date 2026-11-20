@@ -222,7 +222,7 @@ struct LyricsTests {
                 track, options: opts,
                 yandex: { _ in syncedYandex },
                 lrclib: { _ in try? await Task.sleep(nanoseconds: 40_000_000); return nil },
-                netease: { _ in try? await Task.sleep(nanoseconds: 60_000_000); return syncedNetEase }
+                netease: { _ in try? await Task.sleep(nanoseconds: 350_000_000); return syncedNetEase }
             )
             assertCheck(res1.source == "NetEase", "always=true must prefer external synced over Yandex synced")
 
@@ -323,6 +323,18 @@ struct LyricsTests {
             return response(url, #"{"plainLyrics":"Available text"}"#)
         }
         assertCheck(plain?.lines.first?.text == "Available text", "Search failure must not discard plain LRCLIB lyrics")
+
+        let pirate = makeTrack(title: "Почему ты ещё не фанат?", artists: "Серёга Пират", durationMs: 163_711)
+        let pirateLyrics = try await ExternalLyrics.fetchLRCLIB(pirate, mirrorText: "") { request in
+            let url = request.url!
+            assertCheck(request.timeoutInterval > 6, "LRCLIB needs a longer timeout")
+            assertCheck(request.value(forHTTPHeaderField: "User-Agent")?.contains("github.com/tune-music/tune-ios") == true, "LRCLIB requires client identification")
+            if url.path == "/api/get" { throw URLError(.timedOut) }
+            let artist = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "artist_name" }?.value
+            if artist != "Серега Пират" { return response(url, "[]") }
+            return response(url, #"[{"trackName":"Почему ты еще не фанат?","artistName":"СЕРЕГА ПИРАТ","duration":164,"syncedLyrics":"[00:01]Match"}]"#)
+        }
+        assertCheck(pirateLyrics?.synced == true, "LRCLIB must retry with folded Russian metadata")
     }
 
     private static func response(_ url: URL, _ body: String) -> (Data, URLResponse) {

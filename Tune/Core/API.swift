@@ -1445,7 +1445,8 @@ final class API {
             }
             let (found, complete) = await ExternalLyrics.find(track, options: options, yandex: ask, onFailure: { source, error in
                 let code = error as NSError
-                Log.shared.add("текст: \(source): \(code.domain) (\(code.code))")
+                let details = (error as? ExternalLyrics.RequestFailure)?.errorDescription ?? "\(code.domain) (\(code.code))"
+                Log.shared.add("текст: \(source): \(details)")
             })
             try Task.checkCancellation()
             // Аккаунту без Плюса Яндекс вместо текста отдаёт просьбу подключить подписку.

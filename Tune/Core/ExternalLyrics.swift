@@ -15,20 +15,28 @@ enum ExternalLyrics {
     private static let offsetRegex = try! NSRegularExpression(pattern: #"(?im)^\[offset:([+-]?\d+)\]"#)
 
     private static let noRedirect = NoRedirectDelegate()
-    private static let session: URLSession = {
+    private static func makeSession(resourceTimeout: TimeInterval) -> URLSession {
         let config = URLSessionConfiguration.ephemeral
         config.httpShouldSetCookies = false
         config.httpCookieAcceptPolicy = .never
         config.httpCookieStorage = nil
-        config.urlCache = nil
-        config.requestCachePolicy = .reloadIgnoringLocalCacheData
-        config.timeoutIntervalForRequest = 5
-        config.timeoutIntervalForResource = 12
+        config.timeoutIntervalForResource = resourceTimeout
         return URLSession(configuration: config, delegate: noRedirect, delegateQueue: nil)
-    }()
+    }
+    private static let session = makeSession(resourceTimeout: 12)
+    private static let lrclibSession = makeSession(resourceTimeout: 20)
     typealias Request = @Sendable (URLRequest) async throws -> (Data, URLResponse)
 
     static let liveRequest: Request = { try await session.data(for: $0) }
+    static let liveLRCLIBRequest: Request = { try await lrclibSession.data(for: $0) }
+
+    struct RequestFailure: LocalizedError {
+        let host: String
+        let path: String
+        let details: String
+
+        var errorDescription: String? { "\(host)\(path): \(details)" }
+    }
 
     /// Настройки источников текста, которые можно передать явно (в том числе в тестах).
     struct Options: Equatable {
@@ -87,19 +95,29 @@ enum ExternalLyrics {
         return components.string
     }
 
-    private static func get(_ path: String, host: String, headers: [String: String], request: Request) async throws -> JSON {
+    private static func get(_ path: String, host: String, headers: [String: String], timeout: TimeInterval, request: Request) async throws -> JSON {
         try Task.checkCancellation()
         guard let url = URL(string: host + path) else { throw URLError(.badURL) }
-        var urlRequest = URLRequest(url: url, timeoutInterval: 6)
+        var urlRequest = URLRequest(url: url, timeoutInterval: timeout)
         urlRequest.httpShouldHandleCookies = false
         urlRequest.setValue(agent, forHTTPHeaderField: "User-Agent")
         for (name, value) in headers { urlRequest.setValue(value, forHTTPHeaderField: name) }
-        let (data, response) = try await request(urlRequest)
+        let (data, response): (Data, URLResponse)
+        do {
+            (data, response) = try await request(urlRequest)
+        } catch {
+            try Task.checkCancellation()
+            let code = error as NSError
+            throw RequestFailure(host: url.host ?? host, path: url.path, details: "\(code.domain) (\(code.code))")
+        }
         guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
         if http.statusCode == 404 { return JSON(nil) }
-        guard (200..<300).contains(http.statusCode), data.count <= maxResponseBytes,
+        guard (200..<300).contains(http.statusCode) else {
+            throw RequestFailure(host: url.host ?? host, path: url.path, details: "HTTP \(http.statusCode)")
+        }
+        guard data.count <= maxResponseBytes,
               let payload = try? JSONSerialization.jsonObject(with: data) else {
-            throw URLError(.badServerResponse)
+            throw RequestFailure(host: url.host ?? host, path: url.path, details: "Неверный ответ (\(data.count) байт)")
         }
         return JSON(payload)
     }
@@ -109,7 +127,7 @@ enum ExternalLyrics {
         var reached = false
         for host in hosts {
             do {
-                let payload = try await get(path, host: host, headers: headers, request: request)
+                let payload = try await get(path, host: host, headers: headers, timeout: 15, request: request)
                 if payload.exists { return payload }
                 reached = true
             } catch {
@@ -288,34 +306,52 @@ enum ExternalLyrics {
     }
 
     /// Текст из LRCLIB: точное совпадение, а нет его — поиск.
-    static func fetchLRCLIB(_ track: Track, mirrorText: String = Settings.lyricsMirror, request: Request = liveRequest) async throws -> LyricsText? {
-        let headers = ["Lrclib-Client": "Tune iOS"]
+    static func fetchLRCLIB(_ track: Track, mirrorText: String = Settings.lyricsMirror, request: Request = liveLRCLIBRequest) async throws -> LyricsText? {
+        let headers = ["User-Agent": "\(agent) (https://github.com/tune-music/tune-ios)"]
         let artist = firstArtist(track)
         var query = "track_name=\(enc(track.title))&artist_name=\(enc(artist))"
         if !track.albumTitle.isEmpty { query += "&album_name=\(enc(track.albumTitle))" }
         if track.duration > 0 { query += "&duration=\(Int(track.duration))" }
         let hosts = lrclibHosts(for: mirrorText)
-        let exact = try? await get("/api/get?\(query)", hosts: hosts, headers: headers, request: request).dict
+        let exact: [String: Any]?
+        var exactFailure: Error?
+        do {
+            exact = try await get("/api/get?\(query)", hosts: hosts, headers: headers, request: request).dict
+        } catch {
+            try Task.checkCancellation()
+            exact = nil
+            exactFailure = error
+        }
         func pick(_ value: [String: Any]) -> LyricsText? {
             guard let text = string(value["syncedLyrics"]) ?? string(value["plainLyrics"]) else { return nil }
             let result = external(text, "LRCLIB")
             return result.lines.contains(where: { !$0.text.isEmpty }) ? result : nil
         }
         if let exact, string(exact["syncedLyrics"]) != nil, let found = pick(exact) { return found }
-        let list: [[String: Any]]
-        do {
-            let payload = try await get("/api/search?track_name=\(enc(track.title))&artist_name=\(enc(artist))", hosts: hosts, headers: headers, request: request)
-            list = payload.array.compactMap(\.dict)
-        } catch {
-            try Task.checkCancellation()
-            if let exact, let found = pick(exact) { return found }
-            throw error
+        let foldedTitle = track.title.replacingOccurrences(of: "ё", with: "е", options: .caseInsensitive)
+        let foldedArtist = artist.replacingOccurrences(of: "ё", with: "е", options: .caseInsensitive)
+        let original = "/api/search?track_name=\(enc(track.title))&artist_name=\(enc(artist))"
+        let folded = "/api/search?track_name=\(enc(foldedTitle))&artist_name=\(enc(foldedArtist))"
+        var plain = exact.flatMap(pick)
+        for path in original == folded ? [original] : [original, folded] {
+            do {
+                let payload = try await get(path, hosts: hosts, headers: headers, request: request)
+                for candidate in payload.array {
+                    guard let value = candidate.dict,
+                          same(track, title: candidate["trackName"].string ?? "", artist: candidate["artistName"].string ?? "",
+                               seconds: candidate["duration"].int ?? 0),
+                          let found = pick(value) else { continue }
+                    if found.synced { return found }
+                    if plain == nil { plain = found }
+                }
+            } catch {
+                try Task.checkCancellation()
+                if let plain { return plain }
+                throw error
+            }
         }
-        let matching = list.filter {
-            same(track, title: $0["trackName"] as? String ?? "", artist: $0["artistName"] as? String ?? "", seconds: Int(((($0["duration"] as? NSNumber)?.doubleValue) ?? 0).rounded()))
-        }
-        let chosen = matching.first { string($0["syncedLyrics"]) != nil } ?? exact ?? matching.first
-        return chosen.flatMap(pick)
+        if plain == nil, let exactFailure { throw exactFailure }
+        return plain
     }
 
     static func fetchNetEase(_ track: Track, request: @escaping Request = liveRequest) async throws -> LyricsText? {
@@ -363,7 +399,7 @@ enum ExternalLyrics {
     }
 
     private static func netease(_ path: String, host: String, request: Request) async throws -> JSON {
-        let payload = try await get(path, host: host, headers: ["Referer": "https://music.163.com/"], request: request)
+        let payload = try await get(path, host: host, headers: ["Referer": "https://music.163.com/"], timeout: 6, request: request)
         if payload.exists, (payload["code"].int ?? 200) != 200 { throw URLError(.badServerResponse) }
         return payload
     }
@@ -404,8 +440,8 @@ enum ExternalLyrics {
 
     /// Настройки, с которыми искали текст: поменялись — сохранённый текст ищется заново.
     static func settingsKey(for options: Options) -> String {
-        guard options.external else { return "v3:yandex" }
-        return "v3:" + [options.always, options.lrclib, options.netease, options.neteaseFirst]
+        guard options.external else { return "v4:yandex" }
+        return "v4:" + [options.always, options.lrclib, options.netease, options.neteaseFirst]
             .map { $0 ? "1" : "0" }.joined() + (mirror(options.mirror) ?? "")
     }
 
@@ -485,7 +521,7 @@ enum ExternalLyrics {
         }
         guard !priority.isEmpty else { return (empty, true) }
 
-        let result = await resolvePriority(priority, fetch: fetchSource, onFailure: onFailure)
+        let result = await resolvePriority(priority, waitForExternal: options.always, fetch: fetchSource, onFailure: onFailure)
         if let winner = result.syncedWinner {
             return (winner, result.complete)
         }
@@ -495,6 +531,7 @@ enum ExternalLyrics {
 
     private static func resolvePriority(
         _ order: [Source],
+        waitForExternal: Bool,
         fetch: @escaping @Sendable (Source) async throws -> LyricsText?,
         onFailure: (@Sendable (Source, Error) -> Void)?
     ) async -> (found: [Source: LyricsText], syncedWinner: LyricsText?, complete: Bool) {
@@ -533,7 +570,7 @@ enum ExternalLyrics {
                     }
                 }
                 if finished.count == order.count { break }
-                if !waitingForPreference, text?.synced == true {
+                if !waitingForPreference, text?.synced == true, !(waitForExternal && source == .yandex) {
                     waitingForPreference = true
                     group.addTask {
                         try? await Task.sleep(nanoseconds: preferenceGrace)

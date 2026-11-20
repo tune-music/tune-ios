@@ -780,7 +780,7 @@ struct SettingsScreen: View {
                     Toggle("LRCLIB", isOn: $lyricsLRCLIB)
                     Toggle("NetEase Cloud Music", isOn: $lyricsNetEase)
                     Toggle("Сначала NetEase", isOn: $lyricsNetEaseFirst)
-                    Toggle("Искать и там, где у Яндекса есть свой текст", isOn: $lyricsAlways)
+                    Toggle("Предпочитать синхронный текст из внешних баз", isOn: $lyricsAlways)
                     if lyricsLRCLIB {
                         TextField("Зеркало LRCLIB", text: $lyricsMirror, prompt: Text("Зеркало LRCLIB, например lrclib.example.com"))
                             .textInputAutocapitalization(.never)
