@@ -10,6 +10,8 @@ enum ExternalLyrics {
     private static let agent = "Tune iOS/\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1")"
     private static let maxResponseBytes = 512 * 1024
     private static let preferenceGrace: UInt64 = 250_000_000
+    private static let lrclibFirstTimeout: TimeInterval = 2.5
+    private static let lrclibRetryTimeout: TimeInterval = 4
 
     private static let timestampRegex = try! NSRegularExpression(pattern: #"\[(\d+):([0-5]?\d(?:[.,]\d+)?)\]"#)
     private static let offsetRegex = try! NSRegularExpression(pattern: #"(?im)^\[offset:([+-]?\d+)\]"#)
@@ -24,16 +26,21 @@ enum ExternalLyrics {
         return URLSession(configuration: config, delegate: noRedirect, delegateQueue: nil)
     }
     private static let session = makeSession(resourceTimeout: 12)
-    private static let lrclibSession = makeSession(resourceTimeout: 20)
+    private static let lrclibFirstSession = makeSession(resourceTimeout: lrclibFirstTimeout)
+    private static let lrclibRetrySession = makeSession(resourceTimeout: lrclibRetryTimeout)
     typealias Request = @Sendable (URLRequest) async throws -> (Data, URLResponse)
 
     static let liveRequest: Request = { try await session.data(for: $0) }
-    static let liveLRCLIBRequest: Request = { try await lrclibSession.data(for: $0) }
+    static let liveLRCLIBRequest: Request = { request in
+        let session = request.timeoutInterval == lrclibFirstTimeout ? lrclibFirstSession : lrclibRetrySession
+        return try await session.data(for: request)
+    }
 
     struct RequestFailure: LocalizedError {
         let host: String
         let path: String
         let details: String
+        var timedOut = false
 
         var errorDescription: String? { "\(host)\(path): \(details)" }
     }
@@ -108,7 +115,8 @@ enum ExternalLyrics {
         } catch {
             try Task.checkCancellation()
             let code = error as NSError
-            throw RequestFailure(host: url.host ?? host, path: url.path, details: "\(code.domain) (\(code.code))")
+            throw RequestFailure(host: url.host ?? host, path: url.path, details: "\(code.domain) (\(code.code))",
+                                 timedOut: code.domain == NSURLErrorDomain && code.code == NSURLErrorTimedOut)
         }
         guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
         if http.statusCode == 404 { return JSON(nil) }
@@ -122,12 +130,18 @@ enum ExternalLyrics {
         return JSON(payload)
     }
 
-    private static func get(_ path: String, hosts: [String], headers: [String: String], request: Request) async throws -> JSON {
+    private static func getLRCLIB(_ path: String, hosts: [String], headers: [String: String], retried: inout Bool, request: Request) async throws -> JSON {
         var failure: Error = URLError(.cannotConnectToHost)
         var reached = false
         for host in hosts {
             do {
-                let payload = try await get(path, host: host, headers: headers, timeout: 15, request: request)
+                let payload: JSON
+                do {
+                    payload = try await get(path, host: host, headers: headers, timeout: lrclibFirstTimeout, request: request)
+                } catch let error as RequestFailure where error.timedOut && !retried && host == hosts.last {
+                    retried = true
+                    payload = try await get(path, host: host, headers: headers, timeout: lrclibRetryTimeout, request: request)
+                }
                 if payload.exists { return payload }
                 reached = true
             } catch {
@@ -313,10 +327,11 @@ enum ExternalLyrics {
         if !track.albumTitle.isEmpty { query += "&album_name=\(enc(track.albumTitle))" }
         if track.duration > 0 { query += "&duration=\(Int(track.duration))" }
         let hosts = lrclibHosts(for: mirrorText)
+        var retried = false
         let exact: [String: Any]?
         var exactFailure: Error?
         do {
-            exact = try await get("/api/get?\(query)", hosts: hosts, headers: headers, request: request).dict
+            exact = try await getLRCLIB("/api/get?\(query)", hosts: hosts, headers: headers, retried: &retried, request: request).dict
         } catch {
             try Task.checkCancellation()
             exact = nil
@@ -335,7 +350,7 @@ enum ExternalLyrics {
         var plain = exact.flatMap(pick)
         for path in original == folded ? [original] : [original, folded] {
             do {
-                let payload = try await get(path, hosts: hosts, headers: headers, request: request)
+                let payload = try await getLRCLIB(path, hosts: hosts, headers: headers, retried: &retried, request: request)
                 for candidate in payload.array {
                     guard let value = candidate.dict,
                           same(track, title: candidate["trackName"].string ?? "", artist: candidate["artistName"].string ?? "",

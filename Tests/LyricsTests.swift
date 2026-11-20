@@ -68,6 +68,7 @@ struct LyricsTests {
         testHelpers()
         await testFindPriorityAndConcurrency()
         try await testExternalProviderFallbacks()
+        try await testLRCLIBRetry()
         testAcceptCachedPolicy()
         print("Lyrics unit checks passed")
 
@@ -327,7 +328,7 @@ struct LyricsTests {
         let pirate = makeTrack(title: "Почему ты ещё не фанат?", artists: "Серёга Пират", durationMs: 163_711)
         let pirateLyrics = try await ExternalLyrics.fetchLRCLIB(pirate, mirrorText: "") { request in
             let url = request.url!
-            assertCheck(request.timeoutInterval > 6, "LRCLIB needs a longer timeout")
+            assertCheck(request.timeoutInterval <= 4, "LRCLIB requests must not wait on the old 15-second timeout")
             assertCheck(request.value(forHTTPHeaderField: "User-Agent")?.contains("github.com/tune-music/tune-ios") == true, "LRCLIB requires client identification")
             if url.path == "/api/get" { throw URLError(.timedOut) }
             let artist = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "artist_name" }?.value
@@ -337,8 +338,44 @@ struct LyricsTests {
         assertCheck(pirateLyrics?.synced == true, "LRCLIB must retry with folded Russian metadata")
     }
 
-    private static func response(_ url: URL, _ body: String) -> (Data, URLResponse) {
-        (Data(body.utf8), HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+    private static func testLRCLIBRetry() async throws {
+        let track = makeTrack(title: "Test Song", artists: "Test Artist")
+        let exactCalls = Counter()
+        let found = try await ExternalLyrics.fetchLRCLIB(track, mirrorText: "") { request in
+            let url = request.url!
+            assertCheck(url.path == "/api/get", "Successful retry must not start another search")
+            exactCalls.increment()
+            if exactCalls.value == 1 {
+                assertCheck(request.timeoutInterval == 2.5, "First attempt must fail quickly")
+                throw URLError(.timedOut)
+            }
+            assertCheck(request.timeoutInterval == 4, "Retry must have a bounded timeout")
+            return response(url, #"{"syncedLyrics":"[00:01]Found on retry"}"#)
+        }
+        assertCheck(exactCalls.value == 2 && found?.synced == true, "First timeout must retry automatically once")
+
+        let missingCalls = Counter()
+        let missing = try await ExternalLyrics.fetchLRCLIB(track, mirrorText: "") { request in
+            let url = request.url!
+            missingCalls.increment()
+            return url.path == "/api/get" ? response(url, "{}", status: 404) : response(url, "[]")
+        }
+        assertCheck(missingCalls.value == 2 && missing == nil, "A 404 must go directly to search, without retry")
+
+        let timeoutCalls = Counter()
+        do {
+            _ = try await ExternalLyrics.fetchLRCLIB(track, mirrorText: "") { _ in
+                timeoutCalls.increment()
+                throw URLError(.timedOut)
+            }
+            assertCheck(false, "Persistent timeouts must remain a network error")
+        } catch {
+            assertCheck(timeoutCalls.value == 3, "Exact lookup and search may share only one automatic retry")
+        }
+    }
+
+    private static func response(_ url: URL, _ body: String, status: Int = 200) -> (Data, URLResponse) {
+        (Data(body.utf8), HTTPURLResponse(url: url, statusCode: status, httpVersion: nil, headerFields: nil)!)
     }
 
     private static func testAcceptCachedPolicy() {
