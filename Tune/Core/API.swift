@@ -1426,8 +1426,9 @@ final class API {
         if !forceRefresh, let saved = Self.cachedLyrics(for: track, anySource: false) {
             return (saved, true)
         }
-        let key = ExternalLyrics.settingsKey
-        let previous = Self.savedLyrics(for: track)
+        let options = ExternalLyrics.Options.current
+        let key = ExternalLyrics.settingsKey(for: options)
+        let previous = Self.savedLyrics(for: track).flatMap { ExternalLyrics.enabledFallback($0, options: options) }
         let work: @Sendable () async throws -> (LyricsText, Bool) = {
             let name = "Lyrics/\(Storage.hash(track.id)).json"
             let ask: @Sendable (String) async throws -> LyricsText = { id in
@@ -1438,35 +1439,26 @@ final class API {
                     ? LyricsText(lines: [], authors: nil, source: nil)
                     : LyricsText(lines: clean, authors: own.authors, source: own.source)
             }
-            var (found, complete) = await ExternalLyrics.find(track, yandex: ask)
-            // Ни один источник не ответил (первое соединение не успело, сеть мигнула) — ещё раз,
-            // а не сразу «Текста нет».
-            if found.lines.isEmpty, !complete, !Task.isCancelled, !(await Connectivity.shared.offline) {
-                try await Task.sleep(nanoseconds: 500_000_000)
-                (found, complete) = await ExternalLyrics.find(track, yandex: ask)
-            }
+            let (found, complete) = await ExternalLyrics.find(track, options: options, yandex: ask)
             try Task.checkCancellation()
             // Аккаунту без Плюса Яндекс вместо текста отдаёт просьбу подключить подписку.
             // Её нельзя сохранять: иначе она останется и после входа в аккаунт с Плюсом.
             if !Self.isStub(found.lines), !found.lines.isEmpty {
                 var result = found
-                result.searched = key
+                result.searched = complete ? key : "partial:\(key)"
                 Storage.save(result, name)
-                return (result, true)
+                return (result, complete)
             }
             if let embedded = await Self.embeddedLyrics(for: track.id) {
                 var result = embedded
-                result.searched = key
+                result.searched = complete ? key : "partial:\(key)"
                 Storage.save(result, name)
-                return (result, true)
+                return (result, complete)
             }
             if let previous {
                 return (previous, complete)
             }
             return (LyricsText(lines: [], authors: nil, source: nil), complete)
-        }
-        if forceRefresh {
-            return try await work()
         }
         return try await lyricsInFlight.run(key: "\(track.id)|\(key)", operation: work)
     }

@@ -266,8 +266,9 @@ final class Downloads: ObservableObject {
             let key = ExternalLyrics.settingsKey
             activeAssets.insert(track.id)
             Task(priority: .utility) { [weak self] in
-                await ImageLoader.shared.pin(track.cover)
+                async let cover: Void = ImageLoader.shared.pin(track.cover)
                 let done = await API.shared.prefetchLyrics(for: track)
+                await cover
                 await MainActor.run {
                     guard let self else { return }
                     self.activeAssets.remove(track.id)

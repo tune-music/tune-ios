@@ -9,19 +9,14 @@ import Foundation
 enum ExternalLyrics {
     private static let agent = "Tune iOS/\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1")"
     private static let maxResponseBytes = 512 * 1024
+    private static let preferenceGrace: UInt64 = 250_000_000
+    private static let searchBudget: UInt64 = 8_000_000_000
 
     private static let timestampRegex = try! NSRegularExpression(pattern: #"\[(\d+):([0-5]?\d(?:[.,]\d+)?)\]"#)
     private static let offsetRegex = try! NSRegularExpression(pattern: #"(?im)^\[offset:([+-]?\d+)\]"#)
 
-    /// Отдельная сессия без cookies, кэша и авто-редиректов: долгоживущая cookie `NMTID` от NetEase
-    /// переводит поиск в режим подмены выдачи на случайные китайские треки.
     private static let noRedirect = NoRedirectDelegate()
     private static let session: URLSession = {
-        if let cookies = HTTPCookieStorage.shared.cookies {
-            for cookie in cookies where cookie.domain.contains("163.com") {
-                HTTPCookieStorage.shared.deleteCookie(cookie)
-            }
-        }
         let config = URLSessionConfiguration.ephemeral
         config.httpShouldSetCookies = false
         config.httpCookieAcceptPolicy = .never
@@ -121,9 +116,8 @@ enum ExternalLyrics {
                     await memory.worked(host, among: hosts)
                     return nil
                 }
-                let json = try? JSONSerialization.jsonObject(with: data)
-                if netease, let dict = json as? [String: Any],
-                   let code = (dict["code"] as? NSNumber)?.intValue, code != 200 {
+                guard let json = try? JSONSerialization.jsonObject(with: data),
+                      !netease || (json as? [String: Any])?["code"] as? Int == 200 else {
                     await memory.failed(host, among: hosts)
                     failure = URLError(.badServerResponse)
                     continue
@@ -380,8 +374,8 @@ enum ExternalLyrics {
 
     /// Настройки, с которыми искали текст: поменялись — сохранённый текст ищется заново.
     static func settingsKey(for options: Options) -> String {
-        guard options.external else { return "yandex" }
-        return [options.always, options.lrclib, options.netease, options.neteaseFirst]
+        guard options.external else { return "v2:yandex" }
+        return "v2:" + [options.always, options.lrclib, options.netease, options.neteaseFirst]
             .map { $0 ? "1" : "0" }.joined() + (mirror(options.mirror) ?? "")
     }
 
@@ -392,8 +386,11 @@ enum ExternalLyrics {
         guard !saved.lines.isEmpty, !isStub(saved.lines) else { return nil }
         if anySource { return saved }
         if saved.searched == settingsKey(for: options) { return saved }
-        // Старый кэш мог остаться без ключа.
         guard saved.searched == nil else { return nil }
+        return enabledFallback(saved, options: options)
+    }
+
+    static func enabledFallback(_ saved: LyricsText, options: Options) -> LyricsText? {
         switch saved.source {
         case "LRCLIB" where !options.external || !options.lrclib: return nil
         case "NetEase" where !options.external || !options.netease: return nil
@@ -404,10 +401,7 @@ enum ExternalLyrics {
     /// Текст трека и все ли источники ответили. Не ответил какой-то — найденное не
     /// окончательно, в следующий раз спросим снова.
     ///
-    /// Когда у трека уже ожидается текст Яндекса и «Искать и там, где у Яндекса есть свой текст»
-    /// выключено, сначала спрашиваем только Яндекс; если там синхронного нет, параллельно
-    /// опрашиваем внешние базы в порядке приоритета. В остальных случаях все источники идут
-    /// одновременно, но более приоритетный синхронный текст не уступает быстрому низкоприоритетному.
+    /// Источники опрашиваются одновременно. Приоритетный текст выигрывает, если успевает за короткую паузу.
     static func find(
         _ track: Track,
         options: Options = .current,
@@ -453,32 +447,6 @@ enum ExternalLyrics {
             }
         }
 
-        // Быстрый путь: у Яндекса помечен свой текст и внешние базы не приоритетнее.
-        if askYandex && track.hasLyrics && (!options.always || externalOrder.isEmpty) {
-            var yandexPlain: LyricsText?
-            var yandexReached = true
-            do {
-                if let own = try await fetchSource(.yandex) {
-                    if own.synced { return (own, true) }
-                    yandexPlain = own
-                }
-            } catch {
-                if Task.isCancelled { return (empty, false) }
-                yandexReached = false
-            }
-            if externalOrder.isEmpty {
-                return (yandexPlain ?? empty, yandexReached)
-            }
-            let result = await resolvePriority(externalOrder, fetch: fetchSource)
-            if let winner = result.syncedWinner {
-                return (winner, true)
-            }
-            let plain = yandexPlain ?? externalOrder.compactMap { result.found[$0] }.first ?? empty
-            return (plain, yandexReached && result.complete)
-        }
-
-        // Параллельный путь с уважением приоритета: Яндекс всегда проверяется у публичных треков,
-        // даже если флаг `hasLyrics` в API оказался false.
         let priority: [Source] = if options.always && !externalOrder.isEmpty {
             externalOrder + (askYandex ? [.yandex] : [])
         } else {
@@ -488,7 +456,7 @@ enum ExternalLyrics {
 
         let result = await resolvePriority(priority, fetch: fetchSource)
         if let winner = result.syncedWinner {
-            return (winner, true)
+            return (winner, result.complete)
         }
         let plain = result.found[.yandex] ?? externalOrder.compactMap { result.found[$0] }.first ?? empty
         return (plain, result.complete)
@@ -498,7 +466,12 @@ enum ExternalLyrics {
         _ order: [Source],
         fetch: @escaping @Sendable (Source) async throws -> LyricsText?
     ) async -> (found: [Source: LyricsText], syncedWinner: LyricsText?, complete: Bool) {
-        await withTaskGroup(of: (Source, LyricsText?, Bool).self) { group in
+        await withTaskGroup(of: (Source?, LyricsText?, Bool).self) { group in
+            group.addTask {
+                try? await Task.sleep(nanoseconds: searchBudget)
+                return (nil, nil, false)
+            }
+            defer { group.cancelAll() }
             for source in order {
                 group.addTask {
                     do {
@@ -511,22 +484,35 @@ enum ExternalLyrics {
             }
             var found: [Source: LyricsText] = [:]
             var finished: Set<Source> = []
-            var complete = true
+            var reachedSources: Set<Source> = []
+            var waitingForPreference = false
             for await (source, text, reached) in group {
+                guard let source else {
+                    let winner = order.compactMap { found[$0] }.first(where: \.synced)
+                    return (found, winner, false)
+                }
                 finished.insert(source)
-                if !reached { complete = false }
+                if reached { reachedSources.insert(source) }
                 if let text, !text.lines.isEmpty { found[source] = text }
                 for candidateSource in order {
                     if let candidate = found[candidateSource], candidate.synced {
-                        group.cancelAll()
-                        return (found, candidate, true)
+                        let definitive = order.prefix(while: { $0 != candidateSource }).allSatisfy { reachedSources.contains($0) }
+                        return (found, candidate, definitive)
                     }
                     if !finished.contains(candidateSource) {
                         break
                     }
                 }
+                if finished.count == order.count { break }
+                if !waitingForPreference, text?.synced == true {
+                    waitingForPreference = true
+                    group.addTask {
+                        try? await Task.sleep(nanoseconds: preferenceGrace)
+                        return (nil, nil, false)
+                    }
+                }
             }
-            return (found, nil, complete)
+            return (found, nil, reachedSources.count == order.count)
         }
     }
 }

@@ -153,20 +153,16 @@ struct LyricsTests {
         let syncedNetEase = LyricsText(lines: [LyricLine(id: 0, time: 1, text: "NetEase строка")], authors: nil, source: "NetEase")
         let empty = LyricsText(lines: [], authors: nil, source: nil)
 
-        // 1. hasLyrics=true, always=false, Yandex synced -> fast path without touching external sources.
         do {
-            let lrcCalls = Counter()
-            let neCalls = Counter()
             let track = makeTrack(title: "T1", artists: "A1", hasLyrics: true)
             let opts = ExternalLyrics.Options(external: true, always: false, lrclib: true, netease: true, neteaseFirst: true, mirror: "")
             let (res, complete) = await ExternalLyrics.find(
                 track, options: opts,
                 yandex: { _ in syncedYandex },
-                lrclib: { _ in lrcCalls.increment(); return syncedLRCLIB },
-                netease: { _ in neCalls.increment(); return syncedNetEase }
+                lrclib: { _ in syncedLRCLIB },
+                netease: { _ in syncedNetEase }
             )
-            assertCheck(res.source == LyricsText.yandex && complete, "Fast path should return Yandex synced")
-            assertCheck(lrcCalls.value == 0 && neCalls.value == 0, "External sources must not be called when Yandex synced suffices")
+            assertCheck(res.source == LyricsText.yandex && complete, "Yandex should win when it responds within the grace window")
         }
 
         // 2. hasLyrics=false -> Yandex is STILL checked; if empty, falls back to external.
@@ -265,6 +261,33 @@ struct LyricsTests {
             )
             assertCheck(res.source == "NetEase" && complete, "Subscription stub must be ignored in favor of NetEase")
         }
+
+        do {
+            let track = makeTrack(title: "T8", artists: "A8", hasLyrics: true)
+            let opts = ExternalLyrics.Options(external: true, always: false, lrclib: false, netease: true, neteaseFirst: true, mirror: "")
+            let canceled = Counter()
+            let (res, complete) = await ExternalLyrics.find(
+                track, options: opts,
+                yandex: { _ in
+                    do {
+                        try await Task.sleep(nanoseconds: 3_000_000_000)
+                        return syncedYandex
+                    } catch {
+                        canceled.increment()
+                        throw error
+                    }
+                },
+                netease: { _ in syncedNetEase }
+            )
+            assertCheck(res.source == "NetEase" && !complete && canceled.value == 1, "A slow Yandex response must not block NetEase or make the fallback final")
+
+            let (fallback, definitive) = await ExternalLyrics.find(
+                track, options: opts,
+                yandex: { _ in throw URLError(.timedOut) },
+                netease: { _ in syncedNetEase }
+            )
+            assertCheck(fallback.source == "NetEase" && !definitive, "Failure of the preferred provider must leave the fallback open to retry")
+        }
     }
 
     private static func testAcceptCachedPolicy() {
@@ -281,6 +304,11 @@ struct LyricsTests {
         assertCheck(ExternalLyrics.acceptCached(saved, options: opts1, anySource: false) != nil, "Matching settings cache must be accepted")
         assertCheck(ExternalLyrics.acceptCached(saved, options: opts2, anySource: false) == nil, "Mismatched settings cache must be rejected online")
         assertCheck(ExternalLyrics.acceptCached(saved, options: opts2, anySource: true) != nil, "Mismatched settings cache MUST be accepted offline")
+
+        var partial = saved
+        partial.searched = "partial:\(key1)"
+        assertCheck(ExternalLyrics.acceptCached(partial, options: opts1, anySource: false) == nil, "Partial cache must not suppress a new online attempt")
+        assertCheck(ExternalLyrics.acceptCached(partial, options: opts1, anySource: true) != nil, "Partial cache must remain available offline")
 
         let legacyNetEase = LyricsText(lines: [LyricLine(id: 0, time: 1.0, text: "Old")], authors: nil, source: "NetEase", searched: nil)
         let noNetEase = ExternalLyrics.Options(external: true, always: false, lrclib: true, netease: false, neteaseFirst: false, mirror: "")

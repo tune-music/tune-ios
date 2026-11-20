@@ -836,7 +836,7 @@ private struct LyricsPane: View {
                     VStack(spacing: 10) {
                         Image(systemName: "text.quote")
                             .font(.system(size: 34))
-                        Text("Текста нет")
+                        Text(connectivity.offline ? "Нет сохранённого текста" : "Текста нет")
                             .font(.scaled(size: 18, weight: .semibold))
                         Button {
                             attempt += 1
@@ -850,6 +850,7 @@ private struct LyricsPane: View {
                         }
                         .buttonStyle(PressStyle())
                         .padding(.top, 6)
+                        .disabled(connectivity.offline)
                     }
                     .foregroundStyle(.white.opacity(0.6))
                 } else {
@@ -864,7 +865,8 @@ private struct LyricsPane: View {
         .task(id: "\(track.id)#\(attempt)#\(ExternalLyrics.settingsKey)#\(connectivity.offline)") {
             recenterTask?.cancel()
             recenterTask = nil
-            if attempt == 0, let cached = API.cachedLyrics(for: track, anySource: connectivity.offline) {
+            if attempt == 0 || connectivity.offline,
+               let cached = API.cachedLyrics(for: track, anySource: connectivity.offline) {
                 show(cached)
                 return
             }
