@@ -1409,15 +1409,7 @@ final class API {
 
     /// Текст трека: Яндекс, LRCLIB и NetEase — в порядке из настроек.
     func lyrics(for track: Track, forceRefresh: Bool = false) async throws -> LyricsText {
-        let (text, complete) = try await ExternalLyrics.retryEmptyLookup({ retry in
-            try await self.resolveLyrics(for: track, forceRefresh: forceRefresh || retry)
-        }, waitBeforeRetry: {
-            let options = ExternalLyrics.Options.current
-            guard !forceRefresh, !track.isPrivate || (options.external && (options.lrclib || options.netease)),
-                  !(await Connectivity.shared.offline) else { return false }
-            try await Task.sleep(nanoseconds: 250_000_000)
-            return !(await Connectivity.shared.offline)
-        })
+        let (text, complete) = try await resolveLyrics(for: track, forceRefresh: forceRefresh)
         if text.lines.isEmpty && !complete { throw TuneError("Не удалось загрузить текст") }
         return text
     }

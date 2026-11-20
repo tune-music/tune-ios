@@ -1,22 +1,5 @@
 import Foundation
 
-private final class Counter: @unchecked Sendable {
-    private let lock = NSLock()
-    private var _value = 0
-
-    var value: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return _value
-    }
-
-    func increment() {
-        lock.lock()
-        _value += 1
-        lock.unlock()
-    }
-}
-
 private func assertCheck(_ condition: @autoclosure () -> Bool, _ message: String, file: StaticString = #filePath, line: UInt = #line) {
     if !condition() {
         fputs("FAIL (\(file):\(line)): \(message)\n", stderr)
@@ -66,10 +49,8 @@ struct LyricsTests {
         testParseLRC()
         testMatching()
         testHelpers()
-        await testFindPriorityAndConcurrency()
+        await testProviderOrder()
         try await testExternalProviderFallbacks()
-        try await testLRCLIBRetry()
-        try await testRetryEmptyLookup()
         testAcceptCachedPolicy()
         print("Lyrics unit checks passed")
 
@@ -149,265 +130,98 @@ struct LyricsTests {
         assertCheck(ExternalLyrics.mirror("   ") == nil, "Blank mirror must be nil")
     }
 
-    private static func testFindPriorityAndConcurrency() async {
-        let syncedYandex = LyricsText(lines: [LyricLine(id: 0, time: 1, text: "Яндекс строка")], authors: nil, source: LyricsText.yandex)
-        let plainYandex = LyricsText(lines: [LyricLine(id: 0, time: nil, text: "Обычный текст")], authors: nil, source: LyricsText.yandex)
-        let syncedLRCLIB = LyricsText(lines: [LyricLine(id: 0, time: 1, text: "LRCLIB строка")], authors: nil, source: "LRCLIB")
-        let syncedNetEase = LyricsText(lines: [LyricLine(id: 0, time: 1, text: "NetEase строка")], authors: nil, source: "NetEase")
-        let empty = LyricsText(lines: [], authors: nil, source: nil)
+    private static func testProviderOrder() async {
+        let track = makeTrack(title: "Song", artists: "Artist", hasLyrics: true)
+        let synced = LyricsText(lines: [LyricLine(id: 0, time: 1, text: "Synced")], authors: nil, source: nil)
+        let plain = LyricsText(lines: [LyricLine(id: 0, time: nil, text: "Plain")], authors: nil, source: nil)
+        let opts = ExternalLyrics.Options(external: true, always: false, lrclib: true, netease: true, neteaseFirst: false, mirror: "")
 
-        do {
-            let track = makeTrack(title: "T1", artists: "A1", hasLyrics: true)
-            let opts = ExternalLyrics.Options(external: true, always: false, lrclib: true, netease: true, neteaseFirst: true, mirror: "")
-            let (res, complete) = await ExternalLyrics.find(
-                track, options: opts,
-                yandex: { _ in syncedYandex },
-                lrclib: { _ in syncedLRCLIB },
-                netease: { _ in syncedNetEase }
-            )
-            assertCheck(res.source == LyricsText.yandex && complete, "Yandex should win when it responds within the grace window")
-        }
+        var calls: [ExternalLyrics.Source] = []
+        let (own, ownComplete) = await ExternalLyrics.find(
+            track, options: opts,
+            yandex: { _ in calls.append(.yandex); return synced },
+            lrclib: { _ in calls.append(.lrclib); return nil },
+            netease: { _ in calls.append(.netease); return nil }
+        )
+        assertCheck(ownComplete && own.source == LyricsText.yandex && calls == [.yandex], "Yandex synced text must stop external requests")
 
-        // 2. hasLyrics=false -> Yandex is STILL checked; if empty, falls back to external.
-        do {
-            let yandexCalls = Counter()
-            let track = makeTrack(title: "T2", artists: "A2", hasLyrics: false)
-            let opts = ExternalLyrics.Options(external: true, always: false, lrclib: true, netease: true, neteaseFirst: false, mirror: "")
-            let (res1, _) = await ExternalLyrics.find(
-                track, options: opts,
-                yandex: { _ in yandexCalls.increment(); return syncedYandex },
-                lrclib: { _ in try? await Task.sleep(nanoseconds: 50_000_000); return syncedLRCLIB },
-                netease: { _ in try? await Task.sleep(nanoseconds: 50_000_000); return syncedNetEase }
-            )
-            assertCheck(yandexCalls.value == 1 && res1.source == LyricsText.yandex, "Yandex must still be queried when hasLyrics == false")
+        calls = []
+        let (external, complete) = await ExternalLyrics.find(
+            track, options: opts,
+            yandex: { _ in calls.append(.yandex); throw URLError(.timedOut) },
+            lrclib: { _ in
+                calls.append(.lrclib)
+                return LyricsText(lines: synced.lines, authors: nil, source: "LRCLIB")
+            },
+            netease: { _ in calls.append(.netease); return nil }
+        )
+        assertCheck(complete && external.source == "LRCLIB" && calls == [.yandex, .lrclib], "A timed out provider must not block or invalidate a usable fallback")
 
-            let (res2, _) = await ExternalLyrics.find(
-                track, options: opts,
-                yandex: { _ in empty },
-                lrclib: { _ in try? await Task.sleep(nanoseconds: 20_000_000); return syncedLRCLIB },
-                netease: { _ in try? await Task.sleep(nanoseconds: 80_000_000); return syncedNetEase }
-            )
-            assertCheck(res2.source == "LRCLIB", "When neteaseFirst=false and Yandex empty, LRCLIB should win")
-        }
+        calls = []
+        var preferred = opts
+        preferred.always = true
+        preferred.neteaseFirst = true
+        let (first, _) = await ExternalLyrics.find(
+            track, options: preferred,
+            yandex: { _ in calls.append(.yandex); return synced },
+            lrclib: { _ in calls.append(.lrclib); return nil },
+            netease: { _ in
+                calls.append(.netease)
+                return LyricsText(lines: synced.lines, authors: nil, source: "NetEase")
+            }
+        )
+        assertCheck(first.source == "NetEase" && calls == [.yandex, .netease], "NetEase first must preserve Yandex as fallback")
 
-        // 3. neteaseFirst=true with faster LRCLIB -> waits for NetEase and returns NetEase.
-        do {
-            let track = makeTrack(title: "T3", artists: "A3", hasLyrics: false)
-            let opts = ExternalLyrics.Options(external: true, always: false, lrclib: true, netease: true, neteaseFirst: true, mirror: "")
-            let (res, complete) = await ExternalLyrics.find(
-                track, options: opts,
-                yandex: { _ in empty },
-                lrclib: { _ in try? await Task.sleep(nanoseconds: 10_000_000); return syncedLRCLIB },
-                netease: { _ in try? await Task.sleep(nanoseconds: 80_000_000); return syncedNetEase }
-            )
-            assertCheck(res.source == "NetEase" && complete, "neteaseFirst=true must wait for higher-priority NetEase")
-        }
+        let (fallback, fallbackComplete) = await ExternalLyrics.find(
+            track, options: preferred,
+            yandex: { _ in plain },
+            lrclib: { _ in throw URLError(.timedOut) },
+            netease: { _ in nil }
+        )
+        assertCheck(fallbackComplete && fallback.source == LyricsText.yandex && !fallback.synced, "Plain text must remain usable after an external failure")
 
-        // 4. neteaseFirst=true with faster LRCLIB and empty NetEase -> falls back to LRCLIB.
-        do {
-            let track = makeTrack(title: "T4", artists: "A4", hasLyrics: false)
-            let opts = ExternalLyrics.Options(external: true, always: false, lrclib: true, netease: true, neteaseFirst: true, mirror: "")
-            let (res, complete) = await ExternalLyrics.find(
-                track, options: opts,
-                yandex: { _ in empty },
-                lrclib: { _ in try? await Task.sleep(nanoseconds: 10_000_000); return syncedLRCLIB },
-                netease: { _ in try? await Task.sleep(nanoseconds: 60_000_000); return nil }
-            )
-            assertCheck(res.source == "LRCLIB" && complete, "neteaseFirst=true should fall back to LRCLIB when NetEase has nothing")
-        }
-
-        // 5. always=true -> prefers external synced over fast Yandex synced; falls back to Yandex synced if external has nothing.
-        do {
-            let track = makeTrack(title: "T5", artists: "A5", hasLyrics: true)
-            let opts = ExternalLyrics.Options(external: true, always: true, lrclib: true, netease: true, neteaseFirst: false, mirror: "")
-            let (res1, _) = await ExternalLyrics.find(
-                track, options: opts,
-                yandex: { _ in syncedYandex },
-                lrclib: { _ in try? await Task.sleep(nanoseconds: 40_000_000); return nil },
-                netease: { _ in try? await Task.sleep(nanoseconds: 350_000_000); return syncedNetEase }
-            )
-            assertCheck(res1.source == "NetEase", "always=true must prefer external synced over Yandex synced")
-
-            let (res2, _) = await ExternalLyrics.find(
-                track, options: opts,
-                yandex: { _ in syncedYandex },
-                lrclib: { _ in nil },
-                netease: { _ in nil }
-            )
-            assertCheck(res2.source == LyricsText.yandex, "always=true must fall back to Yandex synced when external has nothing")
-        }
-
-        // 6. Private (UGC) track -> never calls Yandex, still finds external lyrics.
-        do {
-            let yandexCalls = Counter()
-            let track = makeTrack(id: "ugc-123", title: "Private", artists: "Singer", hasLyrics: false, ugc: true)
-            let opts = ExternalLyrics.Options(external: true, always: false, lrclib: true, netease: true, neteaseFirst: false, mirror: "")
-            let (res, complete) = await ExternalLyrics.find(
-                track, options: opts,
-                yandex: { _ in yandexCalls.increment(); return plainYandex },
-                lrclib: { _ in syncedLRCLIB },
-                netease: { _ in nil }
-            )
-            assertCheck(yandexCalls.value == 0 && res.source == "LRCLIB" && complete, "Private track must skip Yandex and use external")
-        }
-
-        // 7. Yandex subscription stub filtered out.
-        do {
-            let stub = LyricsText(lines: [LyricLine(id: 0, time: nil, text: "Текст доступен по подписке")], authors: nil, source: LyricsText.yandex)
-            let track = makeTrack(title: "T7", artists: "A7", hasLyrics: true)
-            let opts = ExternalLyrics.Options(external: true, always: false, lrclib: false, netease: true, neteaseFirst: false, mirror: "")
-            let (res, complete) = await ExternalLyrics.find(
-                track, options: opts,
-                yandex: { _ in stub },
-                lrclib: { _ in nil },
-                netease: { _ in syncedNetEase }
-            )
-            assertCheck(res.source == "NetEase" && complete, "Subscription stub must be ignored in favor of NetEase")
-        }
-
-        do {
-            let track = makeTrack(title: "T8", artists: "A8", hasLyrics: true)
-            let opts = ExternalLyrics.Options(external: true, always: false, lrclib: false, netease: true, neteaseFirst: true, mirror: "")
-            let canceled = Counter()
-            let (res, complete) = await ExternalLyrics.find(
-                track, options: opts,
-                yandex: { _ in
-                    do {
-                        try await Task.sleep(nanoseconds: 3_000_000_000)
-                        return syncedYandex
-                    } catch {
-                        canceled.increment()
-                        throw error
-                    }
-                },
-                netease: { _ in syncedNetEase }
-            )
-            assertCheck(res.source == "NetEase" && !complete && canceled.value == 1, "A slow Yandex response must not block NetEase or make the fallback final")
-
-            let (fallback, definitive) = await ExternalLyrics.find(
-                track, options: opts,
-                yandex: { _ in throw URLError(.timedOut) },
-                netease: { _ in syncedNetEase }
-            )
-            assertCheck(fallback.source == "NetEase" && !definitive, "Failure of the preferred provider must leave the fallback open to retry")
-        }
+        let privateTrack = makeTrack(title: "Upload", artists: "Artist", ugc: true)
+        let (missing, missingComplete) = await ExternalLyrics.find(
+            privateTrack, options: opts,
+            yandex: { _ in assertCheck(false, "Do not ask Yandex for private tracks"); return synced },
+            lrclib: { _ in throw URLError(.timedOut) },
+            netease: { _ in nil }
+        )
+        assertCheck(missing.lines.isEmpty && !missingComplete, "A network failure without lyrics must remain retryable")
     }
 
     private static func testExternalProviderFallbacks() async throws {
-        let track = makeTrack(title: "Test Song", artists: "Test Artist")
-        let netease = try await ExternalLyrics.fetchNetEase(track) { request in
-            let url = request.url!
-            switch url.host {
-            case "music.163.com":
-                throw URLError(.timedOut)
-            case "interface.music.163.com":
-                return response(url, #"{"code":200,"result":{"songs":[]}}"#)
-            default:
-                if url.path == "/api/search/get" {
-                    return response(url, #"{"code":200,"result":{"songs":[{"id":1,"name":"Test Song","artists":[{"name":"Test Artist"}]},{"id":"2","name":"Test Song","artists":[{"name":"Test Artist"}]}]}}"#)
-                }
-                if url.query?.contains("id=1") == true { throw URLError(.badServerResponse) }
-                return response(url, #"{"code":200,"lrc":{"lyric":"[00:01]One\n[00:02]Two\n[00:03]Three\n[00:04]Four"}}"#)
-            }
-        }
-        assertCheck(netease?.source == "NetEase" && netease?.lines.count == 4, "An empty host, a failed host and a failed first song must not hide a valid result")
-
+        let track = makeTrack(title: "Почему ты еще не фанат?", artists: "Серега Пират", durationMs: 163_711)
         let lrclib = try await ExternalLyrics.fetchLRCLIB(track, mirrorText: "mirror.example") { request in
             let url = request.url!
-            if url.host == "mirror.example" || url.path == "/api/get" { throw URLError(.timedOut) }
-            return response(url, #"[{"trackName":"Test Song","artistName":"Test Artist","duration":200,"syncedLyrics":"[00:01]One"}]"#)
+            assertCheck(request.timeoutInterval == 6, "Use the Android read timeout")
+            assertCheck(url.query?.contains("+") == true, "Use Android form encoding for spaces")
+            assertCheck(request.value(forHTTPHeaderField: "User-Agent")?.contains("github.com/tune-music/tune-ios") == true, "Identify the LRCLIB client")
+            if url.host == "mirror.example" { throw URLError(.timedOut) }
+            if url.path == "/api/get" { return response(url, "{}", status: 404) }
+            return response(url, #"[{"trackName":"Почему ты еще не фанат?","artistName":"СЕРЕГА ПИРАТ","duration":164,"syncedLyrics":"[00:01]Match"}]"#)
         }
-        assertCheck(lrclib?.source == "LRCLIB" && lrclib?.synced == true, "A failed mirror and exact request must not prevent LRCLIB search")
+        assertCheck(lrclib?.source == "LRCLIB" && lrclib?.synced == true, "An unavailable mirror and an exact miss must fall back to search")
 
         let plain = try await ExternalLyrics.fetchLRCLIB(track, mirrorText: "") { request in
             let url = request.url!
             if url.path == "/api/search" { throw URLError(.timedOut) }
             return response(url, #"{"plainLyrics":"Available text"}"#)
         }
-        assertCheck(plain?.lines.first?.text == "Available text", "Search failure must not discard plain LRCLIB lyrics")
+        assertCheck(plain?.lines.first?.text == "Available text", "Search failure must not discard available plain lyrics")
 
-        let pirate = makeTrack(title: "Почему ты ещё не фанат?", artists: "Серёга Пират", durationMs: 163_711)
-        let pirateLyrics = try await ExternalLyrics.fetchLRCLIB(pirate, mirrorText: "") { request in
+        let netease = try await ExternalLyrics.fetchNetEase(track) { request in
             let url = request.url!
-            assertCheck(request.timeoutInterval <= 4, "LRCLIB requests must not wait on the old 15-second timeout")
-            assertCheck(request.value(forHTTPHeaderField: "User-Agent")?.contains("github.com/tune-music/tune-ios") == true, "LRCLIB requires client identification")
-            if url.path == "/api/get" { throw URLError(.timedOut) }
-            let artist = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "artist_name" }?.value
-            if artist != "Серега Пират" { return response(url, "[]") }
-            return response(url, #"[{"trackName":"Почему ты еще не фанат?","artistName":"СЕРЕГА ПИРАТ","duration":164,"syncedLyrics":"[00:01]Match"}]"#)
-        }
-        assertCheck(pirateLyrics?.synced == true, "LRCLIB must retry with folded Russian metadata")
-    }
-
-    private static func testLRCLIBRetry() async throws {
-        let track = makeTrack(title: "Test Song", artists: "Test Artist")
-        let exactCalls = Counter()
-        let found = try await ExternalLyrics.fetchLRCLIB(track, mirrorText: "") { request in
-            let url = request.url!
-            assertCheck(url.path == "/api/get", "Successful retry must not start another search")
-            exactCalls.increment()
-            if exactCalls.value == 1 {
-                assertCheck(request.timeoutInterval == 2.5, "First attempt must fail quickly")
-                throw URLError(.timedOut)
+            assertCheck(request.value(forHTTPHeaderField: "Referer") == "https://music.163.com/", "Send the same Referer as Android")
+            if url.host == "music.163.com" { return response(url, "{}", status: 403) }
+            assertCheck(url.host == "interface.music.163.com", "Try the next endpoint in order")
+            if url.path == "/api/search/get" {
+                return response(url, #"{"code":200,"result":{"songs":[{"id":1,"name":"Почему ты еще не фанат?","artists":[{"name":"Серега Пират"}]},{"id":"2","name":"Почему ты еще не фанат?","artists":[{"name":"Серега Пират"}]}]}}"#)
             }
-            assertCheck(request.timeoutInterval == 4, "Retry must have a bounded timeout")
-            return response(url, #"{"syncedLyrics":"[00:01]Found on retry"}"#)
+            if url.query?.contains("id=1") == true { return response(url, "{}") }
+            return response(url, #"{"code":200,"lrc":{"lyric":"[00:01]One\n[00:02]Two\n[00:03]Three\n[00:04]Four"}}"#)
         }
-        assertCheck(exactCalls.value == 2 && found?.synced == true, "First timeout must retry automatically once")
-
-        let missingCalls = Counter()
-        let missing = try await ExternalLyrics.fetchLRCLIB(track, mirrorText: "") { request in
-            let url = request.url!
-            missingCalls.increment()
-            return url.path == "/api/get" ? response(url, "{}", status: 404) : response(url, "[]")
-        }
-        assertCheck(missingCalls.value == 2 && missing == nil, "A 404 must go directly to search, without retry")
-
-        let timeoutCalls = Counter()
-        do {
-            _ = try await ExternalLyrics.fetchLRCLIB(track, mirrorText: "") { _ in
-                timeoutCalls.increment()
-                throw URLError(.timedOut)
-            }
-            assertCheck(false, "Persistent timeouts must remain a network error")
-        } catch {
-            assertCheck(timeoutCalls.value == 3, "Exact lookup and search may share only one automatic retry")
-        }
-    }
-
-    private static func testRetryEmptyLookup() async throws {
-        let empty = LyricsText(lines: [], authors: nil, source: nil)
-        let text = LyricsText(lines: [LyricLine(id: 0, time: 1, text: "Found on retry")], authors: nil, source: "LRCLIB")
-        for complete in [false, true] {
-            var attempts: [Bool] = []
-            let result = try await ExternalLyrics.retryEmptyLookup({ retry in
-                attempts.append(retry)
-                return retry ? (text, true) : (empty, complete)
-            }, waitBeforeRetry: { true })
-            assertCheck(attempts == [false, true] && result.0.synced, "Both network errors and empty answers must get one fresh search")
-        }
-
-        let found = try await ExternalLyrics.retryEmptyLookup({ retry in
-            assertCheck(!retry, "A usable result must not be replaced")
-            return (text, false)
-        }, waitBeforeRetry: {
-            assertCheck(false, "A usable result must not wait for a retry")
-            return false
-        })
-        assertCheck(found.0.synced, "A usable result must return immediately")
-
-        let skipped = try await ExternalLyrics.retryEmptyLookup({ retry in
-            assertCheck(!retry, "Offline mode must not retry an empty lookup")
-            return (empty, false)
-        }, waitBeforeRetry: { false })
-        assertCheck(skipped.0.lines.isEmpty, "An ineligible retry must keep the first result")
-
-        var attempts: [Bool] = []
-        _ = try await ExternalLyrics.retryEmptyLookup({ retry in
-            attempts.append(retry)
-            return (empty, false)
-        }, waitBeforeRetry: { true })
-        assertCheck(attempts == [false, true], "Persistent failures must not loop")
+        assertCheck(netease?.source == "NetEase" && netease?.lines.count == 4, "Try another address or candidate without restarting the search")
     }
 
     private static func response(_ url: URL, _ body: String, status: Int = 200) -> (Data, URLResponse) {

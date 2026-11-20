@@ -9,38 +9,27 @@ import Foundation
 enum ExternalLyrics {
     private static let agent = "Tune iOS/\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1")"
     private static let maxResponseBytes = 512 * 1024
-    private static let preferenceGrace: UInt64 = 250_000_000
-    private static let lrclibFirstTimeout: TimeInterval = 2.5
-    private static let lrclibRetryTimeout: TimeInterval = 4
 
     private static let timestampRegex = try! NSRegularExpression(pattern: #"\[(\d+):([0-5]?\d(?:[.,]\d+)?)\]"#)
     private static let offsetRegex = try! NSRegularExpression(pattern: #"(?im)^\[offset:([+-]?\d+)\]"#)
 
     private static let noRedirect = NoRedirectDelegate()
-    private static func makeSession(resourceTimeout: TimeInterval) -> URLSession {
+    private static let session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
         config.httpShouldSetCookies = false
         config.httpCookieAcceptPolicy = .never
         config.httpCookieStorage = nil
-        config.timeoutIntervalForResource = resourceTimeout
+        config.timeoutIntervalForResource = 12
         return URLSession(configuration: config, delegate: noRedirect, delegateQueue: nil)
-    }
-    private static let session = makeSession(resourceTimeout: 12)
-    private static let lrclibFirstSession = makeSession(resourceTimeout: lrclibFirstTimeout)
-    private static let lrclibRetrySession = makeSession(resourceTimeout: lrclibRetryTimeout)
+    }()
     typealias Request = @Sendable (URLRequest) async throws -> (Data, URLResponse)
 
     static let liveRequest: Request = { try await session.data(for: $0) }
-    static let liveLRCLIBRequest: Request = { request in
-        let session = request.timeoutInterval == lrclibFirstTimeout ? lrclibFirstSession : lrclibRetrySession
-        return try await session.data(for: request)
-    }
 
     struct RequestFailure: LocalizedError {
         let host: String
         let path: String
         let details: String
-        var timedOut = false
 
         var errorDescription: String? { "\(host)\(path): \(details)" }
     }
@@ -102,61 +91,43 @@ enum ExternalLyrics {
         return components.string
     }
 
-    private static func get(_ path: String, host: String, headers: [String: String], timeout: TimeInterval, request: Request) async throws -> JSON {
-        try Task.checkCancellation()
-        guard let url = URL(string: host + path) else { throw URLError(.badURL) }
-        var urlRequest = URLRequest(url: url, timeoutInterval: timeout)
-        urlRequest.httpShouldHandleCookies = false
-        urlRequest.setValue(agent, forHTTPHeaderField: "User-Agent")
-        for (name, value) in headers { urlRequest.setValue(value, forHTTPHeaderField: name) }
-        let (data, response): (Data, URLResponse)
-        do {
-            (data, response) = try await request(urlRequest)
-        } catch {
-            try Task.checkCancellation()
-            let code = error as NSError
-            throw RequestFailure(host: url.host ?? host, path: url.path, details: "\(code.domain) (\(code.code))",
-                                 timedOut: code.domain == NSURLErrorDomain && code.code == NSURLErrorTimedOut)
-        }
-        guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
-        if http.statusCode == 404 { return JSON(nil) }
-        guard (200..<300).contains(http.statusCode) else {
-            throw RequestFailure(host: url.host ?? host, path: url.path, details: "HTTP \(http.statusCode)")
-        }
-        guard data.count <= maxResponseBytes,
-              let payload = try? JSONSerialization.jsonObject(with: data) else {
-            throw RequestFailure(host: url.host ?? host, path: url.path, details: "Неверный ответ (\(data.count) байт)")
-        }
-        return JSON(payload)
-    }
-
-    private static func getLRCLIB(_ path: String, hosts: [String], headers: [String: String], retried: inout Bool, request: Request) async throws -> JSON {
+    private static func get(_ path: String, hosts: [String], netease: Bool = false, request: Request) async throws -> JSON {
         var failure: Error = URLError(.cannotConnectToHost)
-        var reached = false
         for host in hosts {
+            try Task.checkCancellation()
+            guard let url = URL(string: host + path), url.scheme == "https", let domain = url.host else { continue }
+            var urlRequest = URLRequest(url: url, timeoutInterval: 6)
+            urlRequest.httpShouldHandleCookies = false
+            urlRequest.setValue(netease ? agent : "\(agent) (https://github.com/tune-music/tune-ios)", forHTTPHeaderField: "User-Agent")
+            if netease { urlRequest.setValue("https://music.163.com/", forHTTPHeaderField: "Referer") }
+            let (data, response): (Data, URLResponse)
             do {
-                let payload: JSON
-                do {
-                    payload = try await get(path, host: host, headers: headers, timeout: lrclibFirstTimeout, request: request)
-                } catch let error as RequestFailure where error.timedOut && !retried && host == hosts.last {
-                    retried = true
-                    payload = try await get(path, host: host, headers: headers, timeout: lrclibRetryTimeout, request: request)
-                }
-                if payload.exists { return payload }
-                reached = true
+                (data, response) = try await request(urlRequest)
             } catch {
                 try Task.checkCancellation()
-                failure = error
+                let code = error as NSError
+                failure = RequestFailure(host: domain, path: url.path, details: "\(code.domain) (\(code.code))")
+                continue
             }
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if status == 403 || status == 429 || status >= 500 || status == 0 {
+                failure = RequestFailure(host: domain, path: url.path, details: "HTTP \(status)")
+                continue
+            }
+            guard (200..<300).contains(status) else { return JSON(nil) }
+            guard data.count <= maxResponseBytes else {
+                failure = RequestFailure(host: domain, path: url.path, details: "Неверный ответ (\(data.count) байт)")
+                continue
+            }
+            return JSON.parse(data)
         }
-        if reached { return JSON(nil) }
         throw failure
     }
 
     private static func enc(_ text: String) -> String {
-        var allowed = CharacterSet.alphanumerics
-        allowed.insert(charactersIn: "-_.~")
-        return text.addingPercentEncoding(withAllowedCharacters: allowed) ?? text
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.*")
+        return (text.addingPercentEncoding(withAllowedCharacters: allowed) ?? text)
+            .replacingOccurrences(of: "%20", with: "+")
     }
 
     /// Нормализует текст в слова через пробел: без регистра, с заменой «ё» на «е».
@@ -303,7 +274,11 @@ enum ExternalLyrics {
 
     /// Текст из чужой базы: без строк с авторами.
     private static func external(_ text: String, _ source: String) -> LyricsText {
-        let lines = parseLRC(text)
+        external(parseLRC(text), source)
+    }
+
+    private static func external(_ raw: [LyricLine], _ source: String) -> LyricsText {
+        let lines = filterYandex(raw)
             .filter { !isCredit($0.text) }
             .enumerated()
             .map { LyricLine(id: $0.offset, time: $0.element.time, text: $0.element.text) }
@@ -320,126 +295,80 @@ enum ExternalLyrics {
     }
 
     /// Текст из LRCLIB: точное совпадение, а нет его — поиск.
-    static func fetchLRCLIB(_ track: Track, mirrorText: String = Settings.lyricsMirror, request: Request = liveLRCLIBRequest) async throws -> LyricsText? {
-        let headers = ["User-Agent": "\(agent) (https://github.com/tune-music/tune-ios)"]
+    static func fetchLRCLIB(_ track: Track, mirrorText: String = Settings.lyricsMirror, request: Request = liveRequest) async throws -> LyricsText? {
         let artist = firstArtist(track)
-        var query = "track_name=\(enc(track.title))&artist_name=\(enc(artist))"
-        if !track.albumTitle.isEmpty { query += "&album_name=\(enc(track.albumTitle))" }
-        if track.duration > 0 { query += "&duration=\(Int(track.duration))" }
+        let base = "track_name=\(enc(track.title))&artist_name=\(enc(artist))"
+        var query = base
+        if track.durationMs >= 1000 { query += "&duration=\(track.durationMs / 1000)" }
+        if !track.albumTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            query += "&album_name=\(enc(track.albumTitle))"
+        }
         let hosts = lrclibHosts(for: mirrorText)
-        var retried = false
-        let exact: [String: Any]?
+        let exact: JSON
         var exactFailure: Error?
         do {
-            exact = try await getLRCLIB("/api/get?\(query)", hosts: hosts, headers: headers, retried: &retried, request: request).dict
+            exact = try await get("/api/get?\(query)", hosts: hosts, request: request)
         } catch {
             try Task.checkCancellation()
-            exact = nil
+            exact = JSON(nil)
             exactFailure = error
         }
-        func pick(_ value: [String: Any]) -> LyricsText? {
-            guard let text = string(value["syncedLyrics"]) ?? string(value["plainLyrics"]) else { return nil }
-            let result = external(text, "LRCLIB")
-            return result.lines.contains(where: { !$0.text.isEmpty }) ? result : nil
+        if let text = string(exact["syncedLyrics"].string) { return external(text, "LRCLIB") }
+        let candidates: [JSON]
+        do {
+            let payload = try await get("/api/search?\(base)", hosts: hosts, request: request)
+            candidates = payload.array.filter {
+                matches(track, lyricHit: ($0["trackName"].string ?? "", $0["artistName"].string ?? "", $0["duration"].int ?? 0))
+            }
+        } catch {
+            try Task.checkCancellation()
+            if let text = string(exact["plainLyrics"].string) { return external(text, "LRCLIB") }
+            throw error
         }
-        if let exact, string(exact["syncedLyrics"]) != nil, let found = pick(exact) { return found }
-        let foldedTitle = track.title.replacingOccurrences(of: "ё", with: "е", options: .caseInsensitive)
-        let foldedArtist = artist.replacingOccurrences(of: "ё", with: "е", options: .caseInsensitive)
-        let original = "/api/search?track_name=\(enc(track.title))&artist_name=\(enc(artist))"
-        let folded = "/api/search?track_name=\(enc(foldedTitle))&artist_name=\(enc(foldedArtist))"
-        var plain = exact.flatMap(pick)
-        for path in original == folded ? [original] : [original, folded] {
+        let result = candidates.first { string($0["syncedLyrics"].string) != nil }
+            ?? (exact.isObject ? exact : candidates.first)
+        if let result, let text = string(result["syncedLyrics"].string) ?? string(result["plainLyrics"].string) {
+            return external(text, "LRCLIB")
+        }
+        if let exactFailure { throw exactFailure }
+        return nil
+    }
+
+    static func fetchNetEase(_ track: Track, request: Request = liveRequest) async throws -> LyricsText? {
+        let query = "\(firstArtist(track)) \(track.title)".trimmingCharacters(in: .whitespaces)
+        let hits = try await neteaseHits(query, type: 1, request: request)
+        var failure: Error?
+        for hit in hits.filter({ matches(track, lyricHit: $0.track) }).prefix(3) {
+            guard let id = hit.id, !id.isEmpty, id.utf8.allSatisfy({ (48...57).contains($0) }) else { continue }
             do {
-                let payload = try await getLRCLIB(path, hosts: hosts, headers: headers, retried: &retried, request: request)
-                for candidate in payload.array {
-                    guard let value = candidate.dict,
-                          same(track, title: candidate["trackName"].string ?? "", artist: candidate["artistName"].string ?? "",
-                               seconds: candidate["duration"].int ?? 0),
-                          let found = pick(value) else { continue }
-                    if found.synced { return found }
-                    if plain == nil { plain = found }
+                let lyric = try await get("/api/song/lyric?id=\(id)&lv=1", hosts: neteaseHosts, netease: true, request: request)
+                let raw = parseLRC(lyric["lrc"]["lyric"].string ?? "")
+                if raw.filter({ $0.time != nil && !$0.text.isEmpty }).count >= 4 {
+                    return external(raw, "NetEase")
                 }
             } catch {
                 try Task.checkCancellation()
-                if let plain { return plain }
-                throw error
+                failure = error
             }
         }
-        if plain == nil, let exactFailure { throw exactFailure }
-        return plain
-    }
-
-    static func fetchNetEase(_ track: Track, request: @escaping Request = liveRequest) async throws -> LyricsText? {
-        let query = "\(firstArtist(track)) \(track.title)".trimmingCharacters(in: .whitespaces)
-        return try await firstNetEaseResult { host in
-            let hits = try await neteaseHits(query, type: 1, host: host, request: request)
-            var failure: Error?
-            for hit in hits.filter({ matches(track, lyricHit: $0.track) }).prefix(3) {
-                guard let id = hit.id, !id.isEmpty, id.utf8.allSatisfy({ (48...57).contains($0) }) else { continue }
-                do {
-                    let lyric = try await netease("/api/song/lyric?id=\(id)&lv=1", host: host, request: request)
-                    let parsed = external(lyric["lrc"]["lyric"].string ?? "", "NetEase")
-                    if parsed.lines.filter({ $0.time != nil && !$0.text.isEmpty }).count >= 4 {
-                        return parsed
-                    }
-                } catch {
-                    try Task.checkCancellation()
-                    failure = error
-                }
-            }
-            if let failure { throw failure }
-            return nil
-        }
+        if let failure { throw failure }
+        return nil
     }
 
     static func searchByLine(_ line: String) async throws -> [(title: String, artist: String, seconds: Int)] {
         guard Settings.lyricsExternal, Settings.lyricsNetEase, line.split(whereSeparator: \.isWhitespace).count >= 2 else { return [] }
-        let result = try await firstNetEaseResult { host in
-            let hits = try await neteaseHits(line, type: 1006, host: host, request: liveRequest)
-            return hits.isEmpty ? nil : hits.map(\.track)
-        }
-        return result ?? []
+        return try await neteaseHits(line, type: 1006, request: liveRequest).map(\.track)
     }
 
     private typealias Hit = (title: String, artist: String, seconds: Int)
 
-    private static func neteaseHits(_ query: String, type: Int, host: String, request: Request) async throws -> [(id: String?, track: Hit)] {
-        let payload = try await netease("/api/search/get?s=\(enc(query))&type=\(type)&limit=8", host: host, request: request)
+    private static func neteaseHits(_ query: String, type: Int, request: Request) async throws -> [(id: String?, track: Hit)] {
+        let payload = try await get("/api/search/get?s=\(enc(query))&type=\(type)&limit=8", hosts: neteaseHosts, netease: true, request: request)
         return payload["result"]["songs"].array.compactMap { song in
             guard let title = song["name"].string else { return nil }
             let artist = song["artists"].array.compactMap { $0["name"].string }.joined(separator: " ")
             guard !artist.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
             return (song["id"].idText, (title, artist, (song["duration"].int ?? 0) / 1000))
-        }
-    }
-
-    private static func netease(_ path: String, host: String, request: Request) async throws -> JSON {
-        let payload = try await get(path, host: host, headers: ["Referer": "https://music.163.com/"], timeout: 6, request: request)
-        if payload.exists, (payload["code"].int ?? 200) != 200 { throw URLError(.badServerResponse) }
-        return payload
-    }
-
-    private static func firstNetEaseResult<Value: Sendable>(_ lookup: @escaping @Sendable (String) async throws -> Value?) async throws -> Value? {
-        try await withThrowingTaskGroup(of: Result<Value?, Error>.self) { group in
-            for host in neteaseHosts {
-                group.addTask {
-                    do { return .success(try await lookup(host)) }
-                    catch { return .failure(error) }
-                }
-            }
-            var failure: Error?
-            for try await result in group {
-                try Task.checkCancellation()
-                switch result {
-                case .success(let value?):
-                    group.cancelAll()
-                    return value
-                case .success(nil): break
-                case .failure(let error): failure = error
-                }
-            }
-            if let failure { throw failure }
-            return nil
         }
     }
 
@@ -455,8 +384,8 @@ enum ExternalLyrics {
 
     /// Настройки, с которыми искали текст: поменялись — сохранённый текст ищется заново.
     static func settingsKey(for options: Options) -> String {
-        guard options.external else { return "v4:yandex" }
-        return "v4:" + [options.always, options.lrclib, options.netease, options.neteaseFirst]
+        guard options.external else { return "v5:yandex" }
+        return "v5:" + [options.always, options.lrclib, options.netease, options.neteaseFirst]
             .map { $0 ? "1" : "0" }.joined() + (mirror(options.mirror) ?? "")
     }
 
@@ -479,134 +408,56 @@ enum ExternalLyrics {
         }
     }
 
-    static func retryEmptyLookup(
-        _ lookup: (Bool) async throws -> (LyricsText, Bool),
-        waitBeforeRetry: () async throws -> Bool
-    ) async throws -> (LyricsText, Bool) {
-        let first = try await lookup(false)
-        guard first.0.lines.isEmpty else { return first }
-        try Task.checkCancellation()
-        guard try await waitBeforeRetry() else { return first }
-        try Task.checkCancellation()
-        return try await lookup(true)
-    }
-
-    /// Текст трека и все ли источники ответили. Не ответил какой-то — найденное не
-    /// окончательно, в следующий раз спросим снова.
-    ///
-    /// Источники опрашиваются одновременно. Приоритетный текст выигрывает, если успевает за короткую паузу.
     static func find(
         _ track: Track,
         options: Options = .current,
-        yandex: @escaping @Sendable (String) async throws -> LyricsText,
-        lrclib: (@Sendable (Track) async throws -> LyricsText?)? = nil,
-        netease: (@Sendable (Track) async throws -> LyricsText?)? = nil,
-        onFailure: (@Sendable (Source, Error) -> Void)? = nil
+        yandex: (String) async throws -> LyricsText,
+        lrclib: ((Track) async throws -> LyricsText?)? = nil,
+        netease: ((Track) async throws -> LyricsText?)? = nil,
+        onFailure: ((Source, Error) -> Void)? = nil
     ) async -> (LyricsText, complete: Bool) {
+        var sources: [Source] = track.isPrivate ? [] : [.yandex]
+        if options.external {
+            if options.neteaseFirst && options.netease { sources.append(.netease) }
+            if options.lrclib { sources.append(.lrclib) }
+            if !options.neteaseFirst && options.netease { sources.append(.netease) }
+        }
+
         let empty = LyricsText(lines: [], authors: nil, source: nil)
-        let externalOrder: [Source] = {
-            guard options.external else { return [] }
-            let raw: [Source] = options.neteaseFirst ? [.netease, .lrclib] : [.lrclib, .netease]
-            return raw.filter { source in
+        var fallback: LyricsText?
+        var complete = true
+        for source in sources {
+            if Task.isCancelled { return (empty, false) }
+            let result: LyricsText?
+            do {
                 switch source {
-                case .lrclib: return options.lrclib
-                case .netease: return options.netease
-                case .yandex: return false
+                case .yandex:
+                    var own = try await yandex(track.id)
+                    own.lines = filterYandex(own.lines)
+                    own.source = own.source ?? LyricsText.yandex
+                    result = own
+                case .lrclib:
+                    if let lrclib { result = try await lrclib(track) }
+                    else { result = try await fetchLRCLIB(track, mirrorText: options.mirror) }
+                case .netease:
+                    if let netease { result = try await netease(track) }
+                    else { result = try await fetchNetEase(track) }
                 }
+            } catch {
+                if Task.isCancelled { return (empty, false) }
+                onFailure?(source, error)
+                complete = false
+                continue
             }
-        }()
-        let askYandex = !track.isPrivate
-        let resolveLRCLIB: @Sendable (Track) async throws -> LyricsText? = lrclib ?? { t in
-            try await fetchLRCLIB(t, mirrorText: options.mirror)
-        }
-        let resolveNetEase: @Sendable (Track) async throws -> LyricsText? = netease ?? { t in
-            try await fetchNetEase(t)
-        }
 
-        let fetchSource: @Sendable (Source) async throws -> LyricsText? = { source in
-            switch source {
-            case .yandex:
-                let raw = try await yandex(track.id)
-                let clean = filterYandex(raw.lines)
-                guard !clean.isEmpty, !isStub(clean), clean.contains(where: { !$0.text.isEmpty }) else {
-                    return nil
-                }
-                return LyricsText(lines: clean, authors: raw.authors, source: raw.source ?? LyricsText.yandex)
-            case .lrclib:
-                let found = try await resolveLRCLIB(track)
-                return (found?.lines.isEmpty ?? true) ? nil : found
-            case .netease:
-                let found = try await resolveNetEase(track)
-                return (found?.lines.isEmpty ?? true) ? nil : found
+            guard let result, !isStub(result.lines), result.lines.contains(where: { !$0.text.isEmpty }) else { continue }
+            if result.synced && (source != .yandex || !options.external || !options.always) {
+                return (result, true)
             }
+            if fallback == nil { fallback = result }
         }
-
-        let priority: [Source] = if options.always && !externalOrder.isEmpty {
-            externalOrder + (askYandex ? [.yandex] : [])
-        } else {
-            (askYandex ? [.yandex] : []) + externalOrder
-        }
-        guard !priority.isEmpty else { return (empty, true) }
-
-        let result = await resolvePriority(priority, waitForExternal: options.always, fetch: fetchSource, onFailure: onFailure)
-        if let winner = result.syncedWinner {
-            return (winner, result.complete)
-        }
-        let plain = result.found[.yandex] ?? externalOrder.compactMap { result.found[$0] }.first ?? empty
-        return (plain, result.complete)
-    }
-
-    private static func resolvePriority(
-        _ order: [Source],
-        waitForExternal: Bool,
-        fetch: @escaping @Sendable (Source) async throws -> LyricsText?,
-        onFailure: (@Sendable (Source, Error) -> Void)?
-    ) async -> (found: [Source: LyricsText], syncedWinner: LyricsText?, complete: Bool) {
-        await withTaskGroup(of: (Source?, LyricsText?, Bool).self) { group in
-            defer { group.cancelAll() }
-            for source in order {
-                group.addTask {
-                    do {
-                        let found = try await fetch(source)
-                        return (source, found, true)
-                    } catch {
-                        if !Task.isCancelled { onFailure?(source, error) }
-                        return (source, nil, false)
-                    }
-                }
-            }
-            var found: [Source: LyricsText] = [:]
-            var finished: Set<Source> = []
-            var reachedSources: Set<Source> = []
-            var waitingForPreference = false
-            for await (source, text, reached) in group {
-                guard let source else {
-                    let winner = order.compactMap { found[$0] }.first(where: \.synced)
-                    return (found, winner, false)
-                }
-                finished.insert(source)
-                if reached { reachedSources.insert(source) }
-                if let text, !text.lines.isEmpty { found[source] = text }
-                for candidateSource in order {
-                    if let candidate = found[candidateSource], candidate.synced {
-                        let definitive = order.prefix(while: { $0 != candidateSource }).allSatisfy { reachedSources.contains($0) }
-                        return (found, candidate, definitive)
-                    }
-                    if !finished.contains(candidateSource) {
-                        break
-                    }
-                }
-                if finished.count == order.count { break }
-                if !waitingForPreference, text?.synced == true, !(waitForExternal && source == .yandex) {
-                    waitingForPreference = true
-                    group.addTask {
-                        try? await Task.sleep(nanoseconds: preferenceGrace)
-                        return (nil, nil, false)
-                    }
-                }
-            }
-            return (found, nil, reachedSources.count == order.count)
-        }
+        if let fallback { return (fallback, true) }
+        return (empty, complete)
     }
 }
 
