@@ -40,7 +40,8 @@ final class API {
 
     // MARK: - Транспорт
 
-    private func send(_ method: String, _ path: String, query: [(String, String)] = [], body: Data? = nil, type: String? = nil) async throws -> JSON {
+    private func send(_ method: String, _ path: String, query: [(String, String)] = [], body: Data? = nil, type: String? = nil,
+                      timeout: TimeInterval? = nil, missingStatuses: Set<Int> = []) async throws -> JSON {
         try Task.checkCancellation()
         guard await Connectivity.shared.online else { throw APIError.network("") }
         guard let token = TokenStore.token else { throw APIError.needLogin }
@@ -52,6 +53,7 @@ final class API {
         }
         guard let url = parts.url else { throw APIError.server("Неверный адрес запроса") }
         var request = URLRequest(url: url)
+        if let timeout { request.timeoutInterval = timeout }
         request.httpMethod = method
         request.setValue("OAuth \(token)", forHTTPHeaderField: "Authorization")
         request.setValue(client, forHTTPHeaderField: "X-Yandex-Music-Client")
@@ -61,7 +63,7 @@ final class API {
         request.httpBody = body
 
         // «Слишком много запросов» бывает на запуске, когда всё грузится разом: ждём и повторяем.
-        var waits: [UInt64] = [1, 3]
+        var waits: [UInt64] = timeout == nil ? [1, 3] : []
         while true {
             let answer: (Data, URLResponse)
             do {
@@ -75,6 +77,7 @@ final class API {
             }
             let status = (answer.1 as? HTTPURLResponse)?.statusCode ?? 0
             if status == 401 { throw APIError.needLogin }
+            if missingStatuses.contains(status) { return JSON(nil) }
             if status == 429 {
                 guard !waits.isEmpty else { throw APIError.busy }
                 try await Task.sleep(nanoseconds: waits.removeFirst() * 1_000_000_000)
@@ -1406,7 +1409,9 @@ final class API {
 
     /// Текст трека: Яндекс, LRCLIB и NetEase — в порядке из настроек.
     func lyrics(for track: Track, forceRefresh: Bool = false) async throws -> LyricsText {
-        try await resolveLyrics(for: track, forceRefresh: forceRefresh).0
+        let (text, complete) = try await resolveLyrics(for: track, forceRefresh: forceRefresh)
+        if text.lines.isEmpty && !complete { throw TuneError("Не удалось загрузить текст") }
+        return text
     }
 
     /// Заранее подгружает текст трека в кэш; возвращает `true`, если проверка завершилась
@@ -1436,14 +1441,12 @@ final class API {
         let work: @Sendable () async throws -> (LyricsText, Bool) = {
             let name = "Lyrics/\(Storage.hash(track.id)).json"
             let ask: @Sendable (String) async throws -> LyricsText = { id in
-                // Просьба подключить подписку вместо текста — не текст: ищем в других базах.
-                let own = try await self.fetchLyrics(track: id)
-                let clean = ExternalLyrics.filterYandex(own.lines)
-                return (clean.isEmpty || Self.isStub(clean))
-                    ? LyricsText(lines: [], authors: nil, source: nil)
-                    : LyricsText(lines: clean, authors: own.authors, source: own.source)
+                try await self.fetchLyrics(track: id)
             }
-            let (found, complete) = await ExternalLyrics.find(track, options: options, yandex: ask)
+            let (found, complete) = await ExternalLyrics.find(track, options: options, yandex: ask, onFailure: { source, error in
+                let code = error as NSError
+                Log.shared.add("текст: \(source): \(code.domain) (\(code.code))")
+            })
             try Task.checkCancellation()
             // Аккаунту без Плюса Яндекс вместо текста отдаёт просьбу подключить подписку.
             // Её нельзя сохранять: иначе она останется и после входа в аккаунт с Плюсом.
@@ -1473,22 +1476,28 @@ final class API {
     }
 
     private func fetchLyrics(track id: String) async throws -> LyricsText {
+        var downloadError: Error?
         for format in ["LRC", "TEXT"] {
             let stamp = String(Int(Date().timeIntervalSince1970))
-            let value: JSON
+            let query = [("format", format), ("timeStamp", stamp), ("sign", signFull("\(id)\(stamp)"))]
+            let value = result(try await send("GET", "tracks/\(Self.encode(id))/lyrics", query: query,
+                                              timeout: 7, missingStatuses: [400, 403, 404]))
+            guard let link = value["downloadUrl"].string, let url = URL(string: link), url.scheme == "https" else { continue }
             do {
-                value = result(try await get("tracks/\(id)/lyrics", [("format", format), ("timeStamp", stamp), ("sign", signFull("\(id)\(stamp)"))]))
-            } catch APIError.server {
-                continue
+                let (data, response) = try await http.data(for: URLRequest(url: url, timeoutInterval: 7))
+                guard (response as? HTTPURLResponse)?.statusCode == 200,
+                      let text = String(data: data, encoding: .utf8) else { throw URLError(.badServerResponse) }
+                let lines = ExternalLyrics.filterYandex(Self.parseLRC(text))
+                let authors = value["writers"].array.compactMap { $0.string }
+                if lines.contains(where: { !$0.text.isEmpty }), !Self.isStub(lines) {
+                    return LyricsText(lines: lines, authors: authors, source: LyricsText.yandex)
+                }
+            } catch {
+                try Task.checkCancellation()
+                downloadError = error
             }
-            guard let link = value["downloadUrl"].string, let url = URL(string: link) else { continue }
-            let (data, response) = try await http.data(from: url)
-            guard (response as? HTTPURLResponse)?.statusCode == 200,
-                  let text = String(data: data, encoding: .utf8) else { continue }
-            let lines = Self.parseLRC(text)
-            let authors = value["writers"].array.compactMap { $0.string }
-            if lines.contains(where: { !$0.text.isEmpty }) { return LyricsText(lines: lines, authors: authors, source: LyricsText.yandex) }
         }
+        if let downloadError { throw downloadError }
         return LyricsText(lines: [], authors: nil, source: nil)
     }
 

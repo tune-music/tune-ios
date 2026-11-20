@@ -815,6 +815,7 @@ private struct LyricsPane: View {
     @ObservedObject private var connectivity = Connectivity.shared
     @State private var lines: [LyricLine]?
     @State private var info: LyricsText?
+    @State private var loadFailed = false
     /// Нажали «Повторить»: поиск идёт заново.
     @State private var attempt = 0
     /// Когда текст последний раз листали пальцем: в это время он сам не прокручивается.
@@ -836,7 +837,7 @@ private struct LyricsPane: View {
                     VStack(spacing: 10) {
                         Image(systemName: "text.quote")
                             .font(.system(size: 34))
-                        Text(connectivity.offline ? "Нет сохранённого текста" : "Текста нет")
+                        Text(connectivity.offline ? "Нет сохранённого текста" : loadFailed ? "Не удалось загрузить текст" : "Текста нет")
                             .font(.scaled(size: 18, weight: .semibold))
                         Button {
                             attempt += 1
@@ -882,17 +883,23 @@ private struct LyricsPane: View {
             lines = nil
             info = nil
             active = nil
-            let found = try? await API.shared.lyrics(for: track, forceRefresh: attempt > 0)
-            if Task.isCancelled { return }
-            show(found)
+            do {
+                let found = try await API.shared.lyrics(for: track, forceRefresh: attempt > 0)
+                if Task.isCancelled { return }
+                show(found)
+            } catch {
+                if Task.isCancelled { return }
+                show(nil, failed: true)
+            }
         }
     }
 
-    private func show(_ found: LyricsText?) {
+    private func show(_ found: LyricsText?, failed: Bool = false) {
         let resolved = found?.lines ?? []
         let timed = resolved.filter { $0.time != nil }
         active = Self.currentLine(in: timed, at: progress.position)
         info = found
+        loadFailed = failed
         lines = resolved
     }
 

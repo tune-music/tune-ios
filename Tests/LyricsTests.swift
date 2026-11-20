@@ -67,6 +67,7 @@ struct LyricsTests {
         testMatching()
         testHelpers()
         await testFindPriorityAndConcurrency()
+        try await testExternalProviderFallbacks()
         testAcceptCachedPolicy()
         print("Lyrics unit checks passed")
 
@@ -288,6 +289,44 @@ struct LyricsTests {
             )
             assertCheck(fallback.source == "NetEase" && !definitive, "Failure of the preferred provider must leave the fallback open to retry")
         }
+    }
+
+    private static func testExternalProviderFallbacks() async throws {
+        let track = makeTrack(title: "Test Song", artists: "Test Artist")
+        let netease = try await ExternalLyrics.fetchNetEase(track) { request in
+            let url = request.url!
+            switch url.host {
+            case "music.163.com":
+                throw URLError(.timedOut)
+            case "interface.music.163.com":
+                return response(url, #"{"code":200,"result":{"songs":[]}}"#)
+            default:
+                if url.path == "/api/search/get" {
+                    return response(url, #"{"code":200,"result":{"songs":[{"id":1,"name":"Test Song","artists":[{"name":"Test Artist"}]},{"id":"2","name":"Test Song","artists":[{"name":"Test Artist"}]}]}}"#)
+                }
+                if url.query?.contains("id=1") == true { throw URLError(.badServerResponse) }
+                return response(url, #"{"code":200,"lrc":{"lyric":"[00:01]One\n[00:02]Two\n[00:03]Three\n[00:04]Four"}}"#)
+            }
+        }
+        assertCheck(netease?.source == "NetEase" && netease?.lines.count == 4, "An empty host, a failed host and a failed first song must not hide a valid result")
+
+        let lrclib = try await ExternalLyrics.fetchLRCLIB(track, mirrorText: "mirror.example") { request in
+            let url = request.url!
+            if url.host == "mirror.example" || url.path == "/api/get" { throw URLError(.timedOut) }
+            return response(url, #"[{"trackName":"Test Song","artistName":"Test Artist","duration":200,"syncedLyrics":"[00:01]One"}]"#)
+        }
+        assertCheck(lrclib?.source == "LRCLIB" && lrclib?.synced == true, "A failed mirror and exact request must not prevent LRCLIB search")
+
+        let plain = try await ExternalLyrics.fetchLRCLIB(track, mirrorText: "") { request in
+            let url = request.url!
+            if url.path == "/api/search" { throw URLError(.timedOut) }
+            return response(url, #"{"plainLyrics":"Available text"}"#)
+        }
+        assertCheck(plain?.lines.first?.text == "Available text", "Search failure must not discard plain LRCLIB lyrics")
+    }
+
+    private static func response(_ url: URL, _ body: String) -> (Data, URLResponse) {
+        (Data(body.utf8), HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!)
     }
 
     private static func testAcceptCachedPolicy() {
