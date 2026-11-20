@@ -23,6 +23,7 @@ final class Session: ObservableObject {
     @Published private(set) var likedIds: [String] = []
     @Published private(set) var localLikedTracks: [Track] = []
     static let restoredLikesSynced = Notification.Name("tune.restoredLikesSynced")
+    static let uploadedTrackEdited = Notification.Name("tune.uploadedTrackEdited")
     @Published private(set) var playlists: [Playlist] = []
     @Published private(set) var likedPlaylists: [Playlist] = []
     @Published private(set) var likedAlbums: Set<String> = []
@@ -88,6 +89,18 @@ final class Session: ObservableObject {
 
     func isLiked(_ playlist: Playlist) -> Bool {
         likedPlaylists.contains { $0.id == playlist.id }
+    }
+
+    func editUploadedTrack(_ track: Track, title: String, artist: String) async throws {
+        guard track.isPrivate else { return }
+        let account = token
+        try await API.shared.changeUploadedTrack(id: track.id, title: title, artist: artist)
+        guard token == account else { return }
+        Player.shared.updateUploadedMetadata(id: track.id, title: title, artist: artist)
+        Downloads.shared.updateUploadedMetadata(id: track.id, title: title, artist: artist)
+        let edited = track.withUploadedMetadata(title: title, artist: artist)
+        NotificationCenter.default.post(name: Self.uploadedTrackEdited, object: edited)
+        show("Трек обновлён в Яндекс Музыке")
     }
 
     func show(_ text: String) {

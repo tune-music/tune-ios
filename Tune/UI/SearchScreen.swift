@@ -146,6 +146,15 @@ struct SearchScreen: View {
             await loadCollections()
         }
         .onChange(of: request) { _ in requestedPage = 0 }
+        .onReceive(NotificationCenter.default.publisher(for: Session.uploadedTrackEdited)) { note in
+            guard let edited = note.object as? Track else { return }
+            result.tracks = result.tracks.map {
+                $0.id == edited.id ? $0.withUploadedMetadata(title: edited.title, artist: edited.artists) : $0
+            }
+            if let best = result.best, case .track(let track) = best, track.id == edited.id {
+                result.best = .track(track.withUploadedMetadata(title: edited.title, artist: edited.artists))
+            }
+        }
         .onChange(of: query) { value in
             // В поиск вставили ссылку на Яндекс Музыку: открываем то, на что она ведёт.
             guard let url = Links.url(in: value) else { return }

@@ -319,6 +319,12 @@ final class Downloads: ObservableObject {
         saveAssets()
     }
 
+    func updateUploadedMetadata(id: String, title: String, artist: String) {
+        guard let index = entries.firstIndex(where: { $0.track.id == id }) else { return }
+        entries[index].track = entries[index].track.withUploadedMetadata(title: title, artist: artist)
+        save()
+    }
+
     private func save() {
         let snapshot = entries
         Task.detached(priority: .utility) { Storage.save(snapshot, "downloads.json") }

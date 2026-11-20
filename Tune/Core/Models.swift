@@ -114,6 +114,15 @@ struct Track: Codable, Hashable, Identifiable {
         ugc ?? !id.allSatisfy(\.isNumber)
     }
 
+    func withUploadedMetadata(title: String, artist: String) -> Track {
+        var track = self
+        track.title = title
+        track.version = nil
+        track.artists = artist
+        track.artistList = artist.isEmpty ? [] : [ArtistRef(id: "", name: artist)]
+        return track
+    }
+
     var duration: Double { Double(durationMs) / 1000 }
 
     /// Так трек называют волна и отчёты: id:альбом.
