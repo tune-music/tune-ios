@@ -15,17 +15,18 @@ enum ExternalLyrics {
 
     private static let noRedirect = NoRedirectDelegate()
     private static let memory = HostMemory()
-    private static let session: URLSession = {
+    typealias Request = @Sendable (URLRequest) async throws -> (Data, URLResponse)
+
+    static let liveRequest: Request = { request in
         let config = URLSessionConfiguration.ephemeral
         config.httpShouldSetCookies = false
         config.httpCookieAcceptPolicy = .never
         config.httpCookieStorage = nil
-        config.timeoutIntervalForResource = 8
-        return URLSession(configuration: config, delegate: noRedirect, delegateQueue: nil)
-    }()
-    typealias Request = @Sendable (URLRequest) async throws -> (Data, URLResponse)
-
-    static let liveRequest: Request = { try await session.data(for: $0) }
+        config.timeoutIntervalForResource = 12
+        let session = URLSession(configuration: config, delegate: noRedirect, delegateQueue: nil)
+        defer { session.finishTasksAndInvalidate() }
+        return try await session.data(for: request)
+    }
 
     struct RequestFailure: LocalizedError {
         let host: String
@@ -99,17 +100,23 @@ enum ExternalLyrics {
             guard let url = URL(string: host + path), url.scheme == "https", let domain = url.host else { continue }
             var urlRequest = URLRequest(url: url, timeoutInterval: 6)
             urlRequest.httpShouldHandleCookies = false
+            urlRequest.assumesHTTP3Capable = false
             urlRequest.setValue(netease ? agent : "\(agent) (https://github.com/tune-music/tune-ios)", forHTTPHeaderField: "User-Agent")
             if netease { urlRequest.setValue("https://music.163.com/", forHTTPHeaderField: "Referer") }
-            let (data, response): (Data, URLResponse)
-            do {
-                (data, response) = try await request(urlRequest)
-            } catch {
-                try Task.checkCancellation()
-                let code = error as NSError
-                failure = RequestFailure(host: domain, path: url.path, details: "\(code.domain) (\(code.code))")
-                continue
+            var result: (Data, URLResponse)?
+            for attempt in 0..<(hosts.count == 1 ? 2 : 1) {
+                do {
+                    result = try await request(urlRequest)
+                    break
+                } catch {
+                    try Task.checkCancellation()
+                    let code = error as NSError
+                    failure = RequestFailure(host: domain, path: url.path, details: "\(code.domain) (\(code.code))")
+                    if attempt == 0 && (error as? URLError)?.code == .timedOut { continue }
+                    break
+                }
             }
+            guard let (data, response) = result else { continue }
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             if (300..<400).contains(status) || status == 403 || status == 429 || status >= 500 || status == 0 {
                 failure = RequestFailure(host: domain, path: url.path, details: "HTTP \(status)")
