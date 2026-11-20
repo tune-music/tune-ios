@@ -16,6 +16,9 @@ https://github.com/tune-music/tune-ios/releases/latest/download/altstore.json
 
 Когда выйдет новая сборка, в магазине появится кнопка Update.
 
+**Dev (тестовая версия).** Добавьте [отдельный источник Tune Dev](https://github.com/tune-music/tune-ios/releases/download/dev/altstore-dev.json)
+в AltStore Classic или SideStore через Sources → «+». Tune Dev устанавливается рядом с обычной Tune и обновляется отдельно.
+
 **Файлом.** Скачайте на iPhone
 [Tune.ipa](https://github.com/tune-music/tune-ios/releases/latest/download/Tune.ipa)
 и откройте его в SideStore или AltStore: «My Apps» → «+».
