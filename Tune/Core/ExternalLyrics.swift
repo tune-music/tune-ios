@@ -479,6 +479,18 @@ enum ExternalLyrics {
         }
     }
 
+    static func retryEmptyLookup(
+        _ lookup: (Bool) async throws -> (LyricsText, Bool),
+        waitBeforeRetry: () async throws -> Bool
+    ) async throws -> (LyricsText, Bool) {
+        let first = try await lookup(false)
+        guard first.0.lines.isEmpty else { return first }
+        try Task.checkCancellation()
+        guard try await waitBeforeRetry() else { return first }
+        try Task.checkCancellation()
+        return try await lookup(true)
+    }
+
     /// Текст трека и все ли источники ответили. Не ответил какой-то — найденное не
     /// окончательно, в следующий раз спросим снова.
     ///

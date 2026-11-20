@@ -69,6 +69,7 @@ struct LyricsTests {
         await testFindPriorityAndConcurrency()
         try await testExternalProviderFallbacks()
         try await testLRCLIBRetry()
+        try await testRetryEmptyLookup()
         testAcceptCachedPolicy()
         print("Lyrics unit checks passed")
 
@@ -372,6 +373,41 @@ struct LyricsTests {
         } catch {
             assertCheck(timeoutCalls.value == 3, "Exact lookup and search may share only one automatic retry")
         }
+    }
+
+    private static func testRetryEmptyLookup() async throws {
+        let empty = LyricsText(lines: [], authors: nil, source: nil)
+        let text = LyricsText(lines: [LyricLine(id: 0, time: 1, text: "Found on retry")], authors: nil, source: "LRCLIB")
+        for complete in [false, true] {
+            var attempts: [Bool] = []
+            let result = try await ExternalLyrics.retryEmptyLookup({ retry in
+                attempts.append(retry)
+                return retry ? (text, true) : (empty, complete)
+            }, waitBeforeRetry: { true })
+            assertCheck(attempts == [false, true] && result.0.synced, "Both network errors and empty answers must get one fresh search")
+        }
+
+        let found = try await ExternalLyrics.retryEmptyLookup({ retry in
+            assertCheck(!retry, "A usable result must not be replaced")
+            return (text, false)
+        }, waitBeforeRetry: {
+            assertCheck(false, "A usable result must not wait for a retry")
+            return false
+        })
+        assertCheck(found.0.synced, "A usable result must return immediately")
+
+        let skipped = try await ExternalLyrics.retryEmptyLookup({ retry in
+            assertCheck(!retry, "Offline mode must not retry an empty lookup")
+            return (empty, false)
+        }, waitBeforeRetry: { false })
+        assertCheck(skipped.0.lines.isEmpty, "An ineligible retry must keep the first result")
+
+        var attempts: [Bool] = []
+        _ = try await ExternalLyrics.retryEmptyLookup({ retry in
+            attempts.append(retry)
+            return (empty, false)
+        }, waitBeforeRetry: { true })
+        assertCheck(attempts == [false, true], "Persistent failures must not loop")
     }
 
     private static func response(_ url: URL, _ body: String, status: Int = 200) -> (Data, URLResponse) {
