@@ -787,6 +787,7 @@ struct SettingsScreen: View {
                             .autocorrectionDisabled()
                             .keyboardType(.URL)
                             .submitLabel(.done)
+                            .onSubmit { downloads.resumeAssets() }
                     }
                 }
             } header: {
@@ -872,15 +873,30 @@ struct SettingsScreen: View {
             Appearance.apply()
         }
         .onChange(of: crossfade) { Settings.crossfade = $0 }
-        .onChange(of: lyricsExternal) { Settings.lyricsExternal = $0 }
+        .onChange(of: lyricsExternal) {
+            Settings.lyricsExternal = $0
+            downloads.resumeAssets()
+        }
         .onChange(of: waveWheel) { Settings.waveWheel = $0 }
         .onChange(of: waveWords) { Settings.waveWords = $0 }
         .onChange(of: ownInWave) { Settings.ownInWave = $0 }
         .onChange(of: restoredInWave) { Settings.restoredInWave = $0 }
-        .onChange(of: lyricsAlways) { Settings.lyricsAlways = $0 }
-        .onChange(of: lyricsLRCLIB) { Settings.lyricsLRCLIB = $0 }
-        .onChange(of: lyricsNetEase) { Settings.lyricsNetEase = $0 }
-        .onChange(of: lyricsNetEaseFirst) { Settings.lyricsNetEaseFirst = $0 }
+        .onChange(of: lyricsAlways) {
+            Settings.lyricsAlways = $0
+            downloads.resumeAssets()
+        }
+        .onChange(of: lyricsLRCLIB) {
+            Settings.lyricsLRCLIB = $0
+            downloads.resumeAssets()
+        }
+        .onChange(of: lyricsNetEase) {
+            Settings.lyricsNetEase = $0
+            downloads.resumeAssets()
+        }
+        .onChange(of: lyricsNetEaseFirst) {
+            Settings.lyricsNetEaseFirst = $0
+            downloads.resumeAssets()
+        }
         .onChange(of: lyricsMirror) { Settings.lyricsMirror = $0 }
         .task { if aiLess == nil { aiLess = try? await API.shared.aiReduction() } }
         .onChange(of: normalize) { value in
@@ -893,7 +909,10 @@ struct SettingsScreen: View {
             Settings.offlineMode = $0
             Player.shared.connectivityChanged()
             Ynison.shared.updateConnection()
-            if !$0 { session.syncRestoredLikes() }
+            if !$0 {
+                downloads.settingsChanged()
+                session.syncRestoredLikes()
+            }
         }
         .onChange(of: wifiOnly) { value in
             Settings.wifiOnly = value

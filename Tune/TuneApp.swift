@@ -200,6 +200,7 @@ struct RootView: View {
             if now == .active {
                 Ynison.shared.updateConnection()
                 Player.shared.refreshPlaybackActivity()
+                if !Demo.on, !Settings.offlineMode { Downloads.shared.resumeAssets() }
                 Task {
                     async let update: Void = Updater.shared.check()
                     if !Demo.on, !Settings.offlineMode { await session.refresh() }
@@ -222,6 +223,7 @@ struct RootView: View {
         .onReceive(Connectivity.shared.$online.dropFirst()) { online in
             Ynison.shared.updateConnection()
             guard online, !Settings.offlineMode else { return }
+            Downloads.shared.resumeAssets()
             session.syncRestoredLikes()
             Uploads.shared.resume()
             if session.offline { Task { await session.refresh() } }

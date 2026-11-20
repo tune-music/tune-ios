@@ -1,3 +1,4 @@
+import AVFoundation
 import CryptoKit
 import Foundation
 
@@ -30,6 +31,7 @@ final class API {
     private let client = "YandexMusicDesktopAppWindows/5.120.0"
     private let signKey = SymmetricKey(data: Data("kzqU4XhfCaY6B6JTHODeq5".utf8))
     private let from = "tune-ios"
+    private let lyricsInFlight = LyricsInFlight()
     private let http: URLSession = {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 20
@@ -772,23 +774,42 @@ final class API {
         return nil
     }
 
-    static func cachedLyrics(for track: Track) -> LyricsText? {
+    static func hasSavedLyrics(for track: Track) -> Bool {
+        savedLyrics(for: track) != nil
+    }
+
+    static func cachedLyrics(for track: Track, anySource: Bool = false) -> LyricsText? {
         guard let saved = savedLyrics(for: track) else { return nil }
-        let key = ExternalLyrics.settingsKey
-        if saved.searched == key { return saved }
-        // Старый кэш мог остаться без ключа, если один источник не ответил.
-        guard saved.searched == nil else { return nil }
-        switch saved.source {
-        case "LRCLIB" where !Settings.lyricsExternal || !Settings.lyricsLRCLIB: return nil
-        case "NetEase" where !Settings.lyricsExternal || !Settings.lyricsNetEase: return nil
-        default: return saved
+        return ExternalLyrics.acceptCached(saved, anySource: anySource)
+    }
+
+    /// Текст, вшитый прямо в локальный или скачанный аудиофайл (ID3/MP4).
+    static func embeddedLyrics(for trackID: String) async -> LyricsText? {
+        var urls: [URL] = []
+        if let url = Uncensor.shared.localAudio(trackID) { urls.append(url) }
+        if let url = await Downloads.shared.fileURL(for: trackID) { urls.append(url) }
+        if let url = TrackFiles.existing(id: TrackFiles.Version.uncensored.cacheID(trackID), in: Storage.stream) {
+            urls.append(url)
         }
+        if let url = TrackFiles.existing(id: trackID, in: Storage.stream) {
+            urls.append(url)
+        }
+        for url in urls {
+            let asset = AVURLAsset(url: url)
+            if let raw = (try? await asset.load(.lyrics)) ?? nil,
+               !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                let lines = ExternalLyrics.parseLRC(raw)
+                if lines.contains(where: { !$0.text.isEmpty }) {
+                    return LyricsText(lines: lines, authors: nil, source: nil)
+                }
+            }
+        }
+        return nil
     }
 
     static func searchSavedLyrics(_ text: String, in tracks: [Track]) -> [Track] {
         func words(_ text: String) -> String {
-            text.lowercased().replacingOccurrences(of: "ё", with: "е")
-                .split { !$0.isLetter && !$0.isNumber }.joined(separator: " ")
+            ExternalLyrics.cleanWords(text)
         }
         let phrase = words(text)
         guard phrase.count >= 3 else { return [] }
@@ -805,18 +826,19 @@ final class API {
     func searchTracksByLine(_ text: String) async throws -> [Track] {
         if Demo.on { return Demo.data.tracks.filter { _ in text == "Здесь звучит припев" } }
         let hits = try await ExternalLyrics.searchByLine(text)
-        return try await withThrowingTaskGroup(of: (Int, Track?).self) { group in
+        return await withTaskGroup(of: (Int, Track?).self) { group in
             for (index, hit) in hits.enumerated() {
                 group.addTask {
-                    let matches = try await self.search("\(hit.artist) \(hit.title)", types: "track", filter: nil, page: 0, size: 12)
-                    return (index, matches.tracks.first { ExternalLyrics.matches($0, lyricHit: hit) })
+                    let matches = try? await self.search("\(hit.artist) \(hit.title)", types: "track", filter: nil, page: 0, size: 12)
+                    return (index, matches?.tracks.first { ExternalLyrics.matches($0, lyricHit: hit) })
                 }
             }
             var tracks: [(Int, Track)] = []
-            for try await (index, track) in group {
+            for await (index, track) in group {
                 if let track { tracks.append((index, track)) }
             }
-            return tracks.sorted { $0.0 < $1.0 }.map { $0.1 }
+            var seen = Set<String>()
+            return tracks.sorted { $0.0 < $1.0 }.map(\.1).filter { seen.insert($0.id).inserted }
         }
     }
 
@@ -1379,43 +1401,79 @@ final class API {
     }
 
     /// Текст трека: Яндекс, LRCLIB и NetEase — в порядке из настроек.
-    func lyrics(for track: Track) async throws -> LyricsText {
-        if Demo.on { return LyricsText(lines: Demo.lyrics, authors: ["Автор текста", "Композитор"], source: "LRCLIB") }
+    func lyrics(for track: Track, forceRefresh: Bool = false) async throws -> LyricsText {
+        try await resolveLyrics(for: track, forceRefresh: forceRefresh).0
+    }
+
+    /// Заранее подгружает текст трека в кэш; возвращает `true`, если проверка завершилась
+    /// окончательно (найден текст или все источники ответили).
+    func prefetchLyrics(for track: Track) async -> Bool {
+        ((try? await resolveLyrics(for: track, forceRefresh: false))?.1) ?? false
+    }
+
+    private func resolveLyrics(for track: Track, forceRefresh: Bool) async throws -> (LyricsText, Bool) {
+        if Demo.on {
+            return (LyricsText(lines: Demo.lyrics, authors: ["Автор текста", "Композитор"], source: "LRCLIB"), true)
+        }
         // Однажды полученный текст лежит на устройстве: он есть и без сети.
         _ = Storage.lyrics
-        let name = "Lyrics/\(Storage.hash(track.id)).json"
-        let key = ExternalLyrics.settingsKey
+        if await Connectivity.shared.offline {
+            if let saved = Self.cachedLyrics(for: track, anySource: true) { return (saved, true) }
+            if let embedded = await Self.embeddedLyrics(for: track.id) { return (embedded, true) }
+            return (LyricsText(lines: [], authors: nil, source: nil), false)
+        }
         // Искали с теми же настройками — второй раз в сеть не идём.
-        if let saved = Self.cachedLyrics(for: track) { return saved }
-        let ask: (String) async throws -> LyricsText = { id in
-            // Просьба подключить подписку вместо текста — не текст: ищем в других базах.
-            let own = try await self.fetchLyrics(track: id)
-            return Self.isStub(own.lines) ? LyricsText(lines: [], authors: nil, source: nil) : own
+        if !forceRefresh, let saved = Self.cachedLyrics(for: track, anySource: false) {
+            return (saved, true)
         }
-        var (found, complete) = await ExternalLyrics.find(track, yandex: ask)
-        // Ни один источник не ответил (первое соединение не успело, сеть мигнула) — ещё раз,
-        // а не сразу «Текста нет».
-        if found.lines.isEmpty, !complete, !Task.isCancelled {
-            try await Task.sleep(nanoseconds: 700_000_000)
-            (found, complete) = await ExternalLyrics.find(track, yandex: ask)
+        let key = ExternalLyrics.settingsKey
+        let previous = Self.savedLyrics(for: track)
+        let work: @Sendable () async throws -> (LyricsText, Bool) = {
+            let name = "Lyrics/\(Storage.hash(track.id)).json"
+            let ask: @Sendable (String) async throws -> LyricsText = { id in
+                // Просьба подключить подписку вместо текста — не текст: ищем в других базах.
+                let own = try await self.fetchLyrics(track: id)
+                let clean = ExternalLyrics.filterYandex(own.lines)
+                return (clean.isEmpty || Self.isStub(clean))
+                    ? LyricsText(lines: [], authors: nil, source: nil)
+                    : LyricsText(lines: clean, authors: own.authors, source: own.source)
+            }
+            var (found, complete) = await ExternalLyrics.find(track, yandex: ask)
+            // Ни один источник не ответил (первое соединение не успело, сеть мигнула) — ещё раз,
+            // а не сразу «Текста нет».
+            if found.lines.isEmpty, !complete, !Task.isCancelled, !(await Connectivity.shared.offline) {
+                try await Task.sleep(nanoseconds: 500_000_000)
+                (found, complete) = await ExternalLyrics.find(track, yandex: ask)
+            }
+            try Task.checkCancellation()
+            // Аккаунту без Плюса Яндекс вместо текста отдаёт просьбу подключить подписку.
+            // Её нельзя сохранять: иначе она останется и после входа в аккаунт с Плюсом.
+            if !Self.isStub(found.lines), !found.lines.isEmpty {
+                var result = found
+                result.searched = key
+                Storage.save(result, name)
+                return (result, true)
+            }
+            if let embedded = await Self.embeddedLyrics(for: track.id) {
+                var result = embedded
+                result.searched = key
+                Storage.save(result, name)
+                return (result, true)
+            }
+            if let previous {
+                return (previous, complete)
+            }
+            return (LyricsText(lines: [], authors: nil, source: nil), complete)
         }
-        try Task.checkCancellation()
-        // Аккаунту без Плюса Яндекс вместо текста отдаёт просьбу подключить подписку.
-        // Её нельзя сохранять: иначе она останется и после входа в аккаунт с Плюсом.
-        if Self.isStub(found.lines) || found.lines.isEmpty {
-            return LyricsText(lines: [], authors: nil, source: nil)
+        if forceRefresh {
+            return try await work()
         }
-        var result = found
-        result.searched = key
-        Storage.save(result, name)
-        return result
+        return try await lyricsInFlight.run(key: "\(track.id)|\(key)", operation: work)
     }
 
     /// Вместо текста пришла заглушка про подписку: пара строк со словом «подписка».
     private static func isStub(_ lines: [LyricLine]) -> Bool {
-        let words = lines.map(\.text).filter { !$0.isEmpty }
-        guard !words.isEmpty, words.count <= 4 else { return false }
-        return words.joined(separator: " ").lowercased().contains("подписк")
+        ExternalLyrics.isStub(lines)
     }
 
     private func fetchLyrics(track id: String) async throws -> LyricsText {
@@ -1428,7 +1486,9 @@ final class API {
                 continue
             }
             guard let link = value["downloadUrl"].string, let url = URL(string: link) else { continue }
-            guard let (data, _) = try? await http.data(from: url), let text = String(data: data, encoding: .utf8) else { continue }
+            let (data, response) = try await http.data(from: url)
+            guard (response as? HTTPURLResponse)?.statusCode == 200,
+                  let text = String(data: data, encoding: .utf8) else { continue }
             let lines = Self.parseLRC(text)
             let authors = value["writers"].array.compactMap { $0.string }
             if lines.contains(where: { !$0.text.isEmpty }) { return LyricsText(lines: lines, authors: authors, source: LyricsText.yandex) }
@@ -1437,25 +1497,22 @@ final class API {
     }
 
     static func parseLRC(_ text: String) -> [LyricLine] {
-        var out: [LyricLine] = []
-        for raw in text.components(separatedBy: .newlines) {
-            let line = raw.trimmingCharacters(in: .whitespaces)
-            var time: Double?
-            var words = line
-            if line.hasPrefix("["), let close = line.firstIndex(of: "]") {
-                let stamp = line[line.index(after: line.startIndex)..<close]
-                let parts = stamp.split(separator: ":")
-                if parts.count == 2, let minutes = Double(parts[0]), let seconds = Double(parts[1]) {
-                    time = minutes * 60 + seconds
-                    words = String(line[line.index(after: close)...]).trimmingCharacters(in: .whitespaces)
-                } else {
-                    // Служебная строка вроде [ar:…] — не текст.
-                    continue
-                }
-            }
-            if time == nil && words.isEmpty { continue }
-            out.append(LyricLine(id: out.count, time: time, text: words))
+        ExternalLyrics.parseLRC(text)
+    }
+}
+
+private actor LyricsInFlight {
+    private var tasks: [String: Task<(LyricsText, Bool), Error>] = [:]
+
+    func run(key: String, operation: @escaping @Sendable () async throws -> (LyricsText, Bool)) async throws -> (LyricsText, Bool) {
+        if let existing = tasks[key] {
+            return try await existing.value
         }
-        return out
+        let task = Task<(LyricsText, Bool), Error> {
+            try await operation()
+        }
+        tasks[key] = task
+        defer { tasks[key] = nil }
+        return try await task.value
     }
 }
