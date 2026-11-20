@@ -1,0 +1,124 @@
+name: Tune Dev
+
+on:
+  push:
+    branches: [dev]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-dev
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 25
+    env:
+      DEV_BASE_URL: https://github.com/${{ github.repository }}/releases/download/dev
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Select Xcode and generate project
+        run: |
+          xcode=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | grep -vi beta | sort -V | tail -n 1)
+          if [ -n "$xcode" ]; then sudo xcode-select -s "$xcode"; fi
+          xcodebuild -version
+          brew install xcodegen
+          xcodegen generate
+      - name: Test lyrics and Ynison
+        run: |
+          xcrun swiftc -target "$(uname -m)-apple-macosx15.0" -swift-version 5 -parse-as-library \
+            Tune/Core/Models.swift Tune/Core/Storage.swift Tune/Core/ExternalLyrics.swift Tests/LyricsTests.swift -o lyrics-tests
+          ./lyrics-tests
+          xcrun swiftc Tune/Core/Models.swift Tune/Core/YnisonProtocol.swift Tests/YnisonProtocolTests.swift -o ynison-tests
+          ./ynison-tests
+      - name: Build Tune Dev
+        run: |
+          set -o pipefail
+          xcodebuild build -project Tune.xcodeproj -scheme Tune -configuration Dev \
+            -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
+            "MARKETING_VERSION=0.1.$GITHUB_RUN_NUMBER" "CURRENT_PROJECT_VERSION=$GITHUB_RUN_NUMBER" \
+            "TUNE_DEV_SOURCE_URL=$DEV_BASE_URL/altstore-dev.json" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' | tee build.log
+      - name: Package and verify IPA and source
+        run: |
+          mkdir -p Payload dist
+          cp -R build/Build/Products/Dev-iphoneos/Tune.app Payload/
+          zip -qry "dist/Tune-iOS-Dev-$GITHUB_RUN_NUMBER.ipa" Payload
+          python3 - <<'PY'
+          import datetime, json, os, plistlib
+          from pathlib import Path
+
+          app = Path('Payload/Tune.app')
+          widget = app / 'PlugIns/TuneWidgets.appex'
+          with (app / 'Info.plist').open('rb') as file:
+              main = plistlib.load(file)
+          with (widget / 'Info.plist').open('rb') as file:
+              extension = plistlib.load(file)
+          app_id = 'dev.tune.music.dev'
+          run = os.environ['GITHUB_RUN_NUMBER']
+          base = os.environ['DEV_BASE_URL']
+          assert main['CFBundleIdentifier'] == app_id
+          assert extension['CFBundleIdentifier'] == app_id + '.widgets'
+          assert (widget / extension['CFBundleExecutable']).is_file()
+          assert main['CFBundleDisplayName'] == 'Tune Dev'
+          assert main['CFBundleURLTypes'][0]['CFBundleURLSchemes'] == ['tune-dev']
+          assert main['TuneDevSourceURL'] == base + '/altstore-dev.json'
+          assert main['CFBundleVersion'] == extension['CFBundleVersion'] == run
+          assert main['CFBundleShortVersionString'] == extension['CFBundleShortVersionString'] == f'0.1.{run}'
+
+          ipa = Path(f'dist/Tune-iOS-Dev-{run}.ipa')
+          repo = os.environ['GITHUB_REPOSITORY']
+          icon = f'https://raw.githubusercontent.com/{repo}/main/Tune/Assets.xcassets/AppIcon.appiconset/icon.png'
+          source = {
+              'name': 'Tune Dev', 'identifier': app_id + '.source', 'iconURL': icon,
+              'apps': [{
+                  'name': 'Tune Dev', 'bundleIdentifier': app_id, 'developerName': 'Tune',
+                  'iconURL': icon, 'localizedDescription': 'Отдельный тестовый канал Tune.',
+                  'appPermissions': {'entitlements': [], 'privacy': {}},
+                  'versions': [{
+                      'version': main['CFBundleShortVersionString'], 'buildVersion': run,
+                      'date': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+                      'localizedDescription': f"Тестовая сборка {os.environ['GITHUB_SHA'][:7]}",
+                      'downloadURL': f'{base}/{ipa.name}', 'size': ipa.stat().st_size,
+                      'minOSVersion': main['MinimumOSVersion'],
+                  }],
+              }],
+          }
+          Path('dist/altstore-dev.json').write_text(json.dumps(source, ensure_ascii=False), encoding='utf-8')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: vars.TUNE_DEV_PUBLIC == 'true'
+        with:
+          name: tune-ios-dev
+          path: dist
+          if-no-files-found: error
+
+  publish:
+    if: vars.TUNE_DEV_PUBLIC == 'true'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: tune-ios-dev
+          path: dist
+      - name: Publish Dev prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          ipa="dist/Tune-iOS-Dev-$GITHUB_RUN_NUMBER.ipa"
+          if state=$(gh release view dev --json isPrerelease,isDraft --jq '.isPrerelease and (.isDraft | not)'); then
+            test "$state" = true
+            gh release upload dev "$ipa" --clobber
+            gh release upload dev dist/altstore-dev.json --clobber
+          else
+            gh release create dev "$ipa" dist/altstore-dev.json --target "$GITHUB_SHA" \
+              --prerelease --latest=false --title 'Tune iOS Dev' --notes 'Отдельный тестовый канал Tune.'
+          fi

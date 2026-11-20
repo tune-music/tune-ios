@@ -210,7 +210,7 @@ struct RootView: View {
         }
         .onOpenURL { url in
             guard session.token != nil else { return }
-            if url.scheme == "tune", url.path.isEmpty, let action = url.host,
+            if url.scheme == TuneChannel.linkScheme, url.path.isEmpty, let action = url.host,
                ["player", "wave", "likes", "search"].contains(action) {
                 QuickAction.run(action)
             } else {

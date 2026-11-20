@@ -58,14 +58,14 @@ private struct LauncherView: View {
                 shortcut("Моя волна", icon: "waveform")
             } else {
                 HStack(spacing: 8) {
-                    Link(destination: URL(string: "tune://wave")!) { shortcut("Моя волна", icon: "waveform") }
-                    Link(destination: URL(string: "tune://likes")!) { shortcut("Нравится", icon: "heart.fill") }
-                    Link(destination: URL(string: "tune://search")!) { shortcut("Поиск", icon: "magnifyingglass") }
+                    Link(destination: URL(string: "\(TuneChannel.linkScheme)://wave")!) { shortcut("Моя волна", icon: "waveform") }
+                    Link(destination: URL(string: "\(TuneChannel.linkScheme)://likes")!) { shortcut("Нравится", icon: "heart.fill") }
+                    Link(destination: URL(string: "\(TuneChannel.linkScheme)://search")!) { shortcut("Поиск", icon: "magnifyingglass") }
                 }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .widgetURL(family == .systemSmall ? URL(string: "tune://wave") : URL(string: "tune://player"))
+        .widgetURL(URL(string: "\(TuneChannel.linkScheme)://\(family == .systemSmall ? "wave" : "player")"))
     }
 
     private func shortcut(_ title: String, icon: String) -> some View {
@@ -102,7 +102,7 @@ private struct TunePlaybackActivity: Widget {
             .padding(16)
             .activityBackgroundTint(Color(red: 0.10, green: 0.10, blue: 0.11))
             .activitySystemActionForegroundColor(.white)
-            .widgetURL(URL(string: "tune://player"))
+            .widgetURL(URL(string: "\(TuneChannel.linkScheme)://player"))
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
@@ -127,7 +127,7 @@ private struct TunePlaybackActivity: Widget {
             } minimal: {
                 statusIcon(playing: context.state.playing)
             }
-            .widgetURL(URL(string: "tune://player"))
+            .widgetURL(URL(string: "\(TuneChannel.linkScheme)://player"))
         }
     }
 

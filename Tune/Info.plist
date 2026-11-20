@@ -9,7 +9,7 @@
 		<string>ru</string>
 	</array>
 	<key>CFBundleDisplayName</key>
-	<string>Tune</string>
+	<string>$(TUNE_DISPLAY_NAME)</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -24,14 +24,16 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>TuneDevSourceURL</key>
+	<string>$(TUNE_DEV_SOURCE_URL)</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
 			<key>CFBundleURLName</key>
-			<string>dev.tune.music</string>
+			<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>tune</string>
+				<string>$(TUNE_LINK_SCHEME)</string>
 			</array>
 		</dict>
 	</array>
