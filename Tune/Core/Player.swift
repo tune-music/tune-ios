@@ -576,8 +576,13 @@ final class Player: NSObject, ObservableObject {
         return item
     }
 
+    /// Обновляет параметры DSP напрямую из ползунка без перерисовки экранов и записи на диск.
+    func previewSound(_ settings: SoundSettings) {
+        audioEffects.update(settings)
+        if settings.needsAudioMix { prepareEffectsForStream() }
+    }
+
     func updateSound(_ settings: SoundSettings) {
-        guard settings != sound else { return }
         let speedChanged = settings.speed != sound.speed
         let pitchChanged = settings.pitchWithSpeed != sound.pitchWithSpeed
         sound = settings

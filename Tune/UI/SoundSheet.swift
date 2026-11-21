@@ -42,13 +42,25 @@ struct SoundSheet: View {
                     }))
                     if player.sound.eqEnabled {
                         presets
-                        valueSlider("Уровень", value: "\(Int((player.sound.preamp * 100).rounded()))%", range: 0.5...1.5,
-                                    step: 0.05, binding: Binding(get: { player.sound.preamp }, set: { level in
-                            var setting = player.sound
-                            setting.preamp = level
-                            setting.preset = 0
-                            player.updateSound(setting)
-                        }))
+                        SoundSliderRow(
+                            title: "Уровень",
+                            range: 0.5...1.5,
+                            quantize: { ($0 * 20).rounded() / 20 },
+                            format: { "\(Int(($0 * 100).rounded()))%" },
+                            externalValue: player.sound.preamp,
+                            liveUpdate: { level in
+                                var setting = player.sound
+                                setting.preamp = level
+                                setting.preset = 0
+                                player.previewSound(setting)
+                            },
+                            commit: { level in
+                                var setting = player.sound
+                                setting.preamp = level
+                                setting.preset = 0
+                                player.updateSound(setting)
+                            }
+                        )
                         ForEach(SoundSettings.frequencies.indices, id: \.self) { band in
                             gainSlider(band)
                         }
@@ -72,19 +84,19 @@ struct SoundSheet: View {
     }
 
     private var speedSlider: some View {
-        valueSlider("Скорость", value: "\(shownSpeed.formatted(.number.precision(.fractionLength(0...2))))×",
-                    range: SoundSettings.speedRange, step: 0.05, binding: Binding(get: { shownSpeed }, set: { value in
-            let speed = (value * 20).rounded() / 20
+        let speed = (shownSpeed * 20).rounded() / 20
+        return valueSlider("Скорость", value: "\(speed.formatted(.number.precision(.fractionLength(0...2))))×",
+                           range: SoundSettings.speedRange, binding: Binding(get: { shownSpeed }, set: { value in
             if pendingSpeed != nil {
-                pendingSpeed = speed
+                pendingSpeed = value
             } else {
-                applySpeed(speed)
+                applySpeed((value * 20).rounded() / 20)
             }
         }), onEditingChanged: { editing in
             if editing {
                 pendingSpeed = player.sound.speed
             } else if let pendingSpeed {
-                applySpeed(pendingSpeed)
+                applySpeed((pendingSpeed * 20).rounded() / 20)
                 self.pendingSpeed = nil
             }
         })
@@ -98,18 +110,18 @@ struct SoundSheet: View {
 
     private var reverbSlider: some View {
         let level = pendingReverb ?? player.sound.echo
-        return valueSlider("Реверб", value: "\(Int((level * 100).rounded()))%", range: 0...1, step: 0.01,
+        return valueSlider("Реверб", value: "\(Int((level * 100).rounded()))%", range: 0...1,
                            binding: Binding(get: { pendingReverb ?? player.sound.echo }, set: { value in
             if pendingReverb != nil {
                 pendingReverb = value
             } else {
-                applyReverb(value)
+                applyReverb((value * 100).rounded() / 100)
             }
         }), onEditingChanged: { editing in
             if editing {
                 pendingReverb = player.sound.echo
             } else if let pendingReverb {
-                applyReverb(pendingReverb)
+                applyReverb((pendingReverb * 100).rounded() / 100)
                 self.pendingReverb = nil
             }
         })
@@ -133,33 +145,75 @@ struct SoundSheet: View {
             }
         }
         let periodTitle = player.sound.eightDMode == .fixed ? "Период" : "База"
-        let periodText = "\(player.sound.eightDPeriod.formatted(.number.precision(.fractionLength(0...1)))) с"
-        valueSlider(periodTitle, value: periodText, range: SoundSettings.eightDPeriodRange, step: 0.5,
-                    binding: Binding(get: { player.sound.eightDPeriod }, set: { value in
-            var setting = player.sound
-            setting.eightDPeriod = (value * 2).rounded() / 2
-            player.updateSound(setting)
-        }))
-        valueSlider("Плавность", value: "\(Int((player.sound.eightDSmoothness * 100).rounded()))%", range: 0...1, step: 0.05,
-                    binding: Binding(get: { player.sound.eightDSmoothness }, set: { value in
-            var setting = player.sound
-            setting.eightDSmoothness = value
-            player.updateSound(setting)
-        }))
-        valueSlider("Ширина", value: "\(Int((player.sound.eightDDepth * 100).rounded()))%", range: 0...1, step: 0.05,
-                    binding: Binding(get: { player.sound.eightDDepth }, set: { value in
-            var setting = player.sound
-            setting.eightDDepth = value
-            player.updateSound(setting)
-        }))
-        if player.sound.eightDMode != .fixed {
-            valueSlider("Отклик", value: "\(Int((player.sound.eightDSensitivity * 100).rounded()))%",
-                        range: SoundSettings.eightDSensitivityRange, step: 0.05,
-                        binding: Binding(get: { player.sound.eightDSensitivity }, set: { value in
+        SoundSliderRow(
+            title: periodTitle,
+            range: SoundSettings.eightDPeriodRange,
+            quantize: { ($0 * 2).rounded() / 2 },
+            format: { "\($0.formatted(.number.precision(.fractionLength(0...1)))) с" },
+            externalValue: player.sound.eightDPeriod,
+            liveUpdate: { value in
                 var setting = player.sound
-                setting.eightDSensitivity = value
+                setting.eightDPeriod = value
+                player.previewSound(setting)
+            },
+            commit: { value in
+                var setting = player.sound
+                setting.eightDPeriod = value
                 player.updateSound(setting)
-            }))
+            }
+        )
+        SoundSliderRow(
+            title: "Плавность",
+            range: 0...1,
+            quantize: { ($0 * 100).rounded() / 100 },
+            format: { "\(Int(($0 * 100).rounded()))%" },
+            externalValue: player.sound.eightDSmoothness,
+            liveUpdate: { value in
+                var setting = player.sound
+                setting.eightDSmoothness = value
+                player.previewSound(setting)
+            },
+            commit: { value in
+                var setting = player.sound
+                setting.eightDSmoothness = value
+                player.updateSound(setting)
+            }
+        )
+        SoundSliderRow(
+            title: "Ширина",
+            range: 0...1,
+            quantize: { ($0 * 100).rounded() / 100 },
+            format: { "\(Int(($0 * 100).rounded()))%" },
+            externalValue: player.sound.eightDDepth,
+            liveUpdate: { value in
+                var setting = player.sound
+                setting.eightDDepth = value
+                player.previewSound(setting)
+            },
+            commit: { value in
+                var setting = player.sound
+                setting.eightDDepth = value
+                player.updateSound(setting)
+            }
+        )
+        if player.sound.eightDMode != .fixed {
+            SoundSliderRow(
+                title: "Отклик",
+                range: SoundSettings.eightDSensitivityRange,
+                quantize: { ($0 * 100).rounded() / 100 },
+                format: { "\(Int(($0 * 100).rounded()))%" },
+                externalValue: player.sound.eightDSensitivity,
+                liveUpdate: { value in
+                    var setting = player.sound
+                    setting.eightDSensitivity = value
+                    player.previewSound(setting)
+                },
+                commit: { value in
+                    var setting = player.sound
+                    setting.eightDSensitivity = value
+                    player.updateSound(setting)
+                }
+            )
         }
     }
 
@@ -178,28 +232,90 @@ struct SoundSheet: View {
     private func gainSlider(_ band: Int) -> some View {
         let frequency = SoundSettings.frequencies[band]
         let name = frequency >= 1_000 ? "\(Int(frequency / 1_000)) кГц" : "\(Int(frequency)) Гц"
-        let gain = player.sound.gains[band]
-        let number = gain.formatted(.number.precision(.fractionLength(0...1)))
-        let value = gain > 0 ? "+\(number) дБ" : "\(number) дБ"
-        return valueSlider(name, value: value, range: -12...12, step: 0.5, binding: Binding(
-            get: { player.sound.gains[band] },
-            set: { gain in
+        return SoundSliderRow(
+            title: name,
+            range: -12...12,
+            quantize: { ($0 * 2).rounded() / 2 },
+            format: { gain in
+                let number = gain.formatted(.number.precision(.fractionLength(0...1)))
+                return gain > 0 ? "+\(number) дБ" : "\(number) дБ"
+            },
+            externalValue: player.sound.gains[band],
+            liveUpdate: { gain in
+                var setting = player.sound
+                setting.gains[band] = gain
+                setting.preset = 0
+                player.previewSound(setting)
+            },
+            commit: { gain in
                 var setting = player.sound
                 setting.gains[band] = gain
                 setting.preset = 0
                 player.updateSound(setting)
             }
-        ))
+        )
     }
 
-    private func valueSlider(_ title: String, value: String, range: ClosedRange<Float>, step: Float,
+    private func valueSlider(_ title: String, value: String, range: ClosedRange<Float>,
                              binding: Binding<Float>, onEditingChanged: @escaping (Bool) -> Void = { _ in }) -> some View {
         HStack(spacing: 12) {
-            Text(title).frame(width: 78, alignment: .leading)
-            Slider(value: binding, in: range, step: step, onEditingChanged: onEditingChanged)
+            Text(title).frame(width: 82, alignment: .leading)
+            Slider(value: binding, in: range, onEditingChanged: onEditingChanged)
                 .accessibilityLabel(title)
                 .accessibilityValue(value)
             Text(value)
+                .monospacedDigit()
+                .foregroundStyle(Theme.dim)
+                .frame(width: 60, alignment: .trailing)
+        }
+    }
+}
+
+/// Плавный ползунок без ступенчатого рывка (`step` в SwiftUI привязывает бегунок к сетке)
+/// и с локальным состоянием во время перетаскивания, чтобы не перерисовывать всю форму на каждый пиксель.
+private struct SoundSliderRow: View {
+    let title: String
+    let range: ClosedRange<Float>
+    let quantize: (Float) -> Float
+    let format: (Float) -> String
+    let externalValue: Float
+    let liveUpdate: (Float) -> Void
+    let commit: (Float) -> Void
+
+    @State private var draft: Float?
+
+    private var current: Float { quantize(draft ?? externalValue) }
+
+    var body: some View {
+        let text = format(current)
+        HStack(spacing: 12) {
+            Text(title).frame(width: 82, alignment: .leading)
+            Slider(
+                value: Binding(
+                    get: { draft ?? externalValue },
+                    set: { newValue in
+                        let previous = quantize(draft ?? externalValue)
+                        draft = newValue
+                        let next = quantize(newValue)
+                        if next != previous {
+                            liveUpdate(next)
+                        }
+                    }
+                ),
+                in: range,
+                onEditingChanged: { editing in
+                    if editing {
+                        draft = externalValue
+                    } else if let final = draft {
+                        let snapped = quantize(final)
+                        draft = nil
+                        commit(snapped)
+                    }
+                }
+            )
+            .accessibilityLabel(title)
+            .accessibilityValue(text)
+            Text(text)
                 .monospacedDigit()
                 .foregroundStyle(Theme.dim)
                 .frame(width: 60, alignment: .trailing)
