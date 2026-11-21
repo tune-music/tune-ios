@@ -21,6 +21,20 @@ struct SoundSheet: View {
                     reverbSlider
                 }
                 Section {
+                    Toggle("8D звук", isOn: Binding(get: { player.sound.eightDEnabled }, set: { enabled in
+                        var setting = player.sound
+                        setting.eightDEnabled = enabled
+                        player.updateSound(setting)
+                    }))
+                    if player.sound.eightDEnabled {
+                        eightDControls
+                    }
+                } footer: {
+                    if player.sound.eightDEnabled {
+                        Text(player.sound.eightDMode.description)
+                    }
+                }
+                Section {
                     Toggle("Эквалайзер", isOn: Binding(get: { player.sound.eqEnabled }, set: { enabled in
                         var setting = player.sound
                         setting.eqEnabled = enabled
@@ -40,7 +54,7 @@ struct SoundSheet: View {
                         }
                     }
                 } footer: {
-                    Text("Для эквалайзера и реверба трек сначала загружается в кэш. На скачанных треках эффекты доступны без сети.")
+                    Text("Для эквалайзера, реверба и 8D звука трек сначала загружается в кэш. На скачанных треках эффекты доступны без сети.")
                 }
                 if player.sound != SoundSettings() {
                     Button("Сбросить настройки звука") { player.updateSound(SoundSettings()) }
@@ -105,6 +119,48 @@ struct SoundSheet: View {
         var setting = player.sound
         setting.echo = level
         player.updateSound(setting)
+    }
+
+    @ViewBuilder
+    private var eightDControls: some View {
+        Picker("Режим", selection: Binding(get: { player.sound.eightDMode }, set: { mode in
+            var setting = player.sound
+            setting.eightDMode = mode
+            player.updateSound(setting)
+        })) {
+            ForEach(EightDMode.allCases) { mode in
+                Text(mode.title).tag(mode)
+            }
+        }
+        let periodTitle = player.sound.eightDMode == .fixed ? "Период" : "База"
+        let periodText = "\(player.sound.eightDPeriod.formatted(.number.precision(.fractionLength(0...1)))) с"
+        valueSlider(periodTitle, value: periodText, range: SoundSettings.eightDPeriodRange, step: 0.5,
+                    binding: Binding(get: { player.sound.eightDPeriod }, set: { value in
+            var setting = player.sound
+            setting.eightDPeriod = (value * 2).rounded() / 2
+            player.updateSound(setting)
+        }))
+        valueSlider("Плавность", value: "\(Int((player.sound.eightDSmoothness * 100).rounded()))%", range: 0...1, step: 0.05,
+                    binding: Binding(get: { player.sound.eightDSmoothness }, set: { value in
+            var setting = player.sound
+            setting.eightDSmoothness = value
+            player.updateSound(setting)
+        }))
+        valueSlider("Ширина", value: "\(Int((player.sound.eightDDepth * 100).rounded()))%", range: 0...1, step: 0.05,
+                    binding: Binding(get: { player.sound.eightDDepth }, set: { value in
+            var setting = player.sound
+            setting.eightDDepth = value
+            player.updateSound(setting)
+        }))
+        if player.sound.eightDMode != .fixed {
+            valueSlider("Отклик", value: "\(Int((player.sound.eightDSensitivity * 100).rounded()))%",
+                        range: SoundSettings.eightDSensitivityRange, step: 0.05,
+                        binding: Binding(get: { player.sound.eightDSensitivity }, set: { value in
+                var setting = player.sound
+                setting.eightDSensitivity = value
+                player.updateSound(setting)
+            }))
+        }
     }
 
     private var presets: some View {
