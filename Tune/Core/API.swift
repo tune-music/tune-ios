@@ -84,10 +84,14 @@ final class API {
                 continue
             }
             let value = JSON.parse(answer.0)
-            if status != 200 {
+            if !(200..<300).contains(status) {
                 let name = value["error"]["name"].string ?? value["result"]["message"].string ?? "ошибка"
                 Log.shared.add("api: \(parts.path): \(status) \(name)")
                 throw APIError.server("Яндекс ответил \(status): \(name)")
+            }
+            if !value.exists,
+               String(data: answer.0, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true {
+                return JSON([:])
             }
             guard value.exists else { throw APIError.server("Яндекс ответил \(status)") }
             return value

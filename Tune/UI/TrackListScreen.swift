@@ -260,6 +260,23 @@ final class TrackListModel: ObservableObject {
             withTransaction(transaction) { tracks = ordered }
         }
     }
+
+    func updateUploadedTrack(_ edited: Track, kind: ListKind) {
+        guard tracks.contains(where: { $0.id == edited.id }) else { return }
+        tracks = tracks.map {
+            $0.id == edited.id ? $0.withUploadedMetadata(title: edited.title, artist: edited.artists) : $0
+        }
+        guard !Demo.on else { return }
+        if kind == .likes {
+            let snapshot = tracks.filter { !localLikeIDs.contains($0.id) }
+            Task.detached(priority: .utility) { Storage.save(snapshot, "likes-tracks.json") }
+        } else if let name = Self.cacheName(kind) {
+            let snapshot = Cached(title: title, subtitle: subtitle, cover: cover, tracks: tracks,
+                                  days: kind == .history ? days : nil, historySources: kind == .history ? historySources : nil,
+                                  album: album)
+            Task.detached(priority: .utility) { Storage.save(snapshot, name) }
+        }
+    }
 }
 
 /// Страница плейлиста, альбома, лайков, истории или скачанного: шапка с обложкой и список треков.
@@ -483,10 +500,8 @@ struct TrackListScreen: View {
                 if kind == .likes || isArtistCollection { Task { await model.load(kind, force: true) } }
             }
             .onReceive(NotificationCenter.default.publisher(for: Session.uploadedTrackEdited)) { note in
-                guard let edited = note.object as? Track, model.tracks.contains(where: { $0.id == edited.id }) else { return }
-                model.tracks = model.tracks.map {
-                    $0.id == edited.id ? $0.withUploadedMetadata(title: edited.title, artist: edited.artists) : $0
-                }
+                guard let edited = note.object as? Track else { return }
+                model.updateUploadedTrack(edited, kind: kind)
             }
             .onReceive(NotificationCenter.default.publisher(for: MetadataOverrides.changed)) { note in
                 guard let target = note.object as? ReplacementTarget else { return }

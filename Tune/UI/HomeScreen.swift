@@ -33,6 +33,17 @@ final class HomeModel: ObservableObject {
             failed = page.blocks.isEmpty
         }
     }
+
+    func updateUploadedTrack(_ edited: Track) {
+        guard let recent = page.recent, recent.contains(where: { $0.id == edited.id }) else { return }
+        page.recent = recent.map {
+            $0.id == edited.id ? $0.withUploadedMetadata(title: edited.title, artist: edited.artists) : $0
+        }
+        if !Demo.on, !page.blocks.isEmpty {
+            let snapshot = page
+            Task.detached(priority: .utility) { Storage.save(snapshot, "home.json") }
+        }
+    }
 }
 
 /// Главная: «Моя волна», волны по настроению, быстрый доступ к своему и полки Яндекса.
@@ -154,6 +165,10 @@ struct HomeScreen: View {
         .task { await model.load() }
         .onReceive(Downloads.shared.$entries.map(\.count).removeDuplicates()) { count in
             if downloadCount != count { downloadCount = count }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Session.uploadedTrackEdited)) { note in
+            guard let edited = note.object as? Track else { return }
+            model.updateUploadedTrack(edited)
         }
         .onChange(of: model.page.trends?.isEmpty ?? true) { empty in
             if empty { trending = false }
