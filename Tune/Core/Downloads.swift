@@ -34,6 +34,11 @@ final class Downloads: ObservableObject {
     private var files: [String: String] = [:]
     private var running: Set<String> = []
     private let parallel = 2
+    private var pendingAssets: Set<String> = []
+    private var checkedLyrics: [String: String] = [:]
+    private var activeAssets: Set<String> = []
+    private var deferredAssets: Set<String> = []
+    private let assetParallel = 2
     private let monitor = NWPathMonitor()
 
     var tracks: [Track] { entries.map(\.track) }
@@ -64,6 +69,14 @@ final class Downloads: ObservableObject {
             failed = pending.failed.filter { files[$0.id] == nil }
             for track in queue { active[track.id] = 0 }
         }
+        pendingAssets = Set(Storage.load("download-assets.json", as: [String].self) ?? [])
+        checkedLyrics = Storage.load("lyrics-checked.json", as: [String: String].self) ?? [:]
+        let validIDs = Set(entries.map(\.track.id))
+        let prunedPending = pendingAssets.intersection(validIDs)
+        if prunedPending != pendingAssets {
+            pendingAssets = prunedPending
+            saveAssets()
+        }
         BackgroundFetcher.shared.start()
         monitor.pathUpdateHandler = { path in
             let expensive = path.isExpensive
@@ -71,9 +84,13 @@ final class Downloads: ObservableObject {
                 let downloads = Downloads.shared
                 if downloads.cellular != expensive { downloads.cellular = expensive }
                 downloads.pump()
+                downloads.resumeAssets()
             }
         }
         monitor.start(queue: DispatchQueue(label: "tune.network"))
+        Task { @MainActor [weak self] in
+            self?.resumeAssets()
+        }
     }
 
     func has(_ id: String) -> Bool {
@@ -141,6 +158,23 @@ final class Downloads: ObservableObject {
     func settingsChanged() {
         objectWillChange.send()
         pump()
+        resumeAssets()
+    }
+
+    /// Проверяет обложки и тексты для скачанных треков (включая старые загрузки и смену настроек).
+    func resumeAssets() {
+        guard !Demo.on, !Connectivity.shared.offline, !holding else { return }
+        deferredAssets.removeAll()
+        let key = ExternalLyrics.settingsKey
+        var changed = false
+        for entry in entries {
+            let id = entry.track.id
+            if !API.hasSavedLyrics(for: entry.track), checkedLyrics[id] != key {
+                if pendingAssets.insert(id).inserted { changed = true }
+            }
+        }
+        if changed { saveAssets() }
+        pumpAssets()
     }
 
     func pause() {
@@ -204,16 +238,53 @@ final class Downloads: ObservableObject {
                 }
             }
             await ImageLoader.shared.pin(track.cover)
-            // Текст песни скачивается вместе с треком: он пригодится без сети.
-            _ = try? await API.shared.lyrics(for: track)
             let bytes = Int64((try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
             entries.removeAll { $0.track.id == track.id }
             entries.insert(Entry(track: track, file: file.lastPathComponent, bytes: bytes, date: Date(), version: source.version), at: 0)
             files[track.id] = file.lastPathComponent
+            pendingAssets.insert(track.id)
+            deferredAssets.remove(track.id)
+            checkedLyrics.removeValue(forKey: track.id)
             save()
+            saveAssets()
+            pumpAssets()
         } catch {
             Log.shared.add("загрузка: \(track.id): \((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)")
             if !failed.contains(where: { $0.id == track.id }) { failed.append(track) }
+        }
+    }
+
+    private func pumpAssets() {
+        guard !Demo.on, !Connectivity.shared.offline, !holding else { return }
+        while activeAssets.count < assetParallel,
+              let entry = entries.first(where: {
+                  pendingAssets.contains($0.track.id) &&
+                  !activeAssets.contains($0.track.id) &&
+                  !deferredAssets.contains($0.track.id)
+              }) {
+            let track = entry.track
+            let key = ExternalLyrics.settingsKey
+            activeAssets.insert(track.id)
+            Task(priority: .utility) { [weak self] in
+                async let cover: Void = ImageLoader.shared.pin(track.cover)
+                let done = await API.shared.prefetchLyrics(for: track)
+                await cover
+                await MainActor.run {
+                    guard let self else { return }
+                    self.activeAssets.remove(track.id)
+                    if done {
+                        self.pendingAssets.remove(track.id)
+                        self.deferredAssets.remove(track.id)
+                        if self.has(track.id) {
+                            self.checkedLyrics[track.id] = key
+                        }
+                        self.saveAssets()
+                    } else {
+                        self.deferredAssets.insert(track.id)
+                    }
+                    self.pumpAssets()
+                }
+            }
         }
     }
 
@@ -221,12 +292,16 @@ final class Downloads: ObservableObject {
         guard let index = entries.firstIndex(where: { $0.track.id == id }) else { return }
         let entry = entries.remove(at: index)
         files[id] = nil
+        pendingAssets.remove(id)
+        deferredAssets.remove(id)
+        checkedLyrics.removeValue(forKey: id)
         try? FileManager.default.removeItem(at: Storage.tracks.appendingPathComponent(entry.file))
         // Обложка могла быть общей с другим скачанным треком альбома.
         if !entries.contains(where: { $0.track.cover == entry.track.cover }) {
             ImageLoader.shared.unpin(entry.track.cover)
         }
         save()
+        saveAssets()
     }
 
     func removeAll() {
@@ -234,10 +309,20 @@ final class Downloads: ObservableObject {
         failed = []
         entries.removeAll()
         files.removeAll()
+        pendingAssets.removeAll()
+        deferredAssets.removeAll()
+        checkedLyrics.removeAll()
         Storage.clear(Storage.tracks)
         Storage.clear(Storage.covers)
         save()
         savePending()
+        saveAssets()
+    }
+
+    func updateUploadedMetadata(id: String, title: String, artist: String) {
+        guard let index = entries.firstIndex(where: { $0.track.id == id }) else { return }
+        entries[index].track = entries[index].track.withUploadedMetadata(title: title, artist: artist)
+        save()
     }
 
     private func save() {
@@ -249,6 +334,16 @@ final class Downloads: ObservableObject {
         if Demo.on { return }
         let snapshot = Pending(queue: queue, failed: failed)
         Task.detached(priority: .utility) { Storage.save(snapshot, "download-queue.json") }
+    }
+
+    private func saveAssets() {
+        if Demo.on { return }
+        let pendingSnapshot = Array(pendingAssets)
+        let checkedSnapshot = checkedLyrics
+        Task.detached(priority: .utility) {
+            Storage.save(pendingSnapshot, "download-assets.json")
+            Storage.save(checkedSnapshot, "lyrics-checked.json")
+        }
     }
 }
 

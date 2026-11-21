@@ -129,6 +129,7 @@ enum Route: Hashable {
     case artistTracks(String, String)
     case artistFamiliar(String, String, Bool)
     case replacement(ReplacementTarget)
+    case uploadedTrackEditor(Track)
     case block(HomeBlock)
     case likedAlbums
     case likedArtists
@@ -200,6 +201,7 @@ struct RootView: View {
             if now == .active {
                 Ynison.shared.updateConnection()
                 Player.shared.refreshPlaybackActivity()
+                if !Demo.on, !Settings.offlineMode { Downloads.shared.resumeAssets() }
                 Task {
                     async let update: Void = Updater.shared.check()
                     if !Demo.on, !Settings.offlineMode { await session.refresh() }
@@ -209,7 +211,7 @@ struct RootView: View {
         }
         .onOpenURL { url in
             guard session.token != nil else { return }
-            if url.scheme == "tune", url.path.isEmpty, let action = url.host,
+            if url.scheme == TuneChannel.linkScheme, url.path.isEmpty, let action = url.host,
                ["player", "wave", "likes", "search"].contains(action) {
                 QuickAction.run(action)
             } else {
@@ -222,6 +224,7 @@ struct RootView: View {
         .onReceive(Connectivity.shared.$online.dropFirst()) { online in
             Ynison.shared.updateConnection()
             guard online, !Settings.offlineMode else { return }
+            Downloads.shared.resumeAssets()
             session.syncRestoredLikes()
             Uploads.shared.resume()
             if session.offline { Task { await session.refresh() } }
@@ -345,6 +348,7 @@ struct TabRoot<Content: View>: View {
         case .artistTracks(let id, let name): TrackListScreen(kind: .artist(id, name))
         case .artistFamiliar(let id, let name, let wave): TrackListScreen(kind: .artistFamiliar(id, name, wave))
         case .replacement(let target): ReplacementScreen(target: target)
+        case .uploadedTrackEditor(let track): UploadedTrackEditor(track: track)
         case .artist(let id, let name): ArtistScreen(id: id, name: name)
         case .block(let block): ItemGridScreen(title: block.title, items: block.items)
         case .likedAlbums: CardGridScreen(kind: .albums)

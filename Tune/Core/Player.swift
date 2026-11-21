@@ -167,6 +167,7 @@ final class Player: NSObject, ObservableObject {
     private var original: [Track]?
     /// Растёт с каждой сменой трека: ответ на устаревший запрос отбрасывается.
     private var generation = 0
+    private static let tickInterval: Double = 0.15
     private var loadTask: Task<Void, Never>?
     private var preloaded: (id: String, item: AVPlayerItem, version: TrackFiles.Version?)?
     private var preloadTask: Task<Void, Never>?
@@ -575,8 +576,13 @@ final class Player: NSObject, ObservableObject {
         return item
     }
 
+    /// Обновляет параметры DSP напрямую из ползунка без перерисовки экранов и записи на диск.
+    func previewSound(_ settings: SoundSettings) {
+        audioEffects.update(settings)
+        if settings.needsAudioMix { prepareEffectsForStream() }
+    }
+
     func updateSound(_ settings: SoundSettings) {
-        guard settings != sound else { return }
         let speedChanged = settings.speed != sound.speed
         let pitchChanged = settings.pitchWithSpeed != sound.pitchWithSpeed
         sound = settings
@@ -1024,7 +1030,7 @@ final class Player: NSObject, ObservableObject {
     private func watch() {
         if let timeObserver { spare.removeTimeObserver(timeObserver) }
         let source = av
-        timeObserver = source.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.5, preferredTimescale: 600), queue: .main) { [weak self, weak source] time in
+        timeObserver = source.addPeriodicTimeObserver(forInterval: CMTime(seconds: Self.tickInterval, preferredTimescale: 600), queue: .main) { [weak self, weak source] time in
             let seconds = time.seconds
             Task { @MainActor [weak self, weak source] in
                 guard let self, self.av === source else { return }
@@ -1074,6 +1080,13 @@ final class Player: NSObject, ObservableObject {
         guard nextTrack() != nil || isWave else { return }
         endCurrent(.skipped)
         advance(auto: false)
+    }
+
+    func updateUploadedMetadata(id: String, title: String, artist: String) {
+        guard queue.contains(where: { $0.id == id }) else { return }
+        queue = queue.map { $0.id == id ? $0.withUploadedMetadata(title: title, artist: artist) : $0 }
+        refreshNowPlaying()
+        saveQueue()
     }
 
     func previous() {
@@ -1454,7 +1467,7 @@ final class Player: NSObject, ObservableObject {
         guard av.currentItem != nil, seconds.isFinite, seeks == 0 else { return }
         progress.position = seconds
         if av.rate > 0 {
-            listen?.played += 0.5
+            listen?.played += Self.tickInterval
         }
         // Плавный переход: трек дошёл до начала своего окна затухания, и у следующего
         // тоже есть точки перехода. Повтор одного трека переходом не идёт.

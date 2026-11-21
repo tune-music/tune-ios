@@ -302,6 +302,14 @@ struct TrackMenu: View {
         } label: {
             Label("Добавить в плейлист", systemImage: "text.badge.plus")
         }
+        if track.isPrivate {
+            Button {
+                done()
+                navigate(.uploadedTrackEditor(track))
+            } label: {
+                Label("Редактировать трек", systemImage: "pencil")
+            }
+        }
         Button {
             done()
             navigate(.replacement(ReplacementTarget(kind: .track, id: track.id, title: track.title)))
@@ -376,6 +384,66 @@ struct TrackMenu: View {
             Divider()
             Button(role: .destructive, action: onRemove) {
                 Label("Убрать из плейлиста", systemImage: "minus.circle")
+            }
+        }
+    }
+}
+
+struct UploadedTrackEditor: View {
+    let track: Track
+    @EnvironmentObject private var session: Session
+    @Environment(\.dismiss) private var dismiss
+    @State private var title: String
+    @State private var artist: String
+    @State private var saving = false
+    @State private var failure: String?
+
+    init(track: Track) {
+        self.track = track
+        _title = State(initialValue: track.title)
+        _artist = State(initialValue: track.artists)
+    }
+
+    var body: some View {
+        Form {
+            TextField("Название", text: $title)
+            TextField("Исполнитель", text: $artist)
+        }
+        .disabled(saving)
+        .navigationTitle("Редактировать трек")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                if saving {
+                    ProgressView()
+                } else {
+                    Button("Сохранить", action: save)
+                        .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+        .alert("Не удалось сохранить трек", isPresented: Binding(
+            get: { failure != nil }, set: { if !$0 { failure = nil } }
+        )) {
+            Button("Закрыть", role: .cancel) {}
+        } message: {
+            Text(failure ?? "")
+        }
+    }
+
+    private func save() {
+        guard !saving else { return }
+        let name = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let performer = artist.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        saving = true
+        Task {
+            defer { saving = false }
+            do {
+                try await session.editUploadedTrack(track, title: name, artist: performer)
+                dismiss()
+            } catch {
+                failure = error.localizedDescription
             }
         }
     }

@@ -15,17 +15,18 @@ enum Links {
     /// Ссылка на Яндекс Музыку в тексте: её вставляют в поиск.
     static func url(in text: String) -> URL? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.hasPrefix("http") || trimmed.hasPrefix("tune://"), !trimmed.contains(" "), let url = URL(string: trimmed) else { return nil }
+        guard !trimmed.contains(" "), let url = URL(string: trimmed) else { return nil }
         return target(of: url) == nil ? nil : url
     }
 
     static func target(of url: URL) -> Target? {
         var parts = url.pathComponents.filter { $0 != "/" }
-        if url.scheme == "tune" {
+        if url.scheme == "tune" || url.scheme == TuneChannel.linkScheme {
             // В своих адресах первое слово стоит на месте сервера: tune://album/123.
             if let host = url.host { parts.insert(host, at: 0) }
         } else {
-            guard let host = url.host, host.contains("music.yandex") else { return nil }
+            guard url.scheme == "https" || url.scheme == "http",
+                  let host = url.host, host.contains("music.yandex") else { return nil }
         }
         func value(after name: String) -> String? {
             guard let index = parts.firstIndex(of: name), parts.indices.contains(index + 1) else { return nil }

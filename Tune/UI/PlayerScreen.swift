@@ -9,12 +9,16 @@ typealias CoverSwipe = TrackDrag
 /// Полноэкранный плеер. Показывается в собственном окне (PlayerWindow), которое и двигается
 /// под пальцем: здесь только жесты, содержимое при перетаскивании не пересчитывается.
 struct PlayerScreen: View {
+    private enum DragLock { case horizontal, vertical, ignored }
+
     @StateObject private var swipe = CoverSwipe()
-    @State private var axis: Axis?
+    @State private var axis: DragLock?
     @State private var origin: CGFloat = 0
+    /// Текст песни показывается на месте обложки.
+    @State private var lyrics = Demo.screen == "lyrics"
 
     var body: some View {
-        PlayerBody()
+        PlayerBody(lyrics: $lyrics)
             .environmentObject(swipe)
             .background {
                 PlayerBackdrop()
@@ -29,27 +33,37 @@ struct PlayerScreen: View {
                     .onChanged { value in
                         let move = value.translation
                         if axis == nil {
-                            axis = abs(move.width) > abs(move.height) ? .horizontal : .vertical
-                            origin = move.width
+                            if abs(move.width) > abs(move.height) {
+                                axis = lyrics ? .ignored : .horizontal
+                                origin = move.width
+                            } else {
+                                axis = .vertical
+                            }
                         }
-                        if axis == .vertical {
+                        switch axis {
+                        case .vertical:
                             PlayerWindow.shared.drag(move.height)
-                        } else {
+                        case .horizontal:
                             swipe.move(move.width - origin)
+                        case .ignored, nil:
+                            break
                         }
                     }
                     .onEnded { value in
                         let locked = axis
                         axis = nil
-                        if locked == .horizontal {
+                        switch locked {
+                        case .horizontal:
                             let far = abs(value.translation.width) > 70 || abs(value.predictedEndTranslation.width) > 220
                             let ahead = value.translation.width < 0
                             swipe.release {
                                 guard far else { return }
                                 if ahead { Player.shared.next() } else { Player.shared.previous() }
                             }
-                        } else {
+                        case .vertical:
                             PlayerWindow.shared.release(predicted: value.predictedEndTranslation.height)
+                        case .ignored, nil:
+                            break
                         }
                     }
             )
@@ -91,14 +105,13 @@ private struct PlayerCover: View {
 /// Содержимое плеера. Входных данных у него нет: экран перерисовывается только от своих
 /// источников (плеер, коллекция, загрузки), а не от сдвига под пальцем.
 private struct PlayerBody: View {
+    @Binding var lyrics: Bool
     @Environment(\.closePlayer) private var close
     @EnvironmentObject private var player: Player
     @EnvironmentObject private var session: Session
     @EnvironmentObject private var downloads: Downloads
     @EnvironmentObject private var router: Router
     @State private var queue = Demo.screen == "queue"
-    /// Текст песни показывается на месте обложки.
-    @State private var lyrics = Demo.screen == "lyrics"
     @State private var picking: Track?
     @State private var actions = Demo.screen == "actions"
     @State private var sleep = false
@@ -336,8 +349,6 @@ private struct PlayerBody: View {
                     .frame(width: 48, height: 44)
                     .contentShape(Rectangle())
             }
-            .disabled(!ExternalLyrics.available(track) && !lyrics)
-            .opacity(ExternalLyrics.available(track) || lyrics ? 1 : 0.35)
             Spacer()
             RoutePicker()
                 .frame(width: 48, height: 44)
@@ -801,12 +812,15 @@ private struct TrackFavoriteButton: View {
 private struct LyricsPane: View {
     let track: Track
     let progress: PlaybackProgress
+    @ObservedObject private var connectivity = Connectivity.shared
     @State private var lines: [LyricLine]?
     @State private var info: LyricsText?
+    @State private var loadFailed = false
     /// Нажали «Повторить»: поиск идёт заново.
     @State private var attempt = 0
     /// Когда текст последний раз листали пальцем: в это время он сам не прокручивается.
     @State private var touched = Date.distantPast
+    @State private var recenterTask: Task<Void, Never>?
     @GestureState private var touching = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -823,7 +837,7 @@ private struct LyricsPane: View {
                     VStack(spacing: 10) {
                         Image(systemName: "text.quote")
                             .font(.system(size: 34))
-                        Text("Текста нет")
+                        Text(connectivity.offline ? "Нет сохранённого текста" : loadFailed ? "Не удалось загрузить текст" : "Текста нет")
                             .font(.scaled(size: 18, weight: .semibold))
                         Button {
                             attempt += 1
@@ -837,6 +851,7 @@ private struct LyricsPane: View {
                         }
                         .buttonStyle(PressStyle())
                         .padding(.top, 6)
+                        .disabled(connectivity.offline)
                     }
                     .foregroundStyle(.white.opacity(0.6))
                 } else {
@@ -848,19 +863,44 @@ private struct LyricsPane: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .task(id: "\(track.id)#\(attempt)") {
-            if attempt == 0, let cached = API.cachedLyrics(for: track) {
-                info = cached
-                lines = cached.lines
+        .task(id: "\(track.id)#\(attempt)#\(ExternalLyrics.settingsKey)#\(connectivity.offline)") {
+            recenterTask?.cancel()
+            recenterTask = nil
+            if attempt == 0 || connectivity.offline,
+               let cached = API.cachedLyrics(for: track, anySource: connectivity.offline) {
+                show(cached)
+                return
+            }
+            if connectivity.offline {
+                lines = nil
+                info = nil
+                active = nil
+                let embedded = await API.embeddedLyrics(for: track.id)
+                if Task.isCancelled { return }
+                show(embedded)
                 return
             }
             lines = nil
             info = nil
-            let found = try? await API.shared.lyrics(for: track)
-            if Task.isCancelled { return }
-            info = found
-            lines = found?.lines ?? []
+            active = nil
+            do {
+                let found = try await API.shared.lyrics(for: track, forceRefresh: attempt > 0)
+                if Task.isCancelled { return }
+                show(found)
+            } catch {
+                if Task.isCancelled { return }
+                show(nil, failed: true)
+            }
         }
+    }
+
+    private func show(_ found: LyricsText?, failed: Bool = false) {
+        let resolved = found?.lines ?? []
+        let timed = resolved.filter { $0.time != nil }
+        active = Self.currentLine(in: timed, at: progress.position)
+        info = found
+        loadFailed = failed
+        lines = resolved
     }
 
     /// Под текстом, как в Tune Native: авторы и источник, если это не Яндекс.
@@ -886,8 +926,9 @@ private struct LyricsPane: View {
     }
 
     private func text(_ lines: [LyricLine]) -> some View {
-        GeometryReader { viewport in
-            scrollText(lines, verticalPadding: max(0, viewport.size.height / 2 - 16))
+        let hasTimed = lines.contains { $0.time != nil }
+        return GeometryReader { viewport in
+            scrollText(lines, verticalPadding: hasTimed ? max(0, viewport.size.height / 2 - 16) : 16)
         }
     }
 
@@ -897,18 +938,29 @@ private struct LyricsPane: View {
         let anchor = active ?? first
         return ScrollViewReader { proxy in
             ScrollView(showsIndicators: false) {
-                LazyVStack(spacing: 18) {
+                VStack(spacing: 18) {
                     ForEach(lines) { line in
                         let on = timed.isEmpty || line.id == active
                         Text(line.text.isEmpty ? "♪" : line.text)
                             .font(.scaled(size: 24, weight: .bold))
                             .multilineTextAlignment(.center)
-                            .foregroundStyle(Color.white.opacity(on ? 1 : 0.32))
+                            .foregroundStyle(.white)
+                            .fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity)
-                            .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: on)
+                            .opacity(on ? 1 : 0.32)
+                            .scaleEffect(on ? 1 : 0.96)
+                            .animation(reduceMotion ? nil : .easeOut(duration: 0.24), value: on)
                             .contentShape(Rectangle())
                             .onTapGesture {
-                                if let time = line.time { Player.shared.seek(to: time) }
+                                guard let time = line.time else { return }
+                                touched = .distantPast
+                                recenterTask?.cancel()
+                                recenterTask = nil
+                                active = line.id
+                                Player.shared.seek(to: time)
+                                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.32)) {
+                                    proxy.scrollTo(line.id, anchor: .center)
+                                }
                             }
                             .id(line.id)
                     }
@@ -931,8 +983,29 @@ private struct LyricsPane: View {
             .simultaneousGesture(
                 DragGesture(minimumDistance: 4)
                     .updating($touching) { _, state, _ in state = true }
-                    .onEnded { _ in touched = Date() }
+                    .onChanged { _ in
+                        if recenterTask != nil {
+                            recenterTask?.cancel()
+                            recenterTask = nil
+                        }
+                    }
+                    .onEnded { _ in
+                        touched = Date()
+                        recenterTask?.cancel()
+                        recenterTask = Task {
+                            try? await Task.sleep(nanoseconds: 3_100_000_000)
+                            guard !Task.isCancelled, !touching, Date().timeIntervalSince(touched) >= 3,
+                                  let line = active ?? first else { return }
+                            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.32)) {
+                                proxy.scrollTo(line, anchor: .center)
+                            }
+                        }
+                    }
             )
+            .onDisappear {
+                recenterTask?.cancel()
+                recenterTask = nil
+            }
             .onReceive(progress.$position.map { Self.currentLine(in: timed, at: $0) }.removeDuplicates()) { line in
                 if active != line { active = line }
             }

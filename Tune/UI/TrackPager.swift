@@ -92,10 +92,12 @@ final class TrackPage: UIView {
     }
 
     func show(_ track: Track?) {
-        guard track?.id != self.track?.id || track?.cover != self.track?.cover else { return }
+        guard track != self.track else { return }
+        let coverChanged = track?.id != self.track?.id || track?.cover != self.track?.cover
         self.track = track
         title.attributedText = track.map(Self.marked)
         artist.text = track?.artists
+        guard coverChanged else { return }
         request += 1
         let mine = request
         let uri = track?.cover
@@ -416,6 +418,8 @@ struct TrackPager: UIViewRepresentable {
             view.set(track)
         } else if view.trackId != track.id {
             view.change(to: track, back: Player.shared.movedBack)
+        } else {
+            view.set(track)
         }
     }
 }

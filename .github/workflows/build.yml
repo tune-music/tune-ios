@@ -2,6 +2,7 @@ name: Сборка
 
 on:
   push:
+    branches-ignore: [dev]
     paths-ignore:
       - "**.md"
   workflow_dispatch:
@@ -15,6 +16,7 @@ concurrency:
 
 jobs:
   build:
+    if: github.ref != 'refs/heads/dev'
     runs-on: macos-15
     timeout-minutes: 30
     steps:
@@ -160,6 +162,7 @@ jobs:
 
   # Снимки экранов в симуляторе на демо-данных: по ним проверяется интерфейс.
   screens:
+    if: github.ref != 'refs/heads/dev'
     runs-on: macos-15
     timeout-minutes: 50
     steps:

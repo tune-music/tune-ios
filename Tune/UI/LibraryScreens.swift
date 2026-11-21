@@ -780,19 +780,20 @@ struct SettingsScreen: View {
                     Toggle("LRCLIB", isOn: $lyricsLRCLIB)
                     Toggle("NetEase Cloud Music", isOn: $lyricsNetEase)
                     Toggle("Сначала NetEase", isOn: $lyricsNetEaseFirst)
-                    Toggle("Искать и там, где у Яндекса есть свой текст", isOn: $lyricsAlways)
+                    Toggle("Предпочитать синхронный текст из внешних баз", isOn: $lyricsAlways)
                     if lyricsLRCLIB {
                         TextField("Зеркало LRCLIB", text: $lyricsMirror, prompt: Text("Зеркало LRCLIB, например lrclib.example.com"))
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .keyboardType(.URL)
                             .submitLabel(.done)
+                            .onSubmit { downloads.resumeAssets() }
                     }
                 }
             } header: {
                 Text("Текст песен")
             } footer: {
-                Text("Когда у Яндекса нет текста со временем строк, Tune ищет его в открытых базах — только у того же трека. LRCLIB — открытая база синхронных текстов, у NetEase много синхронных текстов, в том числе русских. Обе базы спрашиваются сразу; у NetEase несколько адресов — если один не открывается, Tune пробует другой. Зеркало LRCLIB — свой сервер с тем же API: его спросят первым, а не ответит — основной.")
+                Text("Tune сначала проверяет Яндекс, затем по очереди включённые внешние базы. Поиск заканчивается, когда найден подходящий синхронный текст. Если включено предпочтение внешних баз, текст Яндекса остаётся запасным вариантом. Скачанный текст доступен без сети.")
             }
             .tint(Theme.accentText)
             Section("Качество звука") {
@@ -872,15 +873,30 @@ struct SettingsScreen: View {
             Appearance.apply()
         }
         .onChange(of: crossfade) { Settings.crossfade = $0 }
-        .onChange(of: lyricsExternal) { Settings.lyricsExternal = $0 }
+        .onChange(of: lyricsExternal) {
+            Settings.lyricsExternal = $0
+            downloads.resumeAssets()
+        }
         .onChange(of: waveWheel) { Settings.waveWheel = $0 }
         .onChange(of: waveWords) { Settings.waveWords = $0 }
         .onChange(of: ownInWave) { Settings.ownInWave = $0 }
         .onChange(of: restoredInWave) { Settings.restoredInWave = $0 }
-        .onChange(of: lyricsAlways) { Settings.lyricsAlways = $0 }
-        .onChange(of: lyricsLRCLIB) { Settings.lyricsLRCLIB = $0 }
-        .onChange(of: lyricsNetEase) { Settings.lyricsNetEase = $0 }
-        .onChange(of: lyricsNetEaseFirst) { Settings.lyricsNetEaseFirst = $0 }
+        .onChange(of: lyricsAlways) {
+            Settings.lyricsAlways = $0
+            downloads.resumeAssets()
+        }
+        .onChange(of: lyricsLRCLIB) {
+            Settings.lyricsLRCLIB = $0
+            downloads.resumeAssets()
+        }
+        .onChange(of: lyricsNetEase) {
+            Settings.lyricsNetEase = $0
+            downloads.resumeAssets()
+        }
+        .onChange(of: lyricsNetEaseFirst) {
+            Settings.lyricsNetEaseFirst = $0
+            downloads.resumeAssets()
+        }
         .onChange(of: lyricsMirror) { Settings.lyricsMirror = $0 }
         .task { if aiLess == nil { aiLess = try? await API.shared.aiReduction() } }
         .onChange(of: normalize) { value in
@@ -893,7 +909,10 @@ struct SettingsScreen: View {
             Settings.offlineMode = $0
             Player.shared.connectivityChanged()
             Ynison.shared.updateConnection()
-            if !$0 { session.syncRestoredLikes() }
+            if !$0 {
+                downloads.settingsChanged()
+                session.syncRestoredLikes()
+            }
         }
         .onChange(of: wifiOnly) { value in
             Settings.wifiOnly = value
