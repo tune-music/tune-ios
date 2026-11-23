@@ -1,30 +1,34 @@
 import Combine
 import SwiftUI
 
+private final class RefreshBox {
+    var task: Task<Void, Never>?
+}
+
 private struct ScreenRefresh: ViewModifier {
     let action: @MainActor () async -> Void
-    @State private var task: Task<Void, Never>?
+    @State private var box = RefreshBox()
 
     func body(content: Content) -> some View {
         content
             .refreshable { await refresh() }
             .onReceive(Connectivity.shared.$online) { online in
-                if !online { task?.cancel() }
+                if !online { box.task?.cancel() }
             }
-            .onDisappear { task?.cancel() }
+            .onDisappear { box.task?.cancel() }
     }
 
     @MainActor
     private func refresh() async {
-        guard task == nil, !Connectivity.shared.offline, !Task.isCancelled else { return }
+        guard box.task == nil, !Connectivity.shared.offline, !Task.isCancelled else { return }
         let work = Task { await action() }
-        task = work
+        box.task = work
         await withTaskCancellationHandler {
             await work.value
         } onCancel: {
             work.cancel()
         }
-        task = nil
+        box.task = nil
     }
 }
 
@@ -188,11 +192,14 @@ struct HeaderWatch: View {
     var body: some View {
         GeometryReader { geometry in
             let maxY = geometry.frame(in: .global).maxY
+            let gone = hidden ? maxY < 170 : maxY < 130
             Color.clear
-                .onAppear { hidden = maxY < 140 }
-                .onChange(of: maxY) { y in
-                    if !hidden && y < 130 { hidden = true }
-                    else if hidden && y > 170 { hidden = false }
+                .onAppear {
+                    let initial = maxY < 140
+                    if hidden != initial { hidden = initial }
+                }
+                .onChange(of: gone) { value in
+                    if hidden != value { hidden = value }
                 }
         }
     }
@@ -463,15 +470,38 @@ struct TrackRow: View {
     var historySource: String? = nil
     let action: () -> Void
 
-    @State private var playback = RowPlayback.other
+    @State private var playback: RowPlayback
     @State private var downloadProgress: Double?
-    @State private var downloaded = false
-    @State private var liked = false
-    @State private var disliked = false
+    @State private var downloaded: Bool
+    @State private var liked: Bool
+    @State private var disliked: Bool
     private var player: Player { Player.shared }
     private var downloads: Downloads { Downloads.shared }
     @Environment(\.navigate) private var navigate
     @Environment(\.pickPlaylist) private var pickPlaylist
+
+    init(
+        track: Track,
+        number: Int? = nil,
+        fadesDisliked: Bool = true,
+        onRemove: (() -> Void)? = nil,
+        historySource: String? = nil,
+        action: @escaping () -> Void
+    ) {
+        self.track = track
+        self.number = number
+        self.fadesDisliked = fadesDisliked
+        self.onRemove = onRemove
+        self.historySource = historySource
+        self.action = action
+        let now = Player.shared.now
+        let initialPlayback: RowPlayback = now.id == track.id ? (now.playing ? .playing : .paused) : .other
+        _playback = State(initialValue: initialPlayback)
+        _downloadProgress = State(initialValue: Downloads.shared.active[track.id])
+        _downloaded = State(initialValue: Downloads.shared.downloadedIds.contains(track.id))
+        _liked = State(initialValue: Session.shared.isLiked(track.id))
+        _disliked = State(initialValue: Session.shared.disliked.contains(track.id))
+    }
 
     private var dimmed: Bool {
         (track.unavailable && !track.uncensored && !downloaded) || (fadesDisliked && disliked)
@@ -574,35 +604,35 @@ struct TrackRow: View {
             }
             .tint(.indigo)
         }
-        .onReceive(playbackChanges) {
-            if playback != $0 { playback = $0 }
+        .onReceive(player.now.$id) { id in
+            let next: RowPlayback = id == track.id ? (player.now.playing ? .playing : .paused) : .other
+            if playback != next { playback = next }
         }
-        .onReceive(downloads.$active.map { $0[track.id] }.removeDuplicates()) {
-            if downloadProgress != $0 { downloadProgress = $0 }
+        .onReceive(player.now.$playing) { playing in
+            guard player.now.id == track.id else { return }
+            let next: RowPlayback = playing ? .playing : .paused
+            if playback != next { playback = next }
         }
-        .onReceive(downloads.$downloadedIds.map { $0.contains(track.id) }.removeDuplicates()) {
-            if downloaded != $0 { downloaded = $0 }
+        .onReceive(downloads.$active) { active in
+            let value = active[track.id]
+            if downloadProgress != value { downloadProgress = value }
         }
-        .onReceive(Session.shared.$likedIds.map { _ in Session.shared.isLiked(track.id) }.removeDuplicates()) {
-            if liked != $0 { liked = $0 }
+        .onReceive(downloads.$downloadedIds) { ids in
+            let value = ids.contains(track.id)
+            if downloaded != value { downloaded = value }
         }
-        .onReceive(Session.shared.$disliked.map { $0.contains(track.id) }.removeDuplicates()) {
-            if disliked != $0 { disliked = $0 }
+        .onReceive(Session.shared.$likedIds) { _ in
+            let value = Session.shared.isLiked(track.id)
+            if liked != value { liked = value }
+        }
+        .onReceive(Session.shared.$disliked) { ids in
+            let value = ids.contains(track.id)
+            if disliked != value { disliked = value }
         }
     }
 
     private enum RowPlayback {
         case other, paused, playing
-    }
-
-    private var playbackChanges: AnyPublisher<RowPlayback, Never> {
-        player.now.$id.combineLatest(player.now.$playing)
-            .map { id, playing -> RowPlayback in
-                guard id == track.id else { return .other }
-                return playing ? .playing : .paused
-            }
-            .removeDuplicates()
-            .eraseToAnyPublisher()
     }
 }
 

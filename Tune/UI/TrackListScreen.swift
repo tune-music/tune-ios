@@ -643,6 +643,7 @@ struct TrackListScreen: View {
             .scrollContentBackground(.hidden)
             .scrollDismissesKeyboard(.immediately)
             .environment(\.editMode, .constant(reordering ? .active : .inactive))
+            .screenRefresh { await model.load(kind, force: true) }
             .onChange(of: model.tracks.count) { _ in
                 // Снимок прокрученной страницы: по нему проверяется читаемость шапки.
                 if Demo.screen == "albumscroll", rows.slots.indices.contains(7) {
@@ -689,7 +690,6 @@ struct TrackListScreen: View {
             if kind != .downloads, Connectivity.shared.offline || session.offline { onlyDownloaded = true }
         }
         .task { await model.load(kind) }
-        .screenRefresh { await model.load(kind, force: true) }
         .toolbar {
             ToolbarItemGroup(placement: .navigationBarTrailing) {
                 if let liked {
