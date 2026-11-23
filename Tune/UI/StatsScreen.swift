@@ -116,12 +116,11 @@ final class Stats: ObservableObject {
                 )
             }
         }
-        result.artists = Array(
-            perArtist.values
-                .map { TopArtist(artist: $0.artist, cover: $0.soloCover ?? $0.anyCover, count: $0.count) }
-                .sorted { $0.count == $1.count ? $0.id < $1.id : $0.count > $1.count }
-                .prefix(12)
-        )
+        let mapped: [TopArtist] = perArtist.values.map {
+            TopArtist(artist: $0.artist, cover: $0.soloCover ?? $0.anyCover, count: $0.count)
+        }
+        let sorted = mapped.sorted { $0.count == $1.count ? $0.id < $1.id : $0.count > $1.count }
+        result.artists = Array(sorted.prefix(12))
         return result
     }
 }
@@ -217,7 +216,8 @@ struct StatsScreen: View {
 
     private func loadArtistCovers(for artists: [Stats.TopArtist]) async {
         if artistCovers.isEmpty, !Demo.on {
-            if let saved = await Task.detached(priority: .userInitiated) { Storage.load("artist-covers.json", as: [String: String].self) }.value {
+            let saved = await Task.detached(priority: .userInitiated) { Storage.load("artist-covers.json", as: [String: String].self) }.value
+            if let saved {
                 for (id, cover) in saved where artistCovers[id] == nil { artistCovers[id] = cover }
             }
         }
