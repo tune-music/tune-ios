@@ -1,9 +1,96 @@
 import Combine
 import SwiftUI
 
-private final class RefreshBox {
+@MainActor
+private final class RefreshBox: NSObject {
     var task: Task<Void, Never>?
     weak var scrollView: UIScrollView?
+    weak var probe: ScrollDragProbe.ProbeView?
+    private weak var observedPan: UIPanGestureRecognizer?
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+    private var waitingRelease = false
+
+    nonisolated override init() {
+        super.init()
+    }
+
+    func attach(_ scroll: UIScrollView) {
+        guard scrollView !== scroll || observedPan !== scroll.panGestureRecognizer else { return }
+        detachPan()
+        scrollView = scroll
+        let pan = scroll.panGestureRecognizer
+        pan.addTarget(self, action: #selector(panChanged(_:)))
+        observedPan = pan
+    }
+
+    func detachPan() {
+        observedPan?.removeTarget(self, action: #selector(panChanged(_:)))
+        observedPan = nil
+    }
+
+    @objc private func panChanged(_ pan: UIPanGestureRecognizer) {
+        switch pan.state {
+        case .ended, .cancelled, .failed:
+            // Завершаем refreshControl синхронно в том же цикле касания, чтобы список не успел
+            // отпружинить к отступу спиннера на 1–3 кадра при медленном отпускании.
+            if waitingRelease {
+                scrollView?.refreshControl?.endRefreshing()
+            }
+            resumeReleaseWait()
+        default:
+            break
+        }
+    }
+
+    func waitForRelease() async {
+        probe?.attach()
+        guard let scroll = scrollView, scroll.isDragging || scroll.isTracking else { return }
+        waitingRelease = true
+        let deadline = Date().addingTimeInterval(8)
+        let watcher = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+                guard let self, self.waitingRelease else { break }
+                if Date() >= deadline {
+                    self.resumeReleaseWait()
+                    break
+                }
+                if let current = self.scrollView, !current.isDragging && !current.isTracking {
+                    self.resumeReleaseWait()
+                    break
+                }
+            }
+        }
+        defer {
+            waitingRelease = false
+            watcher.cancel()
+            resumeReleaseWait()
+        }
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                let panState = scroll.panGestureRecognizer.state
+                let finished = (!scroll.isDragging && !scroll.isTracking)
+                    || panState == .ended || panState == .cancelled || panState == .failed
+                    || Task.isCancelled
+                if finished {
+                    continuation.resume()
+                    return
+                }
+                releaseContinuation?.resume()
+                releaseContinuation = continuation
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                self?.resumeReleaseWait()
+            }
+        }
+    }
+
+    func resumeReleaseWait() {
+        let continuation = releaseContinuation
+        releaseContinuation = nil
+        continuation?.resume()
+    }
 }
 
 private struct ScrollDragProbe: UIViewRepresentable {
@@ -14,34 +101,53 @@ private struct ScrollDragProbe: UIViewRepresentable {
 
         override func didMoveToWindow() {
             super.didMoveToWindow()
-            attach()
+            if window == nil {
+                box?.detachPan()
+            } else {
+                attach()
+            }
         }
 
         func attach() {
-            guard let box, window != nil else { return }
-            if let existing = box.scrollView, existing.window != nil { return }
-            box.scrollView = findScrollView()
+            guard let box else { return }
+            box.probe = self
+            guard window != nil else { return }
+            if let existing = box.scrollView, existing.window != nil, existing.refreshControl != nil {
+                box.attach(existing)
+                return
+            }
+            if let found = findScrollView() {
+                box.attach(found)
+            }
         }
 
         private func findScrollView() -> UIScrollView? {
             var current: UIView? = superview
+            var host: UIView? = superview
+            var hops = 0
             while let view = current {
                 if let scroll = view as? UIScrollView { return scroll }
+                host = view
+                if view.next is UIViewController || hops >= 4 { break }
                 current = view.superview
+                hops += 1
             }
-            let root = superview?.superview ?? superview
-            guard let root else { return nil }
+            guard let root = host else { return nil }
             var queue: [(UIView, Int)] = [(root, 0)]
             var index = 0
+            var fallback: UIScrollView?
             while index < queue.count {
                 let (view, depth) = queue[index]
                 index += 1
-                if let scroll = view as? UIScrollView { return scroll }
-                if depth < 4 {
+                if let scroll = view as? UIScrollView {
+                    if scroll.refreshControl != nil { return scroll }
+                    if fallback == nil, scroll.alwaysBounceVertical { fallback = scroll }
+                }
+                if depth < 12 {
                     for child in view.subviews { queue.append((child, depth + 1)) }
                 }
             }
-            return nil
+            return fallback
         }
     }
 
@@ -68,15 +174,20 @@ private struct ScreenRefresh: ViewModifier {
             .background(ScrollDragProbe(box: box))
             .refreshable { await refresh() }
             .onReceive(Connectivity.shared.$online) { online in
-                if !online { box.task?.cancel() }
+                if !online {
+                    box.task?.cancel()
+                    box.resumeReleaseWait()
+                }
             }
-            .onDisappear { box.task?.cancel() }
+            .onDisappear {
+                box.task?.cancel()
+                box.resumeReleaseWait()
+            }
     }
 
     @MainActor
     private func refresh() async {
         guard box.task == nil, !Connectivity.shared.offline, !Task.isCancelled else { return }
-        let started = Date()
         let work = Task { await action() }
         box.task = work
         await withTaskCancellationHandler {
@@ -87,10 +198,7 @@ private struct ScreenRefresh: ViewModifier {
         box.task = nil
         // Не завершаем системный refreshable, пока палец всё ещё тянет список:
         // иначе UIRefreshControl резко убирает верхний отступ прямо под пальцем.
-        while !Task.isCancelled, let scroll = box.scrollView, scroll.isDragging || scroll.isTracking {
-            if Date().timeIntervalSince(started) > 8 { break }
-            try? await Task.sleep(nanoseconds: 30_000_000)
-        }
+        await box.waitForRelease()
     }
 }
 
