@@ -868,7 +868,7 @@ struct HomeCard: View {
             case .album(let card):
                 CardView(title: card.title, subtitle: card.subtitle, cover: card.cover, size: size, playing: playing("album", card.id))
             case .artist(let card):
-                CardView(title: card.title, subtitle: "", cover: card.cover, round: true, size: size, playing: playing("artist", card.id))
+                CardView(title: card.title, subtitle: card.subtitle == "Исполнитель" ? "" : card.subtitle, cover: card.cover, round: true, size: size, playing: playing("artist", card.id))
             case .playlist(let playlist):
                 CardView(title: playlist.title, subtitle: playlist.count > 0 ? plural(playlist.count, "трек", "трека", "треков") : "", cover: playlist.cover, size: size, playing: playing("playlist", playlist.id))
             case .wave(let wave):

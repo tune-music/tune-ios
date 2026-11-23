@@ -867,6 +867,36 @@ final class API {
         return value.array.compactMap { Self.artistCard($0) ?? Self.artistCard($0["artist"]) }
     }
 
+    func topArtists() async throws -> [Card] {
+        if Demo.on {
+            return Demo.data.artists.enumerated().map { index, card in
+                var top = card
+                top.subtitle = "\(index + 1) место · \(max(1, 5 - index)) ч"
+                return top
+            }
+        }
+        let value = result(try await get("personal/top/artists/month"))
+        return Self.parseTopArtists(value)
+    }
+
+    static func parseTopArtists(_ value: JSON) -> [Card] {
+        value["artists"].array.compactMap { item in
+            guard var card = Self.artistCard(item["artist"]) else { return nil }
+            let place = item["top"]["position"].idText.flatMap(Int.init).filter { $0 > 0 }.map { "\($0) место" }
+            let minutes = max(0, item["listenTimeSeconds"].idText.flatMap(Int.init) ?? 0) / 60
+            let time: String?
+            if minutes <= 0 {
+                time = nil
+            } else if minutes < 60 {
+                time = "\(minutes) мин"
+            } else {
+                time = "\(minutes / 60) ч"
+            }
+            card.subtitle = [place, time].compactMap { $0 }.joined(separator: " · ")
+            return card
+        }
+    }
+
     func dislikedArtists(uid: String) async throws -> [Card] {
         if Demo.on { return [] }
         let value = result(try await get("users/\(uid)/dislikes/artists"))
