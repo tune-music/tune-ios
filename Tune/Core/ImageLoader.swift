@@ -9,8 +9,8 @@ final class ImageLoader {
 
     private let memory: NSCache<NSString, UIImage> = {
         let cache = NSCache<NSString, UIImage>()
-        cache.countLimit = 400
-        cache.totalCostLimit = 96 << 20
+        cache.countLimit = 1200
+        cache.totalCostLimit = 160 << 20
         return cache
     }()
     private let inflight = Inflight()

@@ -245,6 +245,7 @@ final class TrackListModel: ObservableObject {
         }
         let local = Session.shared.localLikedTracks
         localLikeIDs = Set(local.map(\.id))
+        Session.shared.setLiked(ids)
         applyLikes(local + ordered.filter { !localLikeIDs.contains($0.id) })
         staleLikedTracks.removeAll()
         Downloads.shared.auto(ordered)
@@ -254,10 +255,17 @@ final class TrackListModel: ObservableObject {
     }
 
     private func applyLikes(_ ordered: [Track]) {
-        if ordered != tracks {
+        applyTracks(ordered)
+    }
+
+    private func applyTracks(_ fresh: [Track]) {
+        guard fresh != tracks else { return }
+        if tracks.isEmpty {
+            tracks = fresh
+        } else {
             var transaction = Transaction()
             transaction.disablesAnimations = true
-            withTransaction(transaction) { tracks = ordered }
+            withTransaction(transaction) { tracks = fresh }
         }
     }
 
@@ -276,6 +284,51 @@ final class TrackListModel: ObservableObject {
                                   album: album)
             Task.detached(priority: .utility) { Storage.save(snapshot, name) }
         }
+    }
+}
+
+@MainActor
+private final class TrackListChromeState: ObservableObject {
+    @Published var compact = false
+    @Published var tone = Theme.tone
+
+    func setCompact(_ value: Bool) {
+        if compact != value { compact = value }
+    }
+}
+
+private struct TrackListChrome<Content: View>: View {
+    @ObservedObject var chrome: TrackListChromeState
+    let alwaysShown: Bool
+    let searching: Bool
+    let title: String
+    let cover: String?
+    let usesTone: Bool
+    let content: Content
+
+    var body: some View {
+        let shownTitle = (alwaysShown || chrome.compact) && !searching ? title : ""
+        content
+            .background(alignment: .top) {
+                ZStack(alignment: .top) {
+                    Theme.background
+                    LinearGradient(colors: [Theme.wash(chrome.tone), Theme.background], startPoint: .top, endPoint: .bottom)
+                        .frame(height: 460)
+                }
+                .ignoresSafeArea()
+            }
+            .topScrim(Theme.wash(chrome.tone))
+            .navigationTitle(shownTitle)
+            .navigationBarTitleDisplayMode(.inline)
+            .background(BarFade(title: shownTitle))
+            .task(id: cover) {
+                guard usesTone else {
+                    if chrome.tone != Theme.tone { chrome.tone = Theme.tone }
+                    return
+                }
+                let color = await ImageLoader.shared.tone(cover)
+                withAnimation(.easeInOut(duration: 0.3)) { chrome.tone = color ?? Theme.tone }
+            }
     }
 }
 
@@ -308,7 +361,6 @@ struct TrackListScreen: View {
     @State private var importingAudio = false
     @State private var uploadingAudio = false
     @State private var name = ""
-    @State private var tone = Theme.tone
     @State private var sort = TrackSort.original
     @State private var onlyDownloaded = false
     /// Режим выбора нескольких треков.
@@ -317,8 +369,9 @@ struct TrackListScreen: View {
     /// Режим перестановки треков в своём плейлисте.
     @State private var reordering = false
     @State private var pickingMany = false
-    /// Шапка ушла за край: название страницы показывается в панели навигации.
-    @State private var compact = false
+    /// Состояние шапки и тона вынесено из TrackListScreen, чтобы прокрутка и смена цвета
+    /// не пересчитывали весь список треков.
+    @State private var chrome = TrackListChromeState()
     /// Плейлист скачивается сам.
     @State private var auto = false
     @State private var prepared = false
@@ -558,14 +611,15 @@ struct TrackListScreen: View {
     private var page: some View {
         let tracks = shown
         let rows = TrackSlots(tracks: tracks, stableIDs: kind == .likes)
-        return ScrollViewReader { proxy in
+        let list = ScrollViewReader { proxy in
             List {
                 header(count: all.count)
                     // Шапка почти ушла под панель навигации: пора показать название в панели.
                     .background {
-                        if kind != .likes { HeaderWatch(hidden: $compact) }
+                        if kind != .likes {
+                            HeaderWatch(hidden: Binding(get: { chrome.compact }, set: { chrome.setCompact($0) }))
+                        }
                     }
-                    .onDisappear { if kind != .likes { compact = true } }
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
                     .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 14, trailing: 16))
@@ -591,18 +645,20 @@ struct TrackListScreen: View {
             .environment(\.editMode, .constant(reordering ? .active : .inactive))
             .onChange(of: model.tracks.count) { _ in
                 // Снимок прокрученной страницы: по нему проверяется читаемость шапки.
-                if Demo.screen == "albumscroll" { proxy.scrollTo("offset-7", anchor: .top) }
+                if Demo.screen == "albumscroll", rows.slots.indices.contains(7) {
+                    proxy.scrollTo(rows.slots[7].id, anchor: .top)
+                }
             }
         }
-        .background(alignment: .top) {
-            ZStack(alignment: .top) {
-                Theme.background
-                LinearGradient(colors: [Theme.wash(tone), Theme.background], startPoint: .top, endPoint: .bottom)
-                    .frame(height: 460)
-            }
-            .ignoresSafeArea()
-        }
-        .topScrim(Theme.wash(tone))
+        return TrackListChrome(
+            chrome: chrome,
+            alwaysShown: kind == .likes,
+            searching: searching,
+            title: title,
+            cover: cover,
+            usesTone: usesCoverTone,
+            content: list
+        )
         .safeAreaInset(edge: .top, spacing: 0) {
             if searching {
                 searchBar
@@ -616,9 +672,6 @@ struct TrackListScreen: View {
         .sheet(isPresented: $pickingMany, onDismiss: endModes) {
             PlaylistPicker(tracks: chosen)
         }
-        .navigationTitle((kind == .likes || compact) && !searching ? title : "")
-        .navigationBarTitleDisplayMode(.inline)
-        .background(BarFade(title: (kind == .likes || compact) && !searching ? title : ""))
         .onDisappear {
             // Строка поиска убирается при уходе со страницы: открытая, она при возврате
             // выскакивала рывком. Сам фильтр остаётся, строка вернётся вместе со страницей.
@@ -636,14 +689,6 @@ struct TrackListScreen: View {
             if kind != .downloads, Connectivity.shared.offline || session.offline { onlyDownloaded = true }
         }
         .task { await model.load(kind) }
-        .task(id: cover) {
-            switch kind {
-            case .disliked, .likes, .downloads, .history: tone = Theme.tone
-            default:
-                let color = await ImageLoader.shared.tone(cover)
-                withAnimation(.easeInOut(duration: 0.3)) { tone = color ?? Theme.tone }
-            }
-        }
         .screenRefresh { await model.load(kind, force: true) }
         .toolbar {
             ToolbarItemGroup(placement: .navigationBarTrailing) {
@@ -738,15 +783,33 @@ struct TrackListScreen: View {
     }
 
     private struct TrackSlots: RandomAccessCollection {
-        let tracks: [Track]
-        let stableIDs: Bool
-        var startIndex: Int { tracks.startIndex }
-        var endIndex: Int { tracks.endIndex }
+        let slots: [TrackSlot]
+
+        init(tracks: [Track], stableIDs: Bool) {
+            if stableIDs {
+                slots = tracks.enumerated().map { TrackSlot(id: $1.id, index: $0, track: $1) }
+            } else {
+                var counts: [String: Int] = [:]
+                slots = tracks.enumerated().map { index, track in
+                    let seen = counts[track.id, default: 0]
+                    counts[track.id] = seen + 1
+                    let id = seen == 0 ? track.id : "\(track.id)#\(seen)"
+                    return TrackSlot(id: id, index: index, track: track)
+                }
+            }
+        }
+
+        var startIndex: Int { slots.startIndex }
+        var endIndex: Int { slots.endIndex }
         func index(after i: Int) -> Int { i + 1 }
         func index(before i: Int) -> Int { i - 1 }
-        subscript(index: Int) -> TrackSlot {
-            let track = tracks[index]
-            return TrackSlot(id: stableIDs ? track.id : "offset-\(index)", index: index, track: track)
+        subscript(index: Int) -> TrackSlot { slots[index] }
+    }
+
+    private var usesCoverTone: Bool {
+        switch kind {
+        case .likes, .downloads, .history, .disliked: return false
+        default: return true
         }
     }
 

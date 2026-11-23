@@ -187,10 +187,13 @@ struct HeaderWatch: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let gone = geometry.frame(in: .global).maxY < 150
+            let maxY = geometry.frame(in: .global).maxY
             Color.clear
-                .onAppear { hidden = gone }
-                .onChange(of: gone) { hidden = $0 }
+                .onAppear { hidden = maxY < 140 }
+                .onChange(of: maxY) { y in
+                    if !hidden && y < 130 { hidden = true }
+                    else if hidden && y > 170 { hidden = false }
+                }
         }
     }
 }
@@ -266,8 +269,8 @@ struct TrackMenu: View {
     var done: () -> Void = {}
 
     private var player: Player { Player.shared }
-    @EnvironmentObject private var downloads: Downloads
-    @EnvironmentObject private var session: Session
+    private var downloads: Downloads { Downloads.shared }
+    private var session: Session { Session.shared }
 
     var body: some View {
         let liked = session.isLiked(track.id)
@@ -577,7 +580,7 @@ struct TrackRow: View {
         .onReceive(downloads.$active.map { $0[track.id] }.removeDuplicates()) {
             if downloadProgress != $0 { downloadProgress = $0 }
         }
-        .onReceive(downloads.$entries.map { entries in entries.contains { $0.track.id == track.id } }.removeDuplicates()) {
+        .onReceive(downloads.$downloadedIds.map { $0.contains(track.id) }.removeDuplicates()) {
             if downloaded != $0 { downloaded = $0 }
         }
         .onReceive(Session.shared.$likedIds.map { _ in Session.shared.isLiked(track.id) }.removeDuplicates()) {

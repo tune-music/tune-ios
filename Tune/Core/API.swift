@@ -513,6 +513,12 @@ final class API {
         return page
     }
 
+    func artistCover(id: String) async throws -> String? {
+        if Demo.on { return Demo.data.artists.first { $0.id == id }?.cover }
+        let value = result(try await get("artists/\(id)/brief-info"))
+        return Self.artistCard(value["artist"])?.cover
+    }
+
     private func artistClips(_ id: String, legacy: JSON) async -> [ArtistClip] {
         let value = (try? await get("artists/\(id)/blocks/artist-clips", [("page", "0"), ("pageSize", "30")])).map(result)
         let found = value?["items"].array.compactMap { item -> ArtistClip? in
