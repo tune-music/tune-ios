@@ -491,6 +491,7 @@ struct CardGridScreen: View {
 
     @EnvironmentObject private var session: Session
     @State private var cards: [Card]?
+    @State private var topArtists: [Card] = []
     @State private var error: String?
     /// 0 — как добавляли, 1 — по названию, 2 — по исполнителю.
     @AppStorage("albumSort") private var albumSort = 0
@@ -510,7 +511,34 @@ struct CardGridScreen: View {
 
     var body: some View {
         ScrollView {
-            if let cards = sorted {
+            if kind == .artists && !topArtists.isEmpty {
+                LazyVStack(alignment: .leading, spacing: 14) {
+                    Text("Ваш топ месяца")
+                        .font(.scaled(size: 22, weight: .bold))
+                        .foregroundStyle(Theme.text)
+                        .padding(.horizontal, 16)
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 16, alignment: .top)], spacing: 20) {
+                        ForEach(topArtists) { card in
+                            HomeCard(item: .artist(card), size: 160)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    if let liked = sorted, !liked.isEmpty {
+                        Text("Вам нравятся")
+                            .font(.scaled(size: 22, weight: .bold))
+                            .foregroundStyle(Theme.text)
+                            .padding(.horizontal, 16)
+                            .padding(.top, 8)
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 16, alignment: .top)], spacing: 20) {
+                            ForEach(liked) { card in
+                                HomeCard(item: .artist(card), size: 160)
+                            }
+                        }
+                        .padding(.horizontal, 16)
+                    }
+                }
+                .padding(.vertical, 16)
+            } else if let cards = sorted {
                 if cards.isEmpty {
                     Placeholder(icon: kind.icon, title: "Здесь пока пусто", text: "Нажмите на сердечко на странице, чтобы добавить её в коллекцию.")
                 } else {
@@ -550,11 +578,16 @@ struct CardGridScreen: View {
             }
         }
         .task { await load() }
+        .screenRefresh { await load() }
     }
 
     private func load() async {
-        error = nil
+        if error != nil { error = nil }
         let file = kind == .artists ? "liked-artists.json" : "liked-albums.json"
+        if kind == .artists, !Demo.on, topArtists.isEmpty {
+            let savedTop = await Task.detached(priority: .userInitiated) { Storage.load("top-artists.json", as: [Card].self) }.value
+            if let savedTop, topArtists.isEmpty { topArtists = savedTop }
+        }
         if cards == nil, !Demo.on {
             let saved = await Task.detached(priority: .userInitiated) { Storage.load(file, as: [Card].self) }.value
             if cards == nil { cards = saved }
@@ -563,19 +596,27 @@ struct CardGridScreen: View {
             await session.refresh()
         }
         guard let uid = session.profile?.uid else {
-            if cards == nil { error = "Нет связи с Яндексом" }
+            if cards == nil && topArtists.isEmpty { error = "Нет связи с Яндексом" }
             return
         }
         do {
+            async let freshTop: [Card]? = kind == .artists ? (try? await API.shared.topArtists()) : nil
             let fresh = kind == .artists ? try await API.shared.likedArtists(uid: uid) : try await API.shared.likedAlbums(uid: uid)
+            let resolvedTop = await freshTop
             guard !Task.isCancelled else { return }
-            cards = fresh
+            if cards != fresh { cards = fresh }
+            if let resolvedTop {
+                if topArtists != resolvedTop { topArtists = resolvedTop }
+                if !Demo.on {
+                    Task.detached(priority: .utility) { Storage.save(resolvedTop, "top-artists.json") }
+                }
+            }
             if !Demo.on {
                 Task.detached(priority: .utility) { Storage.save(fresh, file) }
             }
         } catch {
             if Task.isCancelled { return }
-            if cards == nil {
+            if cards == nil && topArtists.isEmpty {
                 self.error = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             }
         }

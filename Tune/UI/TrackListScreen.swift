@@ -101,8 +101,9 @@ final class TrackListModel: ObservableObject {
     func load(_ kind: ListKind, force: Bool = false) async {
         if kind == .likes, likesLoading { return }
         if loaded && !force { return }
-        loading = tracks.isEmpty
-        error = nil
+        let showLoading = tracks.isEmpty
+        if loading != showLoading { loading = showLoading }
+        if error != nil { error = nil }
         if tracks.isEmpty, !Demo.on, let name = Self.cacheName(kind) {
             let saved = await Task.detached(priority: .userInitiated) { Storage.load(name, as: Cached.self) }.value
             if let saved, tracks.isEmpty {
@@ -113,10 +114,10 @@ final class TrackListModel: ObservableObject {
                 if title.isEmpty { title = saved.title }
                 if subtitle.isEmpty { subtitle = saved.subtitle }
                 if cover == nil { cover = saved.cover }
-                loading = false
+                if loading { loading = false }
             }
         }
-        defer { loading = false }
+        defer { if loading { loading = false } }
         do {
             switch kind {
             case .downloads:
@@ -125,30 +126,31 @@ final class TrackListModel: ObservableObject {
                 try await loadLikes()
             case .history:
                 let page = try await API.shared.history()
-                tracks = page.tracks
-                days = page.days
-                historySources = page.sources
+                applyTracks(page.tracks)
+                if days != page.days { days = page.days }
+                if historySources != page.sources { historySources = page.sources }
             case .disliked:
                 if Session.shared.profile == nil { await Session.shared.refresh() }
                 var found: [Track] = []
                 for chunk in Array(Session.shared.disliked).chunked(150) {
                     found += try await API.shared.tracks(ids: chunk)
                 }
-                tracks = found
+                applyTracks(found)
             case .playlist(let playlist):
                 if title.isEmpty { title = playlist.title }
-                cover = playlist.cover
+                if cover == nil { cover = playlist.cover }
                 let page = try await API.shared.playlist(playlist)
-                tracks = page.tracks
+                applyTracks(page.tracks)
                 info = page
                 if title.isEmpty { title = page.title }
-                cover = page.cover ?? playlist.cover
+                let nextCover = page.cover ?? playlist.cover
+                if cover != nextCover { cover = nextCover }
             case .album(let id):
                 let page = try await API.shared.album(id: id)
-                title = page.card.title
-                subtitle = page.card.subtitle
-                cover = page.card.cover
-                tracks = page.tracks
+                if title != page.card.title { title = page.card.title }
+                if subtitle != page.card.subtitle { subtitle = page.card.subtitle }
+                if cover != page.card.cover { cover = page.card.cover }
+                applyTracks(page.tracks)
                 album = page
                 if more.isEmpty, let artist = page.artist, !artist.id.isEmpty {
                     Task { [weak self] in
@@ -157,11 +159,11 @@ final class TrackListModel: ObservableObject {
                     }
                 }
             case .artist(let id, let name):
-                title = name
-                tracks = try await API.shared.artistTracks(id: id)
+                if title != name { title = name }
+                applyTracks(try await API.shared.artistTracks(id: id))
             case .artistFamiliar(let id, let name, let wave):
-                title = name
-                tracks = try await API.shared.familiarTracks(artist: id, wave: wave)
+                if title != name { title = name }
+                applyTracks(try await API.shared.familiarTracks(artist: id, wave: wave))
             }
             loaded = true
             if !Demo.on, !tracks.isEmpty, let name = Self.cacheName(kind) {
@@ -184,7 +186,7 @@ final class TrackListModel: ObservableObject {
 
     private func loadLikes() async throws {
         likesLoading = true
-        likesError = nil
+        if likesError != nil { likesError = nil }
         defer {
             likesLoading = false
             if showsLikesProgress { showsLikesProgress = false }
@@ -218,7 +220,6 @@ final class TrackListModel: ObservableObject {
         try Task.checkCancellation()
         guard Session.shared.profile?.uid == uid else { return }
         let ids = entries.map(\.id)
-        Session.shared.setLiked(ids)
         var known: [String: Track] = [:]
         for track in tracks where !staleLikedTracks.contains(track.id) { known[track.id] = track }
         let publishPages = tracks.isEmpty
@@ -245,6 +246,7 @@ final class TrackListModel: ObservableObject {
         }
         let local = Session.shared.localLikedTracks
         localLikeIDs = Set(local.map(\.id))
+        Session.shared.setLiked(ids)
         applyLikes(local + ordered.filter { !localLikeIDs.contains($0.id) })
         staleLikedTracks.removeAll()
         Downloads.shared.auto(ordered)
@@ -254,10 +256,17 @@ final class TrackListModel: ObservableObject {
     }
 
     private func applyLikes(_ ordered: [Track]) {
-        if ordered != tracks {
+        applyTracks(ordered)
+    }
+
+    private func applyTracks(_ fresh: [Track]) {
+        guard fresh != tracks else { return }
+        if tracks.isEmpty {
+            tracks = fresh
+        } else {
             var transaction = Transaction()
             transaction.disablesAnimations = true
-            withTransaction(transaction) { tracks = ordered }
+            withTransaction(transaction) { tracks = fresh }
         }
     }
 
@@ -276,6 +285,49 @@ final class TrackListModel: ObservableObject {
                                   album: album)
             Task.detached(priority: .utility) { Storage.save(snapshot, name) }
         }
+    }
+}
+
+@MainActor
+private final class TrackListChromeState: ObservableObject {
+    @Published var tone = Theme.tone
+}
+
+private struct TrackListChrome<Content: View>: View {
+    @ObservedObject var chrome: TrackListChromeState
+    let navTitle: NavTitleState
+    let alwaysShown: Bool
+    let searching: Bool
+    let title: String
+    let cover: String?
+    let usesTone: Bool
+    let content: Content
+
+    var body: some View {
+        content
+            .background(alignment: .top) {
+                ZStack(alignment: .top) {
+                    Theme.background
+                    LinearGradient(colors: [Theme.wash(chrome.tone), Theme.background], startPoint: .top, endPoint: .bottom)
+                        .frame(height: 460)
+                }
+                .ignoresSafeArea()
+            }
+            .navigationTitle("")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    NavBarTitle(state: navTitle, alwaysShown: alwaysShown, hidden: searching, title: title)
+                }
+            }
+            .task(id: cover) {
+                guard usesTone else {
+                    if chrome.tone != Theme.tone { chrome.tone = Theme.tone }
+                    return
+                }
+                let color = await ImageLoader.shared.tone(cover)
+                withAnimation(.easeInOut(duration: 0.3)) { chrome.tone = color ?? Theme.tone }
+            }
     }
 }
 
@@ -308,7 +360,6 @@ struct TrackListScreen: View {
     @State private var importingAudio = false
     @State private var uploadingAudio = false
     @State private var name = ""
-    @State private var tone = Theme.tone
     @State private var sort = TrackSort.original
     @State private var onlyDownloaded = false
     /// Режим выбора нескольких треков.
@@ -317,8 +368,10 @@ struct TrackListScreen: View {
     /// Режим перестановки треков в своём плейлисте.
     @State private var reordering = false
     @State private var pickingMany = false
-    /// Шапка ушла за край: название страницы показывается в панели навигации.
-    @State private var compact = false
+    /// Состояние шапки и тона вынесено из TrackListScreen, чтобы прокрутка и смена цвета
+    /// не пересчитывали весь список треков.
+    @State private var chrome = TrackListChromeState()
+    @State private var navTitle = NavTitleState()
     /// Плейлист скачивается сам.
     @State private var auto = false
     @State private var prepared = false
@@ -558,14 +611,9 @@ struct TrackListScreen: View {
     private var page: some View {
         let tracks = shown
         let rows = TrackSlots(tracks: tracks, stableIDs: kind == .likes)
-        return ScrollViewReader { proxy in
+        let list = ScrollViewReader { proxy in
             List {
                 header(count: all.count)
-                    // Шапка почти ушла под панель навигации: пора показать название в панели.
-                    .background {
-                        if kind != .likes { HeaderWatch(hidden: $compact) }
-                    }
-                    .onDisappear { if kind != .likes { compact = true } }
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
                     .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 14, trailing: 16))
@@ -589,20 +637,24 @@ struct TrackListScreen: View {
             .scrollContentBackground(.hidden)
             .scrollDismissesKeyboard(.immediately)
             .environment(\.editMode, .constant(reordering ? .active : .inactive))
+            .screenRefresh { await model.load(kind, force: true) }
             .onChange(of: model.tracks.count) { _ in
                 // Снимок прокрученной страницы: по нему проверяется читаемость шапки.
-                if Demo.screen == "albumscroll" { proxy.scrollTo("offset-7", anchor: .top) }
+                if Demo.screen == "albumscroll", rows.slots.indices.contains(7) {
+                    proxy.scrollTo(rows.slots[7].id, anchor: .top)
+                }
             }
         }
-        .background(alignment: .top) {
-            ZStack(alignment: .top) {
-                Theme.background
-                LinearGradient(colors: [Theme.wash(tone), Theme.background], startPoint: .top, endPoint: .bottom)
-                    .frame(height: 460)
-            }
-            .ignoresSafeArea()
-        }
-        .topScrim(Theme.wash(tone))
+        return TrackListChrome(
+            chrome: chrome,
+            navTitle: navTitle,
+            alwaysShown: kind == .likes,
+            searching: searching,
+            title: title,
+            cover: cover,
+            usesTone: usesCoverTone,
+            content: list
+        )
         .safeAreaInset(edge: .top, spacing: 0) {
             if searching {
                 searchBar
@@ -616,9 +668,6 @@ struct TrackListScreen: View {
         .sheet(isPresented: $pickingMany, onDismiss: endModes) {
             PlaylistPicker(tracks: chosen)
         }
-        .navigationTitle((kind == .likes || compact) && !searching ? title : "")
-        .navigationBarTitleDisplayMode(.inline)
-        .background(BarFade(title: (kind == .likes || compact) && !searching ? title : ""))
         .onDisappear {
             // Строка поиска убирается при уходе со страницы: открытая, она при возврате
             // выскакивала рывком. Сам фильтр остаётся, строка вернётся вместе со страницей.
@@ -636,15 +685,6 @@ struct TrackListScreen: View {
             if kind != .downloads, Connectivity.shared.offline || session.offline { onlyDownloaded = true }
         }
         .task { await model.load(kind) }
-        .task(id: cover) {
-            switch kind {
-            case .disliked, .likes, .downloads, .history: tone = Theme.tone
-            default:
-                let color = await ImageLoader.shared.tone(cover)
-                withAnimation(.easeInOut(duration: 0.3)) { tone = color ?? Theme.tone }
-            }
-        }
-        .screenRefresh { await model.load(kind, force: true) }
         .toolbar {
             ToolbarItemGroup(placement: .navigationBarTrailing) {
                 if let liked {
@@ -738,15 +778,33 @@ struct TrackListScreen: View {
     }
 
     private struct TrackSlots: RandomAccessCollection {
-        let tracks: [Track]
-        let stableIDs: Bool
-        var startIndex: Int { tracks.startIndex }
-        var endIndex: Int { tracks.endIndex }
+        let slots: [TrackSlot]
+
+        init(tracks: [Track], stableIDs: Bool) {
+            if stableIDs {
+                slots = tracks.enumerated().map { TrackSlot(id: $1.id, index: $0, track: $1) }
+            } else {
+                var counts: [String: Int] = [:]
+                slots = tracks.enumerated().map { index, track in
+                    let seen = counts[track.id, default: 0]
+                    counts[track.id] = seen + 1
+                    let id = seen == 0 ? track.id : "\(track.id)#\(seen)"
+                    return TrackSlot(id: id, index: index, track: track)
+                }
+            }
+        }
+
+        var startIndex: Int { slots.startIndex }
+        var endIndex: Int { slots.endIndex }
         func index(after i: Int) -> Int { i + 1 }
         func index(before i: Int) -> Int { i - 1 }
-        subscript(index: Int) -> TrackSlot {
-            let track = tracks[index]
-            return TrackSlot(id: stableIDs ? track.id : "offset-\(index)", index: index, track: track)
+        subscript(index: Int) -> TrackSlot { slots[index] }
+    }
+
+    private var usesCoverTone: Bool {
+        switch kind {
+        case .likes, .downloads, .history, .disliked: return false
+        default: return true
         }
     }
 
@@ -1211,6 +1269,11 @@ struct TrackListScreen: View {
                 .foregroundStyle(Theme.text)
                 .multilineTextAlignment(.center)
                 .lineLimit(3)
+                .background {
+                    if kind != .likes {
+                        HeaderWatch { navTitle.setProgress($0) }
+                    }
+                }
             if !model.subtitle.isEmpty {
                 Button {
                     if let artist = model.album?.artist, !artist.id.isEmpty { navigate(.artist(artist.id, artist.name)) }
@@ -1451,7 +1514,7 @@ struct ArtistScreen: View {
     @State private var expanded = false
     @State private var error: String?
     @State private var tone = Theme.tone
-    @State private var compact = false
+    @State private var navTitle = NavTitleState()
 
     var body: some View {
         List {
@@ -1468,6 +1531,9 @@ struct ArtistScreen: View {
                         .font(.scaled(size: 30, weight: .bold))
                         .foregroundStyle(Theme.text)
                         .multilineTextAlignment(.center)
+                        .background {
+                            HeaderWatch { navTitle.setProgress($0) }
+                        }
                     if let listeners = page.listeners, listeners > 0 {
                         Text("\(shortCount(listeners)) слушателей за месяц")
                             .font(.scaled(size: 14))
@@ -1487,8 +1553,6 @@ struct ArtistScreen: View {
                     .padding(.top, 12)
                 }
                 .frame(maxWidth: .infinity)
-                .background { HeaderWatch(hidden: $compact) }
-                .onDisappear { compact = true }
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
                 .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 14, trailing: 16))
@@ -1553,11 +1617,12 @@ struct ArtistScreen: View {
             }
             .ignoresSafeArea()
         }
-        .topScrim(Theme.wash(tone))
-        .navigationTitle(compact ? (page?.name ?? name) : "")
+        .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
-        .background(BarFade(title: compact ? (page?.name ?? name) : ""))
         .toolbar {
+            ToolbarItem(placement: .principal) {
+                NavBarTitle(state: navTitle, alwaysShown: false, hidden: false, title: page?.name ?? name)
+            }
             ToolbarItem(placement: .navigationBarTrailing) {
                 Menu {
                     Button {

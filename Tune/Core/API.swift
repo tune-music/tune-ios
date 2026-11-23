@@ -513,6 +513,12 @@ final class API {
         return page
     }
 
+    func artistCover(id: String) async throws -> String? {
+        if Demo.on { return Demo.data.artists.first { $0.id == id }?.cover }
+        let value = result(try await get("artists/\(id)/brief-info"))
+        return Self.artistCard(value["artist"])?.cover
+    }
+
     private func artistClips(_ id: String, legacy: JSON) async -> [ArtistClip] {
         let value = (try? await get("artists/\(id)/blocks/artist-clips", [("page", "0"), ("pageSize", "30")])).map(result)
         let found = value?["items"].array.compactMap { item -> ArtistClip? in
@@ -865,6 +871,36 @@ final class API {
         let value = result(try await get("users/\(uid)/likes/artists", [("with-timestamps", "false")]))
         // Исполнитель приходит то сам по себе, то внутри artist.
         return value.array.compactMap { Self.artistCard($0) ?? Self.artistCard($0["artist"]) }
+    }
+
+    func topArtists() async throws -> [Card] {
+        if Demo.on {
+            return Demo.data.artists.enumerated().map { index, card in
+                var top = card
+                top.subtitle = "\(index + 1) место · \(max(1, 5 - index)) ч"
+                return top
+            }
+        }
+        let value = result(try await get("personal/top/artists/month"))
+        return Self.parseTopArtists(value)
+    }
+
+    static func parseTopArtists(_ value: JSON) -> [Card] {
+        value["artists"].array.compactMap { item -> Card? in
+            guard var card = Self.artistCard(item["artist"]) else { return nil }
+            let place = item["top"]["position"].idText.flatMap(Int.init).flatMap { $0 > 0 ? "\($0) место" : nil }
+            let minutes = max(0, item["listenTimeSeconds"].idText.flatMap(Int.init) ?? 0) / 60
+            let time: String?
+            if minutes <= 0 {
+                time = nil
+            } else if minutes < 60 {
+                time = "\(minutes) мин"
+            } else {
+                time = "\(minutes / 60) ч"
+            }
+            card.subtitle = [place, time].compactMap { $0 }.joined(separator: " · ")
+            return card
+        }
     }
 
     func dislikedArtists(uid: String) async throws -> [Card] {

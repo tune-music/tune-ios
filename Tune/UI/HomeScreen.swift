@@ -16,15 +16,15 @@ final class HomeModel: ObservableObject {
 
     func load(force: Bool = false) async {
         if loaded && !force { return }
-        loading = true
-        defer { loading = false }
+        if !loading { loading = true }
+        defer { if loading { loading = false } }
         do {
             let fresh = try await API.shared.home()
             try Task.checkCancellation()
             // Пустой ответ не стирает то, что уже показано.
             if !fresh.blocks.isEmpty || page.blocks.isEmpty { page = fresh }
             loaded = true
-            failed = false
+            if failed { failed = false }
             if !Demo.on, !fresh.blocks.isEmpty {
                 Task.detached(priority: .utility) { Storage.save(fresh, "home.json") }
             }

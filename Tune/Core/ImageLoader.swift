@@ -9,8 +9,8 @@ final class ImageLoader {
 
     private let memory: NSCache<NSString, UIImage> = {
         let cache = NSCache<NSString, UIImage>()
-        cache.countLimit = 400
-        cache.totalCostLimit = 96 << 20
+        cache.countLimit = 1200
+        cache.totalCostLimit = 160 << 20
         return cache
     }()
     private let inflight = Inflight()
@@ -162,11 +162,12 @@ struct CoverView: View {
     /// Подложка, пока картинки нет. nil — прозрачная: под картинкой виден цвет волны.
     var backdrop: Color? = Theme.raised
 
-    @State private var image: UIImage?
+    @State private var loaded: (uri: String, image: UIImage)?
 
     var body: some View {
         let side = ImageLoader.side(for: size)
-        let shown = image ?? ImageLoader.shared.cached(uri, side: side)
+        let cached = ImageLoader.shared.cached(uri, side: side)
+        let shown = cached ?? (loaded?.uri == uri ? loaded?.image : nil)
         ZStack {
             if let backdrop { backdrop }
             if let shown {
@@ -182,12 +183,10 @@ struct CoverView: View {
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: round ? size / 2 : corner, style: .continuous))
         .task(id: uri) {
-            if let ready = ImageLoader.shared.cached(uri, side: side) {
-                image = ready
-                return
+            guard let uri, !uri.isEmpty, ImageLoader.shared.cached(uri, side: side) == nil else { return }
+            if let image = await ImageLoader.shared.load(uri, side: side), !Task.isCancelled {
+                loaded = (uri, image)
             }
-            image = nil
-            image = await ImageLoader.shared.load(uri, side: side)
         }
     }
 }

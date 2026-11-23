@@ -1,30 +1,402 @@
 import Combine
 import SwiftUI
 
+private final class RefreshBox: NSObject {
+    var action: (@MainActor () async -> Void)?
+    var offline = false
+    var task: Task<Void, Never>?
+    weak var scrollView: UIScrollView?
+    weak var overlay: RefreshOverlayView?
+
+    private var offsetObserver: NSKeyValueObservation?
+    private weak var observedPan: UIPanGestureRecognizer?
+    private let haptic = UIImpactFeedbackGenerator(style: .medium)
+    private var armedForDrag = false
+    private var triggeredInDrag = false
+    private var isRefreshing = false
+
+    private let revealDistance: CGFloat = 14
+    private let triggerDistance: CGFloat = 64
+
+    func attach(_ scroll: UIScrollView) {
+        if !scroll.alwaysBounceVertical {
+            scroll.alwaysBounceVertical = true
+        }
+        guard scrollView !== scroll else { return }
+        detach()
+        scrollView = scroll
+        offsetObserver = scroll.observe(\.contentOffset, options: [.new]) { [weak self] _, _ in
+            self?.handleScroll()
+        }
+        let pan = scroll.panGestureRecognizer
+        pan.addTarget(self, action: #selector(panChanged(_:)))
+        observedPan = pan
+    }
+
+    func detach() {
+        offsetObserver?.invalidate()
+        offsetObserver = nil
+        observedPan?.removeTarget(self, action: #selector(panChanged(_:)))
+        observedPan = nil
+        scrollView = nil
+    }
+
+    func cancel() {
+        task?.cancel()
+        task = nil
+        isRefreshing = false
+        armedForDrag = false
+        triggeredInDrag = false
+        updateVisual(animated: false)
+    }
+
+    @objc private func panChanged(_ pan: UIPanGestureRecognizer) {
+        switch pan.state {
+        case .began:
+            triggeredInDrag = false
+            if let scroll = scrollView {
+                // Засчитываем pull-to-refresh только если жест начался от самого верха,
+                // а не при докручивании списка снизу вверх или ловле инерционного отскока.
+                let offsetFromTop = scroll.contentOffset.y + scroll.adjustedContentInset.top
+                armedForDrag = !scroll.isDecelerating && offsetFromTop <= 20 && offsetFromTop >= -35
+            } else {
+                armedForDrag = false
+            }
+            if armedForDrag { haptic.prepare() }
+        case .ended, .cancelled, .failed:
+            armedForDrag = false
+            triggeredInDrag = false
+            updateVisual(animated: true)
+        default:
+            break
+        }
+    }
+
+    private func handleScroll() {
+        guard let scroll = scrollView else { return }
+        let pull = currentPull(scroll)
+        let panState = scroll.panGestureRecognizer.state
+        let activeDrag = armedForDrag && scroll.isDragging && (panState == .began || panState == .changed)
+        if activeDrag && !triggeredInDrag && !offline && task == nil && pull >= triggerDistance {
+            triggeredInDrag = true
+            haptic.impactOccurred()
+            startRefresh()
+        }
+        updateVisual(pull: pull, activeDrag: activeDrag, animated: false)
+    }
+
+    private func currentPull(_ scroll: UIScrollView) -> CGFloat {
+        max(0, -(scroll.contentOffset.y + scroll.adjustedContentInset.top))
+    }
+
+    private func startRefresh() {
+        guard task == nil, let action else { return }
+        let started = Date()
+        isRefreshing = true
+        updateVisual(animated: true)
+        task = Task { @MainActor [weak self] in
+            await action()
+            let elapsed = Date().timeIntervalSince(started)
+            if elapsed < 0.25 && !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: UInt64((0.25 - elapsed) * 1_000_000_000))
+            }
+            guard let self else { return }
+            self.task = nil
+            self.isRefreshing = false
+            self.updateVisual(animated: true)
+        }
+    }
+
+    func updateVisual(animated: Bool) {
+        guard let scroll = scrollView else {
+            overlay?.hide(animated: animated)
+            return
+        }
+        let panState = scroll.panGestureRecognizer.state
+        let activeDrag = armedForDrag && scroll.isDragging && (panState == .began || panState == .changed)
+        updateVisual(pull: currentPull(scroll), activeDrag: activeDrag, animated: animated)
+    }
+
+    private func updateVisual(pull: CGFloat, activeDrag: Bool, animated: Bool) {
+        guard let overlay else { return }
+        if isRefreshing {
+            let y: CGFloat = pull > 18 ? min(pull * 0.5, 70) : 22
+            overlay.showSpinning(at: y, showPill: pull < 18, animated: animated)
+        } else if !triggeredInDrag && activeDrag && pull > revealDistance && !offline {
+            let progress = min(max((pull - revealDistance) / (triggerDistance - revealDistance), 0), 1)
+            overlay.showProgress(progress, at: max(20, pull * 0.5))
+        } else {
+            overlay.hide(animated: animated)
+        }
+    }
+
+    deinit {
+        offsetObserver?.invalidate()
+        observedPan?.removeTarget(self, action: nil)
+    }
+}
+
+private final class RefreshOverlayView: UIView {
+    weak var box: RefreshBox?
+    private let pill = UIVisualEffectView(effect: UIBlurEffect(style: .systemChromeMaterial))
+    private let ticksHost = UIView()
+    private var spokes: [CALayer] = []
+    private var pillVisible = false
+    private var spinning = false
+    private var lastAngle: CGFloat = 0
+    private var lastBounds: CGRect = .zero
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isUserInteractionEnabled = false
+        clipsToBounds = false
+
+        pill.frame = CGRect(x: 0, y: 0, width: 34, height: 34)
+        pill.layer.cornerRadius = 17
+        pill.clipsToBounds = true
+        pill.alpha = 0
+        addSubview(pill)
+
+        ticksHost.frame = CGRect(x: 0, y: 0, width: 22, height: 22)
+        ticksHost.alpha = 0
+        ticksHost.isHidden = true
+        addSubview(ticksHost)
+
+        for index in 0..<8 {
+            let spoke = CALayer()
+            spoke.bounds = CGRect(x: 0, y: 0, width: 2, height: 5.5)
+            spoke.cornerRadius = 1
+            spoke.backgroundColor = UIColor.secondaryLabel.cgColor
+            let angle = CGFloat(index) * (.pi / 4)
+            let radius: CGFloat = 7
+            spoke.position = CGPoint(x: 11 + sin(angle) * radius, y: 11 - cos(angle) * radius)
+            spoke.transform = CATransform3DMakeRotation(angle, 0, 0, 1)
+            ticksHost.layer.addSublayer(spoke)
+            spokes.append(spoke)
+        }
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard bounds != lastBounds else { return }
+        lastBounds = bounds
+        box?.updateVisual(animated: false)
+    }
+
+    override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
+        super.traitCollectionDidChange(previousTraitCollection)
+        if previousTraitCollection?.hasDifferentColorAppearance(comparedTo: traitCollection) == true {
+            let color = UIColor.secondaryLabel.cgColor
+            for spoke in spokes { spoke.backgroundColor = color }
+        }
+    }
+
+    func showProgress(_ progress: CGFloat, at y: CGFloat) {
+        let center = CGPoint(x: bounds.midX, y: y)
+        stopSpin()
+        lastAngle = progress * 0.35
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        ticksHost.isHidden = false
+        ticksHost.center = center
+        ticksHost.alpha = progress
+        let scale = 0.8 + 0.2 * progress
+        ticksHost.transform = CGAffineTransform(scaleX: scale, y: scale).rotated(by: lastAngle)
+        for (index, spoke) in spokes.enumerated() {
+            let level = min(max(progress * 8 - CGFloat(index), 0.15), 1)
+            spoke.opacity = Float(level)
+        }
+        CATransaction.commit()
+        setPillVisible(false, center: center, animated: false)
+    }
+
+    func showSpinning(at y: CGFloat, showPill: Bool, animated: Bool) {
+        let center = CGPoint(x: bounds.midX, y: y)
+        ticksHost.isHidden = false
+        ticksHost.center = center
+        setPillVisible(showPill, center: center, animated: animated)
+        if !spinning {
+            spinning = true
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            ticksHost.transform = CGAffineTransform(rotationAngle: lastAngle)
+            for (index, spoke) in spokes.enumerated() {
+                spoke.opacity = Float(0.22 + 0.78 * CGFloat(index) / 7)
+            }
+            CATransaction.commit()
+            let spin = CABasicAnimation(keyPath: "transform.rotation.z")
+            spin.fromValue = lastAngle
+            spin.toValue = lastAngle + (.pi * 2)
+            spin.duration = 0.75
+            spin.repeatCount = .infinity
+            spin.isRemovedOnCompletion = false
+            ticksHost.layer.add(spin, forKey: "spin")
+        }
+        if animated && ticksHost.alpha < 1 {
+            UIView.animate(withDuration: 0.16) { self.ticksHost.alpha = 1 }
+        } else {
+            ticksHost.alpha = 1
+        }
+    }
+
+    func hide(animated: Bool) {
+        setPillVisible(false, center: ticksHost.center, animated: animated)
+        if animated && !ticksHost.isHidden && ticksHost.alpha > 0 {
+            UIView.animate(withDuration: 0.18, animations: {
+                self.ticksHost.alpha = 0
+            }, completion: { _ in
+                if self.ticksHost.alpha == 0 {
+                    self.ticksHost.isHidden = true
+                    self.stopSpin()
+                }
+            })
+        } else {
+            ticksHost.alpha = 0
+            ticksHost.isHidden = true
+            stopSpin()
+        }
+    }
+
+    private func stopSpin() {
+        guard spinning else { return }
+        spinning = false
+        ticksHost.layer.removeAnimation(forKey: "spin")
+    }
+
+    private func setPillVisible(_ visible: Bool, center: CGPoint, animated: Bool) {
+        pill.center = center
+        guard visible != pillVisible else { return }
+        pillVisible = visible
+        let target: CGFloat = visible ? 1 : 0
+        if animated {
+            UIView.animate(withDuration: 0.18) { self.pill.alpha = target }
+        } else {
+            pill.alpha = target
+        }
+    }
+}
+
+private struct RefreshOverlay: UIViewRepresentable {
+    let box: RefreshBox
+    let action: @MainActor () async -> Void
+
+    func makeUIView(context: Context) -> RefreshOverlayView {
+        let view = RefreshOverlayView()
+        view.box = box
+        box.overlay = view
+        box.action = action
+        return view
+    }
+
+    func updateUIView(_ uiView: RefreshOverlayView, context: Context) {
+        uiView.box = box
+        box.overlay = uiView
+        box.action = action
+    }
+}
+
+private struct ScrollDragProbe: UIViewRepresentable {
+    let box: RefreshBox
+
+    final class ProbeView: UIView {
+        weak var box: RefreshBox?
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            if window == nil {
+                box?.detach()
+            } else {
+                attach()
+            }
+        }
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            attach()
+        }
+
+        func attach() {
+            guard let box, window != nil else { return }
+            if let existing = box.scrollView, existing.window != nil {
+                box.attach(existing)
+                return
+            }
+            if let found = findScrollView() {
+                box.attach(found)
+            }
+        }
+
+        private func findScrollView() -> UIScrollView? {
+            var current: UIView? = superview
+            var host: UIView? = superview
+            var hops = 0
+            while let view = current {
+                if let scroll = view as? UIScrollView { return scroll }
+                host = view
+                if view.next is UIViewController || hops >= 4 { break }
+                current = view.superview
+                hops += 1
+            }
+            guard let root = host else { return nil }
+            var queue: [(UIView, Int)] = [(root, 0)]
+            var index = 0
+            var fallback: UIScrollView?
+            while index < queue.count {
+                let (view, depth) = queue[index]
+                index += 1
+                if let scroll = view as? UIScrollView {
+                    if !scroll.alwaysBounceHorizontal && (root.bounds.height == 0 || scroll.bounds.height >= root.bounds.height * 0.5) {
+                        return scroll
+                    }
+                    if fallback == nil, scroll.alwaysBounceVertical || !scroll.alwaysBounceHorizontal {
+                        fallback = scroll
+                    }
+                }
+                if depth < 12 {
+                    for child in view.subviews { queue.append((child, depth + 1)) }
+                }
+            }
+            return fallback
+        }
+    }
+
+    func makeUIView(context: Context) -> ProbeView {
+        let view = ProbeView()
+        view.backgroundColor = .clear
+        view.isUserInteractionEnabled = false
+        view.box = box
+        return view
+    }
+
+    func updateUIView(_ uiView: ProbeView, context: Context) {
+        uiView.box = box
+        uiView.attach()
+    }
+}
+
 private struct ScreenRefresh: ViewModifier {
     let action: @MainActor () async -> Void
-    @State private var task: Task<Void, Never>?
+    @State private var box = RefreshBox()
 
     func body(content: Content) -> some View {
         content
-            .refreshable { await refresh() }
-            .onReceive(Connectivity.shared.$online) { online in
-                if !online { task?.cancel() }
+            .background(ScrollDragProbe(box: box))
+            .overlay(alignment: .top) {
+                RefreshOverlay(box: box, action: action)
+                    .frame(height: 120)
+                    .allowsHitTesting(false)
             }
-            .onDisappear { task?.cancel() }
-    }
-
-    @MainActor
-    private func refresh() async {
-        guard task == nil, !Connectivity.shared.offline, !Task.isCancelled else { return }
-        let work = Task { await action() }
-        task = work
-        await withTaskCancellationHandler {
-            await work.value
-        } onCancel: {
-            work.cancel()
-        }
-        task = nil
+            .onAppear {
+                box.action = action
+                box.offline = Connectivity.shared.offline
+            }
+            .onReceive(Connectivity.shared.$online) { online in
+                box.offline = !online
+                if !online { box.cancel() }
+            }
+            .onDisappear { box.cancel() }
     }
 }
 
@@ -115,20 +487,6 @@ extension View {
         #endif
     }
 
-    /// Дымка под часами и кнопками навигации: прокрученный список растворяется в цвете
-    /// страницы и не мешает читать кнопки. Пока страница не прокручена, дымка сливается с фоном.
-    func topScrim(_ color: Color) -> some View {
-        overlay(alignment: .top) {
-            LinearGradient(
-                stops: [.init(color: color, location: 0), .init(color: color.opacity(0.9), location: 0.55), .init(color: color.opacity(0), location: 1)],
-                startPoint: .top, endPoint: .bottom
-            )
-            .frame(height: 132)
-            .ignoresSafeArea(edges: .top)
-            .allowsHitTesting(false)
-        }
-    }
-
     @ViewBuilder
     private func legacyGlass<S: Shape>(in shape: S, tint: Color?) -> some View {
         if let tint {
@@ -180,59 +538,72 @@ struct PlayGlyph: View {
     }
 }
 
-/// Разрыв между кнопками панели навигации: на iOS 26 меню «…» получает свою стеклянную
-/// Следит, ушла ли шапка страницы под панель навигации.
+@MainActor
+final class NavTitleState: ObservableObject {
+    @Published var progress: CGFloat = 0
+
+    func setProgress(_ value: CGFloat) {
+        if abs(progress - value) > 0.001 {
+            progress = value
+        }
+    }
+}
+
+/// Заголовок в панели навигации: плавно проявляется и поднимается, когда шапка уходит вверх.
+struct NavBarTitle: View {
+    @ObservedObject var state: NavTitleState
+    let alwaysShown: Bool
+    let hidden: Bool
+    let title: String
+
+    var body: some View {
+        let progress: CGFloat = hidden ? 0 : (alwaysShown ? 1 : state.progress)
+        Text(title)
+            .font(.headline)
+            .lineLimit(1)
+            .foregroundStyle(Theme.text)
+            .opacity(progress)
+            .offset(y: (1 - progress) * 5)
+            .scaleEffect(0.96 + 0.04 * progress)
+            .animation(.easeOut(duration: 0.14), value: progress)
+            .allowsHitTesting(false)
+    }
+}
+
+/// Следит, насколько заголовок страницы ушёл под панель навигации (`0...1`).
 struct HeaderWatch: View {
-    @Binding var hidden: Bool
+    let onProgress: (CGFloat) -> Void
+    @State private var lastMaxY: CGFloat = 400
+
+    private var barBottom: CGFloat {
+        let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene
+        let window = scene?.windows.first { $0.isKeyWindow } ?? scene?.windows.first
+        return (window?.safeAreaInsets.top ?? 54) + 44
+    }
 
     var body: some View {
         GeometryReader { geometry in
-            let gone = geometry.frame(in: .global).maxY < 150
+            let maxY = geometry.frame(in: .global).maxY
+            let top = barBottom
+            let raw = min(max((top + 38 - maxY) / 40, 0), 1)
+            let snapped = (raw * 40).rounded() / 40
             Color.clear
-                .onAppear { hidden = gone }
-                .onChange(of: gone) { hidden = $0 }
+                .onAppear {
+                    lastMaxY = maxY
+                    onProgress(snapped)
+                }
+                .onChange(of: snapped) { value in
+                    lastMaxY = maxY
+                    onProgress(value)
+                }
+                .onDisappear {
+                    if lastMaxY < top + 60 { onProgress(1) }
+                }
         }
     }
 }
 
-/// Название в панели навигации меняется плавно: системная панель сама его не анимирует,
-/// поэтому в момент смены на неё вешается короткое затухание.
-struct BarFade: UIViewRepresentable {
-    let title: String
-
-    final class Box {
-        var title: String?
-    }
-
-    func makeCoordinator() -> Box { Box() }
-
-    func makeUIView(context: Context) -> UIView {
-        let view = UIView()
-        view.isUserInteractionEnabled = false
-        return view
-    }
-
-    func updateUIView(_ view: UIView, context: Context) {
-        let box = context.coordinator
-        guard box.title != title else { return }
-        let first = box.title == nil
-        box.title = title
-        if first { return }
-        var next: UIResponder? = view
-        while let responder = next {
-            if let controller = responder as? UIViewController, let bar = controller.navigationController?.navigationBar {
-                let fade = CATransition()
-                fade.type = .fade
-                fade.duration = 0.22
-                fade.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                bar.layer.add(fade, forKey: "title")
-                break
-            }
-            next = responder.next
-        }
-    }
-}
-
+/// Разрыв между кнопками панели навигации: на iOS 26 меню «…» получает свою стеклянную
 /// кнопку и раскрывается из неё, а не из общей плашки.
 @ToolbarContentBuilder
 func toolbarGap() -> some ToolbarContent {
@@ -266,8 +637,8 @@ struct TrackMenu: View {
     var done: () -> Void = {}
 
     private var player: Player { Player.shared }
-    @EnvironmentObject private var downloads: Downloads
-    @EnvironmentObject private var session: Session
+    private var downloads: Downloads { Downloads.shared }
+    private var session: Session { Session.shared }
 
     var body: some View {
         let liked = session.isLiked(track.id)
@@ -460,15 +831,38 @@ struct TrackRow: View {
     var historySource: String? = nil
     let action: () -> Void
 
-    @State private var playback = RowPlayback.other
+    @State private var playback: RowPlayback
     @State private var downloadProgress: Double?
-    @State private var downloaded = false
-    @State private var liked = false
-    @State private var disliked = false
+    @State private var downloaded: Bool
+    @State private var liked: Bool
+    @State private var disliked: Bool
     private var player: Player { Player.shared }
     private var downloads: Downloads { Downloads.shared }
     @Environment(\.navigate) private var navigate
     @Environment(\.pickPlaylist) private var pickPlaylist
+
+    init(
+        track: Track,
+        number: Int? = nil,
+        fadesDisliked: Bool = true,
+        onRemove: (() -> Void)? = nil,
+        historySource: String? = nil,
+        action: @escaping () -> Void
+    ) {
+        self.track = track
+        self.number = number
+        self.fadesDisliked = fadesDisliked
+        self.onRemove = onRemove
+        self.historySource = historySource
+        self.action = action
+        let now = Player.shared.now
+        let initialPlayback: RowPlayback = now.id == track.id ? (now.playing ? .playing : .paused) : .other
+        _playback = State(initialValue: initialPlayback)
+        _downloadProgress = State(initialValue: Downloads.shared.active[track.id])
+        _downloaded = State(initialValue: Downloads.shared.downloadedIds.contains(track.id))
+        _liked = State(initialValue: Session.shared.isLiked(track.id))
+        _disliked = State(initialValue: Session.shared.disliked.contains(track.id))
+    }
 
     private var dimmed: Bool {
         (track.unavailable && !track.uncensored && !downloaded) || (fadesDisliked && disliked)
@@ -571,35 +965,35 @@ struct TrackRow: View {
             }
             .tint(.indigo)
         }
-        .onReceive(playbackChanges) {
-            if playback != $0 { playback = $0 }
+        .onReceive(player.now.$id) { id in
+            let next: RowPlayback = id == track.id ? (player.now.playing ? .playing : .paused) : .other
+            if playback != next { playback = next }
         }
-        .onReceive(downloads.$active.map { $0[track.id] }.removeDuplicates()) {
-            if downloadProgress != $0 { downloadProgress = $0 }
+        .onReceive(player.now.$playing) { playing in
+            guard player.now.id == track.id else { return }
+            let next: RowPlayback = playing ? .playing : .paused
+            if playback != next { playback = next }
         }
-        .onReceive(downloads.$entries.map { entries in entries.contains { $0.track.id == track.id } }.removeDuplicates()) {
-            if downloaded != $0 { downloaded = $0 }
+        .onReceive(downloads.$active) { active in
+            let value = active[track.id]
+            if downloadProgress != value { downloadProgress = value }
         }
-        .onReceive(Session.shared.$likedIds.map { _ in Session.shared.isLiked(track.id) }.removeDuplicates()) {
-            if liked != $0 { liked = $0 }
+        .onReceive(downloads.$downloadedIds) { ids in
+            let value = ids.contains(track.id)
+            if downloaded != value { downloaded = value }
         }
-        .onReceive(Session.shared.$disliked.map { $0.contains(track.id) }.removeDuplicates()) {
-            if disliked != $0 { disliked = $0 }
+        .onReceive(Session.shared.$likedIds) { _ in
+            let value = Session.shared.isLiked(track.id)
+            if liked != value { liked = value }
+        }
+        .onReceive(Session.shared.$disliked) { ids in
+            let value = ids.contains(track.id)
+            if disliked != value { disliked = value }
         }
     }
 
     private enum RowPlayback {
         case other, paused, playing
-    }
-
-    private var playbackChanges: AnyPublisher<RowPlayback, Never> {
-        player.now.$id.combineLatest(player.now.$playing)
-            .map { id, playing -> RowPlayback in
-                guard id == track.id else { return .other }
-                return playing ? .playing : .paused
-            }
-            .removeDuplicates()
-            .eraseToAnyPublisher()
     }
 }
 
@@ -868,7 +1262,7 @@ struct HomeCard: View {
             case .album(let card):
                 CardView(title: card.title, subtitle: card.subtitle, cover: card.cover, size: size, playing: playing("album", card.id))
             case .artist(let card):
-                CardView(title: card.title, subtitle: "", cover: card.cover, round: true, size: size, playing: playing("artist", card.id))
+                CardView(title: card.title, subtitle: card.subtitle == "Исполнитель" ? "" : card.subtitle, cover: card.cover, round: true, size: size, playing: playing("artist", card.id))
             case .playlist(let playlist):
                 CardView(title: playlist.title, subtitle: playlist.count > 0 ? plural(playlist.count, "трек", "трека", "треков") : "", cover: playlist.cover, size: size, playing: playing("playlist", playlist.id))
             case .wave(let wave):

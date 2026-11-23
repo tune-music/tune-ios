@@ -100,18 +100,27 @@ final class Stats: ObservableObject {
             perTrack[play.id, default: 0] += 1
         }
         let ranked = perTrack.sorted { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }
-        var perArtist: [String: TopArtist] = [:]
+        var perArtist: [String: (artist: ArtistRef, soloCover: String?, anyCover: String?, count: Int)] = [:]
         for (id, count) in ranked {
             guard let track = tracks[id] else { continue }
             if result.tracks.count < 20 { result.tracks.append(TopTrack(track: track, count: count)) }
+            let solo = track.artistList.count == 1
             for artist in track.artistList {
                 let key = artist.id.isEmpty ? artist.name : artist.id
-                // Обложка исполнителя — обложка его самого частого трека.
                 let known = perArtist[key]
-                perArtist[key] = TopArtist(artist: artist, cover: known?.cover ?? track.cover, count: (known?.count ?? 0) + count)
+                perArtist[key] = (
+                    artist: artist,
+                    soloCover: known?.soloCover ?? (solo ? track.cover : nil),
+                    anyCover: known?.anyCover ?? track.cover,
+                    count: (known?.count ?? 0) + count
+                )
             }
         }
-        result.artists = Array(perArtist.values.sorted { $0.count == $1.count ? $0.id < $1.id : $0.count > $1.count }.prefix(12))
+        let mapped: [TopArtist] = perArtist.values.map {
+            TopArtist(artist: $0.artist, cover: $0.soloCover ?? $0.anyCover, count: $0.count)
+        }
+        let sorted = mapped.sorted { $0.count == $1.count ? $0.id < $1.id : $0.count > $1.count }
+        result.artists = Array(sorted.prefix(12))
         return result
     }
 }
@@ -123,6 +132,7 @@ struct StatsScreen: View {
     @Environment(\.navigate) private var navigate
     @State private var days: Int? = 30
     @State private var confirmClear = false
+    @State private var artistCovers: [String: String] = [:]
 
     var body: some View {
         let data = stats.summary(days: days)
@@ -166,7 +176,7 @@ struct StatsScreen: View {
                             Button {
                                 if !item.artist.id.isEmpty { navigate(.artist(item.artist.id, item.artist.name)) }
                             } label: {
-                                CardView(title: item.artist.name, subtitle: plural(item.count, "раз", "раза", "раз"), cover: item.cover, round: true, size: 112)
+                                CardView(title: item.artist.name, subtitle: plural(item.count, "раз", "раза", "раз"), cover: artistCovers[item.artist.id] ?? item.cover, round: true, size: 112)
                             }
                             .buttonStyle(.plain)
                         }
@@ -198,6 +208,39 @@ struct StatsScreen: View {
             Button("Очистить", role: .destructive) { stats.clear() }
         } message: {
             Text("Она хранится только на этом устройстве, вернуть её не получится.")
+        }
+        .task(id: data.artists.map(\.artist.id)) {
+            await loadArtistCovers(for: data.artists)
+        }
+    }
+
+    private func loadArtistCovers(for artists: [Stats.TopArtist]) async {
+        if artistCovers.isEmpty, !Demo.on {
+            let saved = await Task.detached(priority: .userInitiated) { Storage.load("artist-covers.json", as: [String: String].self) }.value
+            if let saved {
+                for (id, cover) in saved where artistCovers[id] == nil { artistCovers[id] = cover }
+            }
+        }
+        let ids = artists.map(\.artist.id).filter { !$0.isEmpty && artistCovers[$0] == nil }
+        guard !ids.isEmpty, !Connectivity.shared.offline else { return }
+        let fetched = await withTaskGroup(of: (String, String)?.self) { group in
+            for id in ids {
+                group.addTask {
+                    guard let cover = try? await API.shared.artistCover(id: id), !cover.isEmpty else { return nil }
+                    return (id, cover)
+                }
+            }
+            var loaded: [String: String] = [:]
+            for await pair in group {
+                if let pair { loaded[pair.0] = pair.1 }
+            }
+            return loaded
+        }
+        guard !Task.isCancelled, !fetched.isEmpty else { return }
+        artistCovers.merge(fetched) { _, new in new }
+        if !Demo.on {
+            let snapshot = artistCovers
+            Task.detached(priority: .utility) { Storage.save(snapshot, "artist-covers.json") }
         }
     }
 

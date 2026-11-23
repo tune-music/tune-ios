@@ -21,6 +21,7 @@ final class Downloads: ObservableObject {
     }
 
     @Published private(set) var entries: [Entry] = []
+    @Published private(set) var downloadedIds = Set<String>()
     /// Ход загрузок: номер трека → доля от 0 до 1. Ждущие своей очереди — 0.
     @Published private(set) var active: [String: Double] = [:]
     /// Очередь по порядку: и те, что качаются сейчас, и ждущие.
@@ -52,6 +53,7 @@ final class Downloads: ObservableObject {
         // Запись без файла бесполезна: например, после восстановления из копии.
         entries = saved.filter { FileManager.default.fileExists(atPath: Storage.tracks.appendingPathComponent($0.file).path) }
         for entry in entries { files[entry.track.id] = entry.file }
+        downloadedIds = Set(files.keys)
 
         if Demo.on {
             if Demo.screen == "downloads" {
@@ -242,6 +244,7 @@ final class Downloads: ObservableObject {
             entries.removeAll { $0.track.id == track.id }
             entries.insert(Entry(track: track, file: file.lastPathComponent, bytes: bytes, date: Date(), version: source.version), at: 0)
             files[track.id] = file.lastPathComponent
+            downloadedIds.insert(track.id)
             pendingAssets.insert(track.id)
             deferredAssets.remove(track.id)
             checkedLyrics.removeValue(forKey: track.id)
@@ -292,6 +295,7 @@ final class Downloads: ObservableObject {
         guard let index = entries.firstIndex(where: { $0.track.id == id }) else { return }
         let entry = entries.remove(at: index)
         files[id] = nil
+        downloadedIds.remove(id)
         pendingAssets.remove(id)
         deferredAssets.remove(id)
         checkedLyrics.removeValue(forKey: id)
@@ -309,6 +313,7 @@ final class Downloads: ObservableObject {
         failed = []
         entries.removeAll()
         files.removeAll()
+        downloadedIds.removeAll()
         pendingAssets.removeAll()
         deferredAssets.removeAll()
         checkedLyrics.removeAll()
