@@ -11,6 +11,7 @@ private final class RefreshBox: NSObject {
     private var offsetObserver: NSKeyValueObservation?
     private weak var observedPan: UIPanGestureRecognizer?
     private let haptic = UIImpactFeedbackGenerator(style: .medium)
+    private var armedForDrag = false
     private var triggeredInDrag = false
     private var isRefreshing = false
 
@@ -44,6 +45,7 @@ private final class RefreshBox: NSObject {
         task?.cancel()
         task = nil
         isRefreshing = false
+        armedForDrag = false
         triggeredInDrag = false
         updateVisual(animated: false)
     }
@@ -52,8 +54,17 @@ private final class RefreshBox: NSObject {
         switch pan.state {
         case .began:
             triggeredInDrag = false
-            haptic.prepare()
+            if let scroll = scrollView {
+                // Засчитываем pull-to-refresh только если жест начался от самого верха,
+                // а не при докручивании списка снизу вверх или ловле инерционного отскока.
+                let offsetFromTop = scroll.contentOffset.y + scroll.adjustedContentInset.top
+                armedForDrag = !scroll.isDecelerating && offsetFromTop <= 20 && offsetFromTop >= -35
+            } else {
+                armedForDrag = false
+            }
+            if armedForDrag { haptic.prepare() }
         case .ended, .cancelled, .failed:
+            armedForDrag = false
             triggeredInDrag = false
             updateVisual(animated: true)
         default:
@@ -64,12 +75,14 @@ private final class RefreshBox: NSObject {
     private func handleScroll() {
         guard let scroll = scrollView else { return }
         let pull = currentPull(scroll)
-        if scroll.isDragging && !triggeredInDrag && !offline && task == nil && pull >= triggerDistance {
+        let panState = scroll.panGestureRecognizer.state
+        let activeDrag = armedForDrag && scroll.isDragging && (panState == .began || panState == .changed)
+        if activeDrag && !triggeredInDrag && !offline && task == nil && pull >= triggerDistance {
             triggeredInDrag = true
             haptic.impactOccurred()
             startRefresh()
         }
-        updateVisual(pull: pull, isDragging: scroll.isDragging, animated: false)
+        updateVisual(pull: pull, activeDrag: activeDrag, animated: false)
     }
 
     private func currentPull(_ scroll: UIScrollView) -> CGFloat {
@@ -99,15 +112,17 @@ private final class RefreshBox: NSObject {
             overlay?.hide(animated: animated)
             return
         }
-        updateVisual(pull: currentPull(scroll), isDragging: scroll.isDragging, animated: animated)
+        let panState = scroll.panGestureRecognizer.state
+        let activeDrag = armedForDrag && scroll.isDragging && (panState == .began || panState == .changed)
+        updateVisual(pull: currentPull(scroll), activeDrag: activeDrag, animated: animated)
     }
 
-    private func updateVisual(pull: CGFloat, isDragging: Bool, animated: Bool) {
+    private func updateVisual(pull: CGFloat, activeDrag: Bool, animated: Bool) {
         guard let overlay else { return }
         if isRefreshing {
             let y: CGFloat = pull > 18 ? min(pull * 0.5, 70) : 22
             overlay.showSpinning(at: y, showPill: pull < 18, animated: animated)
-        } else if !triggeredInDrag && isDragging && pull > revealDistance && !offline {
+        } else if !triggeredInDrag && activeDrag && pull > revealDistance && !offline {
             let progress = min(max((pull - revealDistance) / (triggerDistance - revealDistance), 0), 1)
             overlay.showProgress(progress, at: max(20, pull * 0.5))
         } else {
