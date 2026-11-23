@@ -124,10 +124,11 @@ private final class RefreshBox: NSObject {
 private final class RefreshOverlayView: UIView {
     weak var box: RefreshBox?
     private let pill = UIVisualEffectView(effect: UIBlurEffect(style: .systemChromeMaterial))
-    private let spinner = UIActivityIndicatorView(style: .medium)
     private let ticksHost = UIView()
     private var spokes: [CALayer] = []
     private var pillVisible = false
+    private var spinning = false
+    private var lastAngle: CGFloat = 0
     private var lastBounds: CGRect = .zero
 
     override init(frame: CGRect) {
@@ -158,10 +159,6 @@ private final class RefreshOverlayView: UIView {
             ticksHost.layer.addSublayer(spoke)
             spokes.append(spoke)
         }
-
-        spinner.alpha = 0
-        spinner.hidesWhenStopped = false
-        addSubview(spinner)
     }
 
     required init?(coder: NSCoder) { nil }
@@ -183,52 +180,74 @@ private final class RefreshOverlayView: UIView {
 
     func showProgress(_ progress: CGFloat, at y: CGFloat) {
         let center = CGPoint(x: bounds.midX, y: y)
+        stopSpin()
+        lastAngle = progress * 0.35
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         ticksHost.isHidden = false
         ticksHost.center = center
         ticksHost.alpha = progress
-        let scale = 0.78 + 0.22 * progress
-        ticksHost.transform = CGAffineTransform(scaleX: scale, y: scale).rotated(by: progress * 0.35)
+        let scale = 0.8 + 0.2 * progress
+        ticksHost.transform = CGAffineTransform(scaleX: scale, y: scale).rotated(by: lastAngle)
         for (index, spoke) in spokes.enumerated() {
             let level = min(max(progress * 8 - CGFloat(index), 0.15), 1)
             spoke.opacity = Float(level)
         }
         CATransaction.commit()
-
-        if spinner.isAnimating { spinner.stopAnimating() }
-        spinner.alpha = 0
         setPillVisible(false, center: center, animated: false)
     }
 
     func showSpinning(at y: CGFloat, showPill: Bool, animated: Bool) {
         let center = CGPoint(x: bounds.midX, y: y)
-        ticksHost.isHidden = true
-        ticksHost.alpha = 0
-        if !spinner.isAnimating { spinner.startAnimating() }
-        spinner.center = center
+        ticksHost.isHidden = false
+        ticksHost.center = center
         setPillVisible(showPill, center: center, animated: animated)
-        if animated && spinner.alpha < 1 {
-            UIView.animate(withDuration: 0.16) { self.spinner.alpha = 1 }
+        if !spinning {
+            spinning = true
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            ticksHost.transform = CGAffineTransform(rotationAngle: lastAngle)
+            for (index, spoke) in spokes.enumerated() {
+                spoke.opacity = Float(0.22 + 0.78 * CGFloat(index) / 7)
+            }
+            CATransaction.commit()
+            let spin = CABasicAnimation(keyPath: "transform.rotation.z")
+            spin.fromValue = lastAngle
+            spin.toValue = lastAngle + (.pi * 2)
+            spin.duration = 0.75
+            spin.repeatCount = .infinity
+            spin.isRemovedOnCompletion = false
+            ticksHost.layer.add(spin, forKey: "spin")
+        }
+        if animated && ticksHost.alpha < 1 {
+            UIView.animate(withDuration: 0.16) { self.ticksHost.alpha = 1 }
         } else {
-            spinner.alpha = 1
+            ticksHost.alpha = 1
         }
     }
 
     func hide(animated: Bool) {
-        ticksHost.alpha = 0
-        ticksHost.isHidden = true
-        setPillVisible(false, center: spinner.center, animated: animated)
-        if animated && spinner.alpha > 0 {
+        setPillVisible(false, center: ticksHost.center, animated: animated)
+        if animated && !ticksHost.isHidden && ticksHost.alpha > 0 {
             UIView.animate(withDuration: 0.18, animations: {
-                self.spinner.alpha = 0
+                self.ticksHost.alpha = 0
             }, completion: { _ in
-                if self.spinner.alpha == 0 { self.spinner.stopAnimating() }
+                if self.ticksHost.alpha == 0 {
+                    self.ticksHost.isHidden = true
+                    self.stopSpin()
+                }
             })
         } else {
-            spinner.alpha = 0
-            spinner.stopAnimating()
+            ticksHost.alpha = 0
+            ticksHost.isHidden = true
+            stopSpin()
         }
+    }
+
+    private func stopSpin() {
+        guard spinning else { return }
+        spinning = false
+        ticksHost.layer.removeAnimation(forKey: "spin")
     }
 
     private func setPillVisible(_ visible: Bool, center: CGPoint, animated: Bool) {
