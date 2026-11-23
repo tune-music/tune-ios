@@ -582,7 +582,7 @@ struct CardGridScreen: View {
     }
 
     private func load() async {
-        error = nil
+        if error != nil { error = nil }
         let file = kind == .artists ? "liked-artists.json" : "liked-albums.json"
         if kind == .artists, !Demo.on, topArtists.isEmpty {
             let savedTop = await Task.detached(priority: .userInitiated) { Storage.load("top-artists.json", as: [Card].self) }.value
@@ -604,9 +604,9 @@ struct CardGridScreen: View {
             let fresh = kind == .artists ? try await API.shared.likedArtists(uid: uid) : try await API.shared.likedAlbums(uid: uid)
             let resolvedTop = await freshTop
             guard !Task.isCancelled else { return }
-            cards = fresh
+            if cards != fresh { cards = fresh }
             if let resolvedTop {
-                topArtists = resolvedTop
+                if topArtists != resolvedTop { topArtists = resolvedTop }
                 if !Demo.on {
                     Task.detached(priority: .utility) { Storage.save(resolvedTop, "top-artists.json") }
                 }

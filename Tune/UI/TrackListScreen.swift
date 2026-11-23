@@ -101,8 +101,9 @@ final class TrackListModel: ObservableObject {
     func load(_ kind: ListKind, force: Bool = false) async {
         if kind == .likes, likesLoading { return }
         if loaded && !force { return }
-        loading = tracks.isEmpty
-        error = nil
+        let showLoading = tracks.isEmpty
+        if loading != showLoading { loading = showLoading }
+        if error != nil { error = nil }
         if tracks.isEmpty, !Demo.on, let name = Self.cacheName(kind) {
             let saved = await Task.detached(priority: .userInitiated) { Storage.load(name, as: Cached.self) }.value
             if let saved, tracks.isEmpty {
@@ -113,10 +114,10 @@ final class TrackListModel: ObservableObject {
                 if title.isEmpty { title = saved.title }
                 if subtitle.isEmpty { subtitle = saved.subtitle }
                 if cover == nil { cover = saved.cover }
-                loading = false
+                if loading { loading = false }
             }
         }
-        defer { loading = false }
+        defer { if loading { loading = false } }
         do {
             switch kind {
             case .downloads:
@@ -125,30 +126,31 @@ final class TrackListModel: ObservableObject {
                 try await loadLikes()
             case .history:
                 let page = try await API.shared.history()
-                tracks = page.tracks
-                days = page.days
-                historySources = page.sources
+                applyTracks(page.tracks)
+                if days != page.days { days = page.days }
+                if historySources != page.sources { historySources = page.sources }
             case .disliked:
                 if Session.shared.profile == nil { await Session.shared.refresh() }
                 var found: [Track] = []
                 for chunk in Array(Session.shared.disliked).chunked(150) {
                     found += try await API.shared.tracks(ids: chunk)
                 }
-                tracks = found
+                applyTracks(found)
             case .playlist(let playlist):
                 if title.isEmpty { title = playlist.title }
-                cover = playlist.cover
+                if cover == nil { cover = playlist.cover }
                 let page = try await API.shared.playlist(playlist)
-                tracks = page.tracks
+                applyTracks(page.tracks)
                 info = page
                 if title.isEmpty { title = page.title }
-                cover = page.cover ?? playlist.cover
+                let nextCover = page.cover ?? playlist.cover
+                if cover != nextCover { cover = nextCover }
             case .album(let id):
                 let page = try await API.shared.album(id: id)
-                title = page.card.title
-                subtitle = page.card.subtitle
-                cover = page.card.cover
-                tracks = page.tracks
+                if title != page.card.title { title = page.card.title }
+                if subtitle != page.card.subtitle { subtitle = page.card.subtitle }
+                if cover != page.card.cover { cover = page.card.cover }
+                applyTracks(page.tracks)
                 album = page
                 if more.isEmpty, let artist = page.artist, !artist.id.isEmpty {
                     Task { [weak self] in
@@ -157,11 +159,11 @@ final class TrackListModel: ObservableObject {
                     }
                 }
             case .artist(let id, let name):
-                title = name
-                tracks = try await API.shared.artistTracks(id: id)
+                if title != name { title = name }
+                applyTracks(try await API.shared.artistTracks(id: id))
             case .artistFamiliar(let id, let name, let wave):
-                title = name
-                tracks = try await API.shared.familiarTracks(artist: id, wave: wave)
+                if title != name { title = name }
+                applyTracks(try await API.shared.familiarTracks(artist: id, wave: wave))
             }
             loaded = true
             if !Demo.on, !tracks.isEmpty, let name = Self.cacheName(kind) {
@@ -184,7 +186,7 @@ final class TrackListModel: ObservableObject {
 
     private func loadLikes() async throws {
         likesLoading = true
-        likesError = nil
+        if likesError != nil { likesError = nil }
         defer {
             likesLoading = false
             if showsLikesProgress { showsLikesProgress = false }
@@ -218,7 +220,6 @@ final class TrackListModel: ObservableObject {
         try Task.checkCancellation()
         guard Session.shared.profile?.uid == uid else { return }
         let ids = entries.map(\.id)
-        Session.shared.setLiked(ids)
         var known: [String: Track] = [:]
         for track in tracks where !staleLikedTracks.contains(track.id) { known[track.id] = track }
         let publishPages = tracks.isEmpty

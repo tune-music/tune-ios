@@ -3,6 +3,60 @@ import SwiftUI
 
 private final class RefreshBox {
     var task: Task<Void, Never>?
+    weak var scrollView: UIScrollView?
+}
+
+private struct ScrollDragProbe: UIViewRepresentable {
+    let box: RefreshBox
+
+    final class ProbeView: UIView {
+        weak var box: RefreshBox?
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            attach()
+        }
+
+        func attach() {
+            guard let box, window != nil else { return }
+            if let existing = box.scrollView, existing.window != nil { return }
+            box.scrollView = findScrollView()
+        }
+
+        private func findScrollView() -> UIScrollView? {
+            var current: UIView? = superview
+            while let view = current {
+                if let scroll = view as? UIScrollView { return scroll }
+                current = view.superview
+            }
+            let root = superview?.superview ?? superview
+            guard let root else { return nil }
+            var queue: [(UIView, Int)] = [(root, 0)]
+            var index = 0
+            while index < queue.count {
+                let (view, depth) = queue[index]
+                index += 1
+                if let scroll = view as? UIScrollView { return scroll }
+                if depth < 4 {
+                    for child in view.subviews { queue.append((child, depth + 1)) }
+                }
+            }
+            return nil
+        }
+    }
+
+    func makeUIView(context: Context) -> ProbeView {
+        let view = ProbeView()
+        view.backgroundColor = .clear
+        view.isUserInteractionEnabled = false
+        view.box = box
+        return view
+    }
+
+    func updateUIView(_ uiView: ProbeView, context: Context) {
+        uiView.box = box
+        uiView.attach()
+    }
 }
 
 private struct ScreenRefresh: ViewModifier {
@@ -11,6 +65,7 @@ private struct ScreenRefresh: ViewModifier {
 
     func body(content: Content) -> some View {
         content
+            .background(ScrollDragProbe(box: box))
             .refreshable { await refresh() }
             .onReceive(Connectivity.shared.$online) { online in
                 if !online { box.task?.cancel() }
@@ -21,6 +76,7 @@ private struct ScreenRefresh: ViewModifier {
     @MainActor
     private func refresh() async {
         guard box.task == nil, !Connectivity.shared.offline, !Task.isCancelled else { return }
+        let started = Date()
         let work = Task { await action() }
         box.task = work
         await withTaskCancellationHandler {
@@ -29,6 +85,12 @@ private struct ScreenRefresh: ViewModifier {
             work.cancel()
         }
         box.task = nil
+        // Не завершаем системный refreshable, пока палец всё ещё тянет список:
+        // иначе UIRefreshControl резко убирает верхний отступ прямо под пальцем.
+        while !Task.isCancelled, let scroll = box.scrollView, scroll.isDragging || scroll.isTracking {
+            if Date().timeIntervalSince(started) > 8 { break }
+            try? await Task.sleep(nanoseconds: 30_000_000)
+        }
     }
 }
 
