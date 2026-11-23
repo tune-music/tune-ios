@@ -487,20 +487,6 @@ extension View {
         #endif
     }
 
-    /// Дымка под часами и кнопками навигации: прокрученный список растворяется в цвете
-    /// страницы и не мешает читать кнопки. Пока страница не прокручена, дымка сливается с фоном.
-    func topScrim(_ color: Color) -> some View {
-        overlay(alignment: .top) {
-            LinearGradient(
-                stops: [.init(color: color, location: 0), .init(color: color.opacity(0.9), location: 0.55), .init(color: color.opacity(0), location: 1)],
-                startPoint: .top, endPoint: .bottom
-            )
-            .frame(height: 132)
-            .ignoresSafeArea(edges: .top)
-            .allowsHitTesting(false)
-        }
-    }
-
     @ViewBuilder
     private func legacyGlass<S: Shape>(in shape: S, tint: Color?) -> some View {
         if let tint {
@@ -552,65 +538,72 @@ struct PlayGlyph: View {
     }
 }
 
-/// Разрыв между кнопками панели навигации: на iOS 26 меню «…» получает свою стеклянную
-/// Следит, ушла ли шапка страницы под панель навигации.
+@MainActor
+final class NavTitleState: ObservableObject {
+    @Published var progress: CGFloat = 0
+
+    func setProgress(_ value: CGFloat) {
+        if abs(progress - value) > 0.001 {
+            progress = value
+        }
+    }
+}
+
+/// Заголовок в панели навигации: плавно проявляется и поднимается, когда шапка уходит вверх.
+struct NavBarTitle: View {
+    @ObservedObject var state: NavTitleState
+    let alwaysShown: Bool
+    let hidden: Bool
+    let title: String
+
+    var body: some View {
+        let progress: CGFloat = hidden ? 0 : (alwaysShown ? 1 : state.progress)
+        Text(title)
+            .font(.headline)
+            .lineLimit(1)
+            .foregroundStyle(Theme.text)
+            .opacity(progress)
+            .offset(y: (1 - progress) * 5)
+            .scaleEffect(0.96 + 0.04 * progress)
+            .animation(.easeOut(duration: 0.14), value: progress)
+            .allowsHitTesting(false)
+    }
+}
+
+/// Следит, насколько заголовок страницы ушёл под панель навигации (`0...1`).
 struct HeaderWatch: View {
-    @Binding var hidden: Bool
+    let onProgress: (CGFloat) -> Void
+    @State private var lastMaxY: CGFloat = 400
+
+    private var barBottom: CGFloat {
+        let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene
+        let window = scene?.windows.first { $0.isKeyWindow } ?? scene?.windows.first
+        return (window?.safeAreaInsets.top ?? 54) + 44
+    }
 
     var body: some View {
         GeometryReader { geometry in
             let maxY = geometry.frame(in: .global).maxY
-            let gone = hidden ? maxY < 170 : maxY < 130
+            let top = barBottom
+            let raw = min(max((top + 38 - maxY) / 40, 0), 1)
+            let snapped = (raw * 40).rounded() / 40
             Color.clear
                 .onAppear {
-                    let initial = maxY < 140
-                    if hidden != initial { hidden = initial }
+                    lastMaxY = maxY
+                    onProgress(snapped)
                 }
-                .onChange(of: gone) { value in
-                    if hidden != value { hidden = value }
+                .onChange(of: snapped) { value in
+                    lastMaxY = maxY
+                    onProgress(value)
+                }
+                .onDisappear {
+                    if lastMaxY < top + 60 { onProgress(1) }
                 }
         }
     }
 }
 
-/// Название в панели навигации меняется плавно: системная панель сама его не анимирует,
-/// поэтому в момент смены на неё вешается короткое затухание.
-struct BarFade: UIViewRepresentable {
-    let title: String
-
-    final class Box {
-        var title: String?
-    }
-
-    func makeCoordinator() -> Box { Box() }
-
-    func makeUIView(context: Context) -> UIView {
-        let view = UIView()
-        view.isUserInteractionEnabled = false
-        return view
-    }
-
-    func updateUIView(_ view: UIView, context: Context) {
-        let box = context.coordinator
-        guard box.title != title else { return }
-        let first = box.title == nil
-        box.title = title
-        if first { return }
-        var next: UIResponder? = view
-        while let responder = next {
-            if let controller = responder as? UIViewController, let bar = controller.navigationController?.navigationBar {
-                let fade = CATransition()
-                fade.type = .fade
-                fade.duration = 0.22
-                fade.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                bar.layer.add(fade, forKey: "title")
-                break
-            }
-            next = responder.next
-        }
-    }
-}
-
+/// Разрыв между кнопками панели навигации: на iOS 26 меню «…» получает свою стеклянную
 /// кнопку и раскрывается из неё, а не из общей плашки.
 @ToolbarContentBuilder
 func toolbarGap() -> some ToolbarContent {

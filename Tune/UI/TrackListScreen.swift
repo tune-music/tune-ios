@@ -290,16 +290,12 @@ final class TrackListModel: ObservableObject {
 
 @MainActor
 private final class TrackListChromeState: ObservableObject {
-    @Published var compact = false
     @Published var tone = Theme.tone
-
-    func setCompact(_ value: Bool) {
-        if compact != value { compact = value }
-    }
 }
 
 private struct TrackListChrome<Content: View>: View {
     @ObservedObject var chrome: TrackListChromeState
+    let navTitle: NavTitleState
     let alwaysShown: Bool
     let searching: Bool
     let title: String
@@ -308,7 +304,6 @@ private struct TrackListChrome<Content: View>: View {
     let content: Content
 
     var body: some View {
-        let shownTitle = (alwaysShown || chrome.compact) && !searching ? title : ""
         content
             .background(alignment: .top) {
                 ZStack(alignment: .top) {
@@ -318,10 +313,13 @@ private struct TrackListChrome<Content: View>: View {
                 }
                 .ignoresSafeArea()
             }
-            .topScrim(Theme.wash(chrome.tone))
-            .navigationTitle(shownTitle)
+            .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
-            .background(BarFade(title: shownTitle))
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    NavBarTitle(state: navTitle, alwaysShown: alwaysShown, hidden: searching, title: title)
+                }
+            }
             .task(id: cover) {
                 guard usesTone else {
                     if chrome.tone != Theme.tone { chrome.tone = Theme.tone }
@@ -373,6 +371,7 @@ struct TrackListScreen: View {
     /// Состояние шапки и тона вынесено из TrackListScreen, чтобы прокрутка и смена цвета
     /// не пересчитывали весь список треков.
     @State private var chrome = TrackListChromeState()
+    @State private var navTitle = NavTitleState()
     /// Плейлист скачивается сам.
     @State private var auto = false
     @State private var prepared = false
@@ -615,12 +614,6 @@ struct TrackListScreen: View {
         let list = ScrollViewReader { proxy in
             List {
                 header(count: all.count)
-                    // Шапка почти ушла под панель навигации: пора показать название в панели.
-                    .background {
-                        if kind != .likes {
-                            HeaderWatch(hidden: Binding(get: { chrome.compact }, set: { chrome.setCompact($0) }))
-                        }
-                    }
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
                     .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 14, trailing: 16))
@@ -654,6 +647,7 @@ struct TrackListScreen: View {
         }
         return TrackListChrome(
             chrome: chrome,
+            navTitle: navTitle,
             alwaysShown: kind == .likes,
             searching: searching,
             title: title,
@@ -1275,6 +1269,11 @@ struct TrackListScreen: View {
                 .foregroundStyle(Theme.text)
                 .multilineTextAlignment(.center)
                 .lineLimit(3)
+                .background {
+                    if kind != .likes {
+                        HeaderWatch { navTitle.setProgress($0) }
+                    }
+                }
             if !model.subtitle.isEmpty {
                 Button {
                     if let artist = model.album?.artist, !artist.id.isEmpty { navigate(.artist(artist.id, artist.name)) }
@@ -1515,7 +1514,7 @@ struct ArtistScreen: View {
     @State private var expanded = false
     @State private var error: String?
     @State private var tone = Theme.tone
-    @State private var compact = false
+    @State private var navTitle = NavTitleState()
 
     var body: some View {
         List {
@@ -1532,6 +1531,9 @@ struct ArtistScreen: View {
                         .font(.scaled(size: 30, weight: .bold))
                         .foregroundStyle(Theme.text)
                         .multilineTextAlignment(.center)
+                        .background {
+                            HeaderWatch { navTitle.setProgress($0) }
+                        }
                     if let listeners = page.listeners, listeners > 0 {
                         Text("\(shortCount(listeners)) слушателей за месяц")
                             .font(.scaled(size: 14))
@@ -1551,8 +1553,6 @@ struct ArtistScreen: View {
                     .padding(.top, 12)
                 }
                 .frame(maxWidth: .infinity)
-                .background { HeaderWatch(hidden: $compact) }
-                .onDisappear { compact = true }
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
                 .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 14, trailing: 16))
@@ -1617,11 +1617,12 @@ struct ArtistScreen: View {
             }
             .ignoresSafeArea()
         }
-        .topScrim(Theme.wash(tone))
-        .navigationTitle(compact ? (page?.name ?? name) : "")
+        .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
-        .background(BarFade(title: compact ? (page?.name ?? name) : ""))
         .toolbar {
+            ToolbarItem(placement: .principal) {
+                NavBarTitle(state: navTitle, alwaysShown: false, hidden: false, title: page?.name ?? name)
+            }
             ToolbarItem(placement: .navigationBarTrailing) {
                 Menu {
                     Button {
