@@ -585,9 +585,8 @@ struct CardGridScreen: View {
         error = nil
         let file = kind == .artists ? "liked-artists.json" : "liked-albums.json"
         if kind == .artists, !Demo.on, topArtists.isEmpty {
-            if let savedTop = await Task.detached(priority: .userInitiated) { Storage.load("top-artists.json", as: [Card].self) }.value {
-                if topArtists.isEmpty { topArtists = savedTop }
-            }
+            let savedTop = await Task.detached(priority: .userInitiated) { Storage.load("top-artists.json", as: [Card].self) }.value
+            if let savedTop, topArtists.isEmpty { topArtists = savedTop }
         }
         if cards == nil, !Demo.on {
             let saved = await Task.detached(priority: .userInitiated) { Storage.load(file, as: [Card].self) }.value

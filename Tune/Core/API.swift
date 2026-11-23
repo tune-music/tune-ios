@@ -880,7 +880,7 @@ final class API {
     }
 
     static func parseTopArtists(_ value: JSON) -> [Card] {
-        value["artists"].array.compactMap { item in
+        value["artists"].array.compactMap { item -> Card? in
             guard var card = Self.artistCard(item["artist"]) else { return nil }
             let place = item["top"]["position"].idText.flatMap(Int.init).filter { $0 > 0 }.map { "\($0) место" }
             let minutes = max(0, item["listenTimeSeconds"].idText.flatMap(Int.init) ?? 0) / 60
