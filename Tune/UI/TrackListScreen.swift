@@ -48,12 +48,16 @@ final class TrackListModel: ObservableObject {
     /// История: подпись дня у первого трека, который слушали в этот день.
     @Published var days: [String: String] = [:]
     @Published var historySources: [String: String] = [:]
+    @Published var filters: [TrackFilter] = []
     private var likesLoading = false
     @Published private(set) var likesError: String?
     private var loaded = false
     private var localLikeIDs = Set<String>()
     private var cachedLikesLoaded = false
     private var staleLikedTracks = Set<String>()
+    private static var filterCache: [String: [TrackFilter]] = [:]
+    private var filterTask: Task<Void, Never>?
+    private var filterKey: String?
 
     func updateLocalLikes(_ local: [Track]) {
         let newIDs = Set(local.map(\.id))
@@ -115,6 +119,7 @@ final class TrackListModel: ObservableObject {
                 if subtitle.isEmpty { subtitle = saved.subtitle }
                 if cover == nil { cover = saved.cover }
                 if loading { loading = false }
+                loadFilters(for: kind)
             }
         }
         defer { if loading { loading = false } }
@@ -166,6 +171,7 @@ final class TrackListModel: ObservableObject {
                 applyTracks(try await API.shared.familiarTracks(artist: id, wave: wave))
             }
             loaded = true
+            loadFilters(for: kind)
             if !Demo.on, !tracks.isEmpty, let name = Self.cacheName(kind) {
                 let snapshot = Cached(title: title, subtitle: subtitle, cover: cover, tracks: tracks,
                                       days: kind == .history ? days : nil, historySources: kind == .history ? historySources : nil,
@@ -270,6 +276,45 @@ final class TrackListModel: ObservableObject {
         }
     }
 
+    func loadFilters(for kind: ListKind) {
+        let place: String
+        switch kind {
+        case .likes: place = "likes"
+        case .playlist(let playlist): place = "playlist:\(playlist.id)"
+        case .album(let id):
+            if album?.kind == "podcast" || album?.kind == "audiobook" {
+                filters = []
+                return
+            }
+            place = "album:\(id)"
+        case .artist(let id, _): place = "artist-tracks:\(id)"
+        default:
+            filters = []
+            return
+        }
+        var seen = Set<String>()
+        let ids = tracks.map(\.id).filter { !$0.isEmpty && $0.allSatisfy(\.isNumber) && seen.insert($0).inserted }
+        let cacheKey = "\(place):\(ids.count):\(ids.first ?? ""):\(ids.last ?? "")"
+        if filterKey == cacheKey { return }
+        filterKey = cacheKey
+        filterTask?.cancel()
+        guard ids.count >= 4 else {
+            filters = []
+            return
+        }
+        if let cached = Self.filterCache[cacheKey] {
+            filters = cached
+            return
+        }
+        guard !Connectivity.shared.offline, !Session.shared.offline else { return }
+        filterTask = Task { [weak self] in
+            guard let loaded = try? await API.shared.trackFilters(ids: ids), !Task.isCancelled else { return }
+            guard let self, self.filterKey == cacheKey else { return }
+            Self.filterCache[cacheKey] = loaded
+            self.filters = loaded
+        }
+    }
+
     func updateUploadedTrack(_ edited: Track, kind: ListKind) {
         guard tracks.contains(where: { $0.id == edited.id }) else { return }
         tracks = tracks.map {
@@ -362,6 +407,7 @@ struct TrackListScreen: View {
     @State private var name = ""
     @State private var sort = TrackSort.original
     @State private var onlyDownloaded = false
+    @State private var selectedFilter: String? = nil
     /// Режим выбора нескольких треков.
     @State private var selecting = Demo.screen == "select"
     @State private var selected = Set<String>()
@@ -385,9 +431,15 @@ struct TrackListScreen: View {
         }
     }
 
+    private var activeFilterIDs: Set<String>? {
+        guard let selectedFilter else { return nil }
+        return model.filters.first(where: { $0.id == selectedFilter })?.trackIds
+    }
+
     private var shown: [Track] {
         var list = all
         if onlyDownloaded { list = list.filter { downloads.has($0.id) } }
+        if let activeFilterIDs { list = list.filter { activeFilterIDs.contains($0.id) } }
         let text = filter.trimmingCharacters(in: .whitespaces)
         if !text.isEmpty {
             list = list.filter { $0.title.localizedCaseInsensitiveContains(text) || $0.artists.localizedCaseInsensitiveContains(text) }
@@ -430,7 +482,7 @@ struct TrackListScreen: View {
 
     /// Список показан как есть: без фильтра и своей сортировки.
     private var plainOrder: Bool {
-        filter.isEmpty && sort == .original && !onlyDownloaded
+        filter.isEmpty && sort == .original && !onlyDownloaded && selectedFilter == nil
     }
 
     private var chosen: [Track] {
@@ -617,6 +669,9 @@ struct TrackListScreen: View {
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
                     .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 14, trailing: 16))
+                if !model.filters.isEmpty && !reordering {
+                    TrackFilterBar(filters: model.filters, selected: $selectedFilter)
+                }
                 if kind == .downloads, hasDownloadPanel {
                     DownloadsPanel()
                         .listRowBackground(Color.clear)
@@ -685,6 +740,11 @@ struct TrackListScreen: View {
             if kind != .downloads, Connectivity.shared.offline || session.offline { onlyDownloaded = true }
         }
         .task { await model.load(kind) }
+        .onChange(of: model.filters) { filters in
+            if let selectedFilter, !filters.contains(where: { $0.id == selectedFilter }) {
+                self.selectedFilter = nil
+            }
+        }
         .toolbar {
             ToolbarItemGroup(placement: .navigationBarTrailing) {
                 if let liked {
@@ -1150,6 +1210,7 @@ struct TrackListScreen: View {
                 filter = ""
                 sort = .original
                 onlyDownloaded = false
+                selectedFilter = nil
                 reordering = true
             } label: {
                 Label("Изменить порядок", systemImage: "line.3.horizontal")
@@ -1309,10 +1370,10 @@ struct TrackListScreen: View {
                     }
                 }
                 PlayButton(context: context) {
-                    player.play(all, context: context)
+                    player.play(shown.isEmpty ? all : shown, context: context)
                 }
                 RoundButton(symbol: "shuffle") {
-                    player.play(all, context: context, shuffled: true)
+                    player.play(shown.isEmpty ? all : shown, context: context, shuffled: true)
                 }
             }
             .padding(.top, 14)
@@ -1515,6 +1576,9 @@ struct ArtistScreen: View {
     @State private var error: String?
     @State private var tone = Theme.tone
     @State private var navTitle = NavTitleState()
+    @State private var filters: [TrackFilter] = []
+    @State private var selectedFilter: String? = nil
+    private static var filterCache: [String: [TrackFilter]] = [:]
 
     var body: some View {
         List {
@@ -1562,10 +1626,19 @@ struct ArtistScreen: View {
                 }
                 if !page.popular.isEmpty {
                     heading("Популярные треки", more: .artistTracks(id, page.name))
-                    let top = Array(page.popular.prefix(5))
-                    ForEach(Array(top.enumerated()), id: \.offset) { index, track in
+                    if !filters.isEmpty {
+                        TrackFilterBar(filters: filters, selected: $selectedFilter)
+                    }
+                    let filteredPopular: [Track] = {
+                        if let selectedFilter, let filter = filters.first(where: { $0.id == selectedFilter }) {
+                            return page.popular.filter { filter.trackIds.contains($0.id) }
+                        }
+                        return Array(page.popular.prefix(5))
+                    }()
+                    let playSource = selectedFilter == nil ? page.popular : filteredPopular
+                    ForEach(Array(filteredPopular.enumerated()), id: \.offset) { index, track in
                         TrackRow(track: track) {
-                            player.play(page.popular, at: index, context: PlayContext(kind: "artist", item: id, name: page.name))
+                            player.play(playSource, at: index, context: PlayContext(kind: "artist", item: id, name: page.name))
                         }
                     }
                 }
@@ -1646,6 +1719,9 @@ struct ArtistScreen: View {
             let color = await ImageLoader.shared.tone(page?.cover)
             withAnimation(.easeInOut(duration: 0.3)) { tone = color ?? Theme.tone }
         }
+        .task(id: page?.popular.map(\.id)) {
+            await loadFilters()
+        }
     }
 
     /// «Об исполнителе»: три строки, по нажатию — целиком.
@@ -1725,6 +1801,36 @@ struct ArtistScreen: View {
             if page == nil {
                 self.error = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             }
+        }
+    }
+
+    private func loadFilters() async {
+        guard let popular = page?.popular else {
+            filters = []
+            selectedFilter = nil
+            return
+        }
+        var seen = Set<String>()
+        let ids = popular.map(\.id).filter { !$0.isEmpty && $0.allSatisfy(\.isNumber) && seen.insert($0).inserted }
+        guard ids.count >= 4 else {
+            filters = []
+            selectedFilter = nil
+            return
+        }
+        let cacheKey = "artist:\(id):\(ids.count):\(ids.first ?? ""):\(ids.last ?? "")"
+        if let cached = Self.filterCache[cacheKey] {
+            filters = cached
+            if let selectedFilter, !cached.contains(where: { $0.id == selectedFilter }) {
+                self.selectedFilter = nil
+            }
+            return
+        }
+        guard !Connectivity.shared.offline, !Session.shared.offline else { return }
+        guard let loaded = try? await API.shared.trackFilters(ids: ids), !Task.isCancelled else { return }
+        Self.filterCache[cacheKey] = loaded
+        filters = loaded
+        if let selectedFilter, !loaded.contains(where: { $0.id == selectedFilter }) {
+            self.selectedFilter = nil
         }
     }
 }

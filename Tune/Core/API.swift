@@ -633,6 +633,20 @@ final class API {
         }
     }
 
+    func trackFilters(ids: [String]) async throws -> [TrackFilter] {
+        if Demo.on { return [] }
+        var seen = Set<String>()
+        let catalogIds = ids.filter { !$0.isEmpty && $0.allSatisfy(\.isNumber) && seen.insert($0).inserted }
+        guard catalogIds.count >= 4 else { return [] }
+        let value = result(try await post("filters/tracks", json: ["trackIds": catalogIds]))
+        let parsed: [TrackFilter] = value["filters"].array.compactMap { item in
+            guard let id = item["id"].string, let name = item["name"].string else { return nil }
+            let trackIds = Set(item["tracks"].array.compactMap(\.idText))
+            return TrackFilter(id: id, name: name, trackIds: trackIds)
+        }
+        return TrackFilter.select(parsed, catalogIds: Set(catalogIds))
+    }
+
     private func mergeArtistTracks(_ remote: [Track], restoredIDs: [String]) async -> [Track] {
         let known = Set(remote.map(\.id))
         let missing = restoredIDs.filter { !known.contains($0) }

@@ -351,6 +351,34 @@ struct Wave {
     var tracks: [Track]
 }
 
+struct TrackFilter: Identifiable, Hashable, Codable {
+    let id: String
+    let name: String
+    let trackIds: Set<String>
+
+    static func select(_ raw: [TrackFilter], catalogIds: Set<String>) -> [TrackFilter] {
+        guard catalogIds.count >= 4 else { return [] }
+        let minTracks: Int
+        if catalogIds.count >= 40 {
+            minTracks = 8
+        } else if catalogIds.count >= 16 {
+            minTracks = 3
+        } else {
+            minTracks = 2
+        }
+        let selected: [TrackFilter] = raw.compactMap { filter in
+            let id = filter.id.trimmingCharacters(in: .whitespacesAndNewlines)
+            let name = filter.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard id != "all", !id.isEmpty, !name.isEmpty else { return nil }
+            let matched = filter.trackIds.intersection(catalogIds)
+            guard matched.count >= minTracks, matched.count < catalogIds.count else { return nil }
+            return TrackFilter(id: id, name: name, trackIds: matched)
+        }
+        let capped = Array(selected.prefix(7))
+        return capped.count >= 2 ? capped : []
+    }
+}
+
 struct FileInfo {
     var url: String
     var key: String?
