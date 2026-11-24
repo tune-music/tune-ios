@@ -1570,6 +1570,46 @@ struct PlayButton: View {
     }
 }
 
+/// Горизонтальная полоса фильтров по настроениям и жанрам над списком треков.
+struct TrackFilterBar: View {
+    let filters: [TrackFilter]
+    @Binding var selected: String?
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                chip(id: nil, title: "Всё", on: selected == nil)
+                ForEach(filters) { item in
+                    chip(id: item.id, title: item.name, on: selected == item.id)
+                }
+            }
+            .padding(.horizontal, 16)
+        }
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+        .listRowInsets(EdgeInsets(top: 2, leading: 0, bottom: 10, trailing: 0))
+    }
+
+    private func chip(id: String?, title: String, on: Bool) -> some View {
+        Button {
+            if let id {
+                selected = (selected == id) ? nil : id
+            } else {
+                selected = nil
+            }
+        } label: {
+            Text(title)
+                .font(.scaled(size: 14, weight: .semibold))
+                .foregroundStyle(on ? Color.black : Theme.text)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(on ? Theme.accent : Theme.raised, in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(on ? .isSelected : [])
+    }
+}
+
 /// Короткое сообщение. На страницах оно всплывает снизу, над мини-плеером: наверху
 /// оно закрывало кнопки навигации. В плеере — под его шапкой.
 struct ToastView: View {
