@@ -45,6 +45,14 @@ struct YnisonProtocolTests {
         for unsafe in ["music.yandex.ru.example.org", "evil.example@music.yandex.ru", "music.yandex.ru:80"] {
             precondition((try? YnisonProtocol.socketURL(host: unsafe, path: YnisonProtocol.hubPath)) == nil)
         }
+
+        precondition(topListenTimeText(20) == nil)
+        precondition(topListenTimeText(30) == "1 мин")
+        precondition(topListenTimeText(2700) == "45 мин")
+        precondition(topListenTimeText(2760) == "1 ч")
+        precondition(topListenTimeText(13476) == "3,5 ч")
+        precondition(topListenTimeText(13500) == "4 ч")
+        precondition(topListenTimeText(16200) == "4,5 ч")
         print("Ynison protocol checks passed")
     }
 }

@@ -172,6 +172,18 @@ func lengthText(_ tracks: [Track]) -> String {
     return minutes >= 60 ? "\(minutes / 60) ч \(minutes % 60) мин" : "\(minutes) мин"
 }
 
+/// Время прослушивания в топе месяца: до 45 минут — минуты, дальше — часы с шагом 0,5.
+func topListenTimeText(_ seconds: Double) -> String? {
+    guard seconds.isFinite, seconds > 0 else { return nil }
+    let minutes = seconds / 60
+    if minutes <= 45 {
+        let rounded = Int(minutes.rounded())
+        return rounded > 0 ? "\(rounded) мин" : nil
+    }
+    let halfHours = Int((minutes / 60 * 2).rounded())
+    return halfHours.isMultiple(of: 2) ? "\(halfHours / 2) ч" : "\(halfHours / 2),5 ч"
+}
+
 /// Карточка альбома или исполнителя.
 struct Card: Codable, Hashable, Identifiable {
     var id: String

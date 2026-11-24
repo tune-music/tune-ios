@@ -184,7 +184,7 @@ final class Session: ObservableObject {
         likedAlbums = []
         likedArtists = []
         disliked = []
-        for name in ["session.json", "likes-tracks.json", "home.json", "liked-albums.json", "liked-artists.json"] {
+        for name in ["session.json", "likes-tracks.json", "home.json", "liked-albums.json", "liked-artists.json", "top-artists.json"] {
             Storage.remove(name)
         }
         Storage.clear(Storage.lists)
