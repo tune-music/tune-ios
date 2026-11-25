@@ -316,7 +316,7 @@ struct HomeScreen: View {
                 ForEach(model.page.waves) { wave in
                     let active = now.from("radio", wave.id)
                     Button {
-                        player.tapWave(seeds: wave.seeds, name: wave.title)
+                        player.tapWave(seeds: wave.seeds, name: wave.title, color: wave.color)
                     } label: {
                         HStack(spacing: 7) {
                             if active {
@@ -426,7 +426,7 @@ private final class DeviceVolume: ObservableObject {
     }
 }
 
-/// «Моя волна»: органическое свечение с откликом на громкость, кнопка запуска, настройка и съёмные фильтры.
+/// «Моя волна»: органическое свечение с откликом на звук и громкость, кнопка запуска, настройка и съёмные фильтры.
 private struct WaveHero: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var phase
@@ -436,10 +436,24 @@ private struct WaveHero: View {
 
     @EnvironmentObject private var player: Player
     @ObservedObject private var now = Player.shared.now
+    @ObservedObject private var wheel = WaveWheel.shared
     @StateObject private var volume = DeviceVolume()
     @State private var lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
 
     private var active: Bool { now.from("radio", "user:onyourwave") }
+
+    private var waveHex: String? {
+        guard now.kind == "radio", let item = now.item, item != "user:onyourwave" else { return nil }
+        if let color = now.color, !color.isEmpty { return color }
+        return wheel.items.first(where: {
+            if case .wave(let seeds) = $0.action { return seeds.joined(separator: ",") == item }
+            return false
+        })?.color
+    }
+
+    private var waveKey: String {
+        "\(now.kind):\(now.item ?? "")"
+    }
 
     /// Подпись под названием: что играет, если это не сама «Моя волна».
     private var other: String? {
@@ -467,6 +481,7 @@ private struct WaveHero: View {
                         .lineLimit(1)
                 }
                 .padding(.horizontal, 24)
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
             Text("Моя волна")
                 .font(.scaled(size: 35, weight: .bold))
@@ -478,14 +493,20 @@ private struct WaveHero: View {
                 } label: {
                     HStack(spacing: 8) {
                         PlayGlyph(playing: playing, size: 18)
-                        Text(playing ? "Пауза" : "Слушать")
-                            .font(.scaled(size: 17, weight: .semibold))
+                        ZStack {
+                            Text("Слушать").opacity(0)
+                            Text(playing ? "Пауза" : "Слушать")
+                                .id(playing)
+                                .transition(.opacity.combined(with: .scale(scale: 0.92)))
+                        }
+                        .font(.scaled(size: 17, weight: .semibold))
                     }
                     .foregroundStyle(.black)
                     .padding(.horizontal, 26)
                     .frame(height: 48)
                     .background(Theme.accent, in: Capsule())
                     .contentShape(Capsule())
+                    .animation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.82), value: playing)
                 }
                 .buttonStyle(PressStyle())
                 Button(action: tune) {
@@ -528,13 +549,16 @@ private struct WaveHero: View {
                 .padding(.horizontal, 16)
             }
         }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: other)
         .frame(maxWidth: .infinity)
         .frame(height: 244)
         .background(alignment: .center) {
             WaveGlow(
-                playing: playing,
-                animated: playing && phase == .active && !reduceMotion && !lowPower,
-                volume: volume.level
+                playing: now.playing,
+                animated: phase == .active && !reduceMotion && !lowPower,
+                volume: volume.level,
+                waveHex: waveHex,
+                waveKey: waveKey
             )
             .frame(height: 540)
             .accessibilityHidden(true)
@@ -556,17 +580,119 @@ private struct WaveHero: View {
     }
 }
 
+private struct RGB {
+    var r: Double
+    var g: Double
+    var b: Double
+
+    func lerp(to target: RGB, factor: Double) -> RGB {
+        RGB(
+            r: r + (target.r - r) * factor,
+            g: g + (target.g - g) * factor,
+            b: b + (target.b - b) * factor
+        )
+    }
+
+    var color: Color {
+        Color(red: r, green: g, blue: b)
+    }
+}
+
+private struct WavePalette {
+    var primary: RGB
+    var secondary: RGB
+    var deep: RGB
+    var highlight: RGB
+
+    static let tuneDefault = WavePalette(
+        primary: RGB(r: 1.0, g: 0.78, b: 0.18),
+        secondary: RGB(r: 1.0, g: 0.50, b: 0.10),
+        deep: RGB(r: 0.90, g: 0.24, b: 0.06),
+        highlight: RGB(r: 1.0, g: 0.91, b: 0.58)
+    )
+
+    func lerp(to target: WavePalette, factor: Double) -> WavePalette {
+        WavePalette(
+            primary: primary.lerp(to: target.primary, factor: factor),
+            secondary: secondary.lerp(to: target.secondary, factor: factor),
+            deep: deep.lerp(to: target.deep, factor: factor),
+            highlight: highlight.lerp(to: target.highlight, factor: factor)
+        )
+    }
+
+    static func from(hex: String?) -> WavePalette {
+        guard let hex else { return .tuneDefault }
+        let digits = hex.hasPrefix("#") ? String(hex.dropFirst()) : hex
+        guard digits.count == 6, let value = UInt32(digits, radix: 16) else { return .tuneDefault }
+        let r = Double((value >> 16) & 0xFF) / 255
+        let g = Double((value >> 8) & 0xFF) / 255
+        let b = Double(value & 0xFF) / 255
+        let (h, s, v) = rgbToHsb(r: r, g: g, b: b)
+        let sat = s < 0.08 ? s : max(s, 0.72)
+        let secSat = s < 0.08 ? s : max(s, 0.78)
+        let primary = hsbToRgb(h: h, s: sat, b: max(v, 0.88))
+        let secondary = hsbToRgb(h: (h + 0.06).truncatingRemainder(dividingBy: 1.0), s: secSat, b: max(v, 0.82))
+        let deep = hsbToRgb(h: (h + 0.95).truncatingRemainder(dividingBy: 1.0), s: min(1.0, s * 1.05 + 0.12), b: max(0.55, v * 0.72))
+        let highlight = hsbToRgb(h: h, s: max(0.18, s * 0.38), b: 1.0)
+        return WavePalette(primary: primary, secondary: secondary, deep: deep, highlight: highlight)
+    }
+
+    private static func rgbToHsb(r: Double, g: Double, b: Double) -> (Double, Double, Double) {
+        let maxC = max(r, max(g, b))
+        let minC = min(r, min(g, b))
+        let delta = maxC - minC
+        var h: Double = 0
+        if delta > 0.0001 {
+            if maxC == r {
+                h = ((g - b) / delta).truncatingRemainder(dividingBy: 6)
+            } else if maxC == g {
+                h = (b - r) / delta + 2
+            } else {
+                h = (r - g) / delta + 4
+            }
+            h /= 6
+            if h < 0 { h += 1 }
+        }
+        let s = maxC > 0 ? delta / maxC : 0
+        return (h, s, maxC)
+    }
+
+    private static func hsbToRgb(h: Double, s: Double, b: Double) -> RGB {
+        let c = b * s
+        let hp = h * 6
+        let x = c * (1 - abs(hp.truncatingRemainder(dividingBy: 2) - 1))
+        let m = b - c
+        let (r1, g1, b1): (Double, Double, Double)
+        switch hp {
+        case 0..<1: (r1, g1, b1) = (c, x, 0)
+        case 1..<2: (r1, g1, b1) = (x, c, 0)
+        case 2..<3: (r1, g1, b1) = (0, c, x)
+        case 3..<4: (r1, g1, b1) = (0, x, c)
+        case 4..<5: (r1, g1, b1) = (x, 0, c)
+        default:    (r1, g1, b1) = (c, 0, x)
+        }
+        return RGB(r: r1 + m, g: g1 + m, b: b1 + m)
+    }
+}
+
 private final class WaveMotion {
     var phase: Double = 0
     var lastDate: Date?
     var energy: Double = 0.5
     var activity: Double = 0
+    var audioLevel: Double = 0
+    var audioBass: Double = 0
+    var palette: WavePalette = .tuneDefault
+    var lastWaveKey: String = ""
+    var surge: Double = 0
 }
 
 private struct WaveGlow: View {
     let playing: Bool
     let animated: Bool
     let volume: Double
+    let waveHex: String?
+    let waveKey: String
 
     @Environment(\.colorScheme) private var colorScheme
     @State private var motion = WaveMotion()
@@ -583,14 +709,18 @@ private struct WaveGlow: View {
                 let energy = state.energy
                 let activity = state.activity
                 let time = state.phase
-                let power = (0.24 + 0.76 * energy) * (0.68 + 0.32 * activity)
+                let volScale = 0.22 + 0.78 * energy
+                let sonic = state.audioLevel * volScale * activity
+                let kick = state.audioBass * volScale * activity
+                let surge = state.surge
+                let power = (0.24 + 0.34 * energy) + (0.22 + 0.32 * energy) * activity + 0.28 * sonic + 0.16 * surge
                 let center = CGPoint(x: size.width * 0.5, y: size.height * 0.48)
                 let maxSpread = min(size.width * 0.52, size.height * 0.42)
 
-                let amber = Color(red: 1.0, green: 0.78, blue: 0.18)
-                let tangerine = Color(red: 1.0, green: 0.50, blue: 0.10)
-                let vermilion = Color(red: 0.90, green: 0.24, blue: 0.06)
-                let champagne = Color(red: 1.0, green: 0.91, blue: 0.58)
+                let amber = state.palette.primary.color
+                let tangerine = state.palette.secondary.color
+                let vermilion = state.palette.deep.color
+                let champagne = state.palette.highlight.color
 
                 // 1. Дышащее атмосферное свечение без резких границ
                 context.drawLayer { layer in
@@ -599,14 +729,14 @@ private struct WaveGlow: View {
                     let blobs = [amber, tangerine, vermilion]
                     for index in blobs.indices {
                         let angle = time * speeds[index] + Double(index) * 2.1
-                        let orbitX = maxSpread * (0.24 + 0.14 * energy)
-                        let orbitY = maxSpread * (0.12 + 0.08 * energy)
+                        let orbitX = maxSpread * (0.20 + 0.14 * energy + 0.06 * sonic)
+                        let orbitY = maxSpread * (0.10 + 0.08 * energy + 0.04 * kick)
                         let c = CGPoint(
                             x: center.x + CGFloat(cos(angle)) * orbitX,
                             y: center.y + CGFloat(sin(angle * 1.25)) * orbitY
                         )
-                        let radius = maxSpread * CGFloat(0.76 + 0.24 * energy + 0.08 * sin(angle + 1.0))
-                        let baseAlpha = (isLight ? 0.36 : 0.46) * power
+                        let radius = maxSpread * CGFloat(0.72 + 0.18 * energy + 0.08 * kick + 0.06 * surge + 0.07 * sin(angle + 1.0))
+                        let baseAlpha = (isLight ? 0.32 : 0.40) * power
                         let gradient = Gradient(stops: [
                             .init(color: blobs[index].opacity(baseAlpha), location: 0.0),
                             .init(color: blobs[index].opacity(baseAlpha * 0.62), location: 0.28),
@@ -626,13 +756,14 @@ private struct WaveGlow: View {
                     layer.blendMode = isLight ? .normal : .plusLighter
                     layer.addFilter(.blur(radius: isLight ? 15 : 18))
                     let contours: [(rx: Double, ry: Double, speed: Double, offset: Double, color: Color, alpha: Double)] = [
-                        (0.42, 0.21, 1.0, 0.0, amber, isLight ? 0.30 : 0.44),
-                        (0.35, 0.17, -0.82, 1.9, tangerine, isLight ? 0.24 : 0.38),
+                        (0.41, 0.20, 1.0, 0.0, amber, isLight ? 0.28 : 0.40),
+                        (0.34, 0.16, -0.82, 1.9, tangerine, isLight ? 0.22 : 0.34),
                     ]
-                    let amp = (0.045 + 0.135 * energy) * (0.5 + 0.5 * activity)
+                    let amp = 0.04 + 0.05 * activity + 0.11 * kick + 0.06 * surge
                     for contour in contours {
-                        let rx = min(size.width * contour.rx, maxSpread * 1.15) * (0.88 + 0.18 * energy)
-                        let ry = min(size.height * contour.ry, maxSpread * 0.62) * (0.88 + 0.18 * energy)
+                        let scale = 0.84 + 0.14 * energy + 0.10 * kick + 0.08 * surge
+                        let rx = min(size.width * contour.rx, maxSpread * 1.12) * scale
+                        let ry = min(size.height * contour.ry, maxSpread * 0.60) * scale
                         let path = organicLoop(
                             center: center,
                             rx: rx,
@@ -645,7 +776,7 @@ private struct WaveGlow: View {
                         layer.stroke(
                             path,
                             with: .color(contour.color.opacity(contour.alpha * power)),
-                            style: StrokeStyle(lineWidth: 10 + 8 * CGFloat(energy), lineCap: .round, lineJoin: .round)
+                            style: StrokeStyle(lineWidth: 9 + 7 * CGFloat(energy) + 5 * CGFloat(kick), lineCap: .round, lineJoin: .round)
                         )
                     }
                 }
@@ -656,7 +787,7 @@ private struct WaveGlow: View {
                     (3.0, -1.15, 1.7, 4, amber, 1.2),
                     (1.5, 0.90, 3.3, 12, tangerine, 1.0),
                 ]
-                let ribbonAmp = CGFloat((6.0 + 22.0 * energy) * (0.35 + 0.65 * activity))
+                let ribbonAmp = CGFloat(4.5 + 4.5 * energy + 12.0 * sonic + 14.0 * kick + 8.0 * surge)
                 let leftX = size.width * 0.06
                 let rightX = size.width * 0.94
                 let spanX = rightX - leftX
@@ -675,7 +806,7 @@ private struct WaveGlow: View {
                                 freq: ribbon.freq,
                                 time: time * ribbon.speed + ribbon.phase
                             )
-                            let alpha = (isGlowPass ? (isLight ? 0.28 : 0.55) : (isLight ? 0.45 : 0.72)) * power
+                            let alpha = (isGlowPass ? (isLight ? 0.26 : 0.48) : (isLight ? 0.42 : 0.68)) * power
                             let gradient = Gradient(stops: [
                                 .init(color: .clear, location: 0.0),
                                 .init(color: ribbon.color.opacity(alpha * 0.75), location: 0.22),
@@ -699,12 +830,12 @@ private struct WaveGlow: View {
                     for i in 0..<count {
                         let seed = Double(i) * 1.6180339
                         let angle = time * (0.28 + Double(i % 3) * 0.14) + seed * 3.1
-                        let orbit = maxSpread * CGFloat(0.28 + Double(i % 5) * 0.11) * CGFloat(0.75 + 0.35 * energy)
+                        let orbit = maxSpread * CGFloat(0.26 + Double(i % 5) * 0.11) * CGFloat(0.75 + 0.28 * energy + 0.12 * sonic)
                         let px = center.x + CGFloat(cos(angle)) * orbit * 1.08
                         let py = center.y + CGFloat(sin(angle * 1.3 + seed)) * orbit * 0.52
                         let pulse = 0.45 + 0.55 * sin(time * 1.9 + seed * 4.0)
-                        let r = CGFloat(1.4 + Double(i % 3) * 0.7) * CGFloat(0.85 + 0.3 * energy)
-                        let sparkAlpha = (isLight ? 0.30 : 0.55) * power * pulse
+                        let r = CGFloat(1.4 + Double(i % 3) * 0.7) * CGFloat(0.85 + 0.25 * energy + 0.25 * kick)
+                        let sparkAlpha = (isLight ? 0.28 : 0.52) * power * pulse
                         let sparkColor = i % 2 == 0 ? champagne : amber
                         let glowR = r * 2.6
                         layer.fill(
@@ -728,26 +859,68 @@ private struct WaveGlow: View {
         }
     }
 
-    private func step(at date: Date) -> (phase: Double, energy: Double, activity: Double) {
+    private func step(at date: Date) -> (phase: Double, energy: Double, activity: Double, audioLevel: Double, audioBass: Double, palette: WavePalette, surge: Double) {
         let targetAct = playing ? 1.0 : 0.0
         let targetEn = targetEnergy
+        let targetPalette = WavePalette.from(hex: waveHex)
+
+        if motion.lastWaveKey != waveKey {
+            if !motion.lastWaveKey.isEmpty {
+                motion.surge = min(1.0, motion.surge + 0.5)
+            }
+            motion.lastWaveKey = waveKey
+        }
+
         if animated {
             let dt = motion.lastDate.map { min(max(date.timeIntervalSince($0), 0), 0.05) } ?? 0
             motion.lastDate = date
             if dt > 0 {
                 motion.energy += (targetEn - motion.energy) * min(1, dt * 6.5)
-                motion.activity += (targetAct - motion.activity) * min(1, dt * 4.5)
-                motion.phase += dt * (0.48 + 1.05 * motion.energy) * (0.4 + 0.6 * motion.activity)
+                motion.activity += (targetAct - motion.activity) * min(1, dt * 3.2)
+                motion.palette = motion.palette.lerp(to: targetPalette, factor: min(1, dt * 3.0))
+                motion.surge *= exp(-dt * 2.6)
+
+                let targetAudio: Double
+                let targetBass: Double
+                if playing {
+                    let meter = Player.shared.audioMeter()
+                    if meter.live {
+                        targetAudio = meter.level
+                        targetBass = meter.bass
+                    } else {
+                        let synth = 0.24 + 0.18 * sin(motion.phase * 2.4) + 0.12 * sin(motion.phase * 4.1 + 1.1)
+                        let beat = pow(max(0, sin(motion.phase * 1.9)), 3.0)
+                        targetAudio = min(1, max(0, synth))
+                        targetBass = min(1, 0.12 + 0.24 * beat)
+                    }
+                } else {
+                    targetAudio = 0
+                    targetBass = 0
+                }
+
+                let levelRate = targetAudio > motion.audioLevel ? 18.0 : 6.5
+                let bassRate = targetBass > motion.audioBass ? 22.0 : 7.5
+                motion.audioLevel += (targetAudio - motion.audioLevel) * min(1, dt * levelRate)
+                motion.audioBass += (targetBass - motion.audioBass) * min(1, dt * bassRate)
+
+                let idleSpeed = 0.22 + 0.10 * motion.energy
+                let activeSpeed = (0.35 + 0.85 * motion.energy + 0.75 * motion.audioLevel * (0.25 + 0.75 * motion.energy)) * motion.activity
+                motion.phase += dt * (idleSpeed + activeSpeed)
             } else {
                 motion.energy = targetEn
                 motion.activity = targetAct
+                motion.palette = targetPalette
             }
-            return (motion.phase, motion.energy, motion.activity)
+            return (motion.phase, motion.energy, motion.activity, motion.audioLevel, motion.audioBass, motion.palette, motion.surge)
         } else {
             motion.lastDate = nil
             motion.energy = targetEn
             motion.activity = targetAct
-            return (motion.phase, targetEn, targetAct)
+            motion.palette = targetPalette
+            motion.audioLevel = 0
+            motion.audioBass = 0
+            motion.surge = 0
+            return (motion.phase, targetEn, targetAct, 0, 0, targetPalette, 0)
         }
     }
 
@@ -922,7 +1095,7 @@ private struct WheelStrip: View {
         return Button {
             wheel.clicked(item)
             switch item.action {
-            case .wave(let wave): Player.shared.tapWave(seeds: wave, name: item.title)
+            case .wave(let wave): Player.shared.tapWave(seeds: wave, name: item.title, color: item.color)
             case .album(let id): navigate(.album(id))
             case .setting: tune()
             }

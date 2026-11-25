@@ -84,7 +84,7 @@ struct WaveGrid: View {
             ForEach(waves) { wave in
                 let active = now.from("radio", wave.id)
                 Button {
-                    Player.shared.tapWave(seeds: wave.seeds, name: wave.title)
+                    Player.shared.tapWave(seeds: wave.seeds, name: wave.title, color: wave.color)
                 } label: {
                     HStack(spacing: 8) {
                         if active {

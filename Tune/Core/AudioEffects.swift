@@ -134,6 +134,10 @@ struct SoundSettings: Equatable {
 final class AudioEffects {
     private let lock = NSLock()
     private var settings = SoundSettings()
+    private let meterLock = NSLock()
+    private var meterLevel: Float = 0
+    private var meterBass: Float = 0
+    private var meterUpdated: CFAbsoluteTime = 0
 
     func update(_ settings: SoundSettings) {
         lock.lock()
@@ -145,6 +149,24 @@ final class AudioEffects {
         guard lock.try() else { return nil }
         defer { lock.unlock() }
         return settings
+    }
+
+    fileprivate func publishMeter(level: Float, bass: Float) {
+        guard meterLock.try() else { return }
+        meterLevel = level
+        meterBass = bass
+        meterUpdated = CFAbsoluteTimeGetCurrent()
+        meterLock.unlock()
+    }
+
+    func currentMeter() -> (level: Double, bass: Double, live: Bool) {
+        meterLock.lock()
+        let level = meterLevel
+        let bass = meterBass
+        let updated = meterUpdated
+        meterLock.unlock()
+        let live = (CFAbsoluteTimeGetCurrent() - updated) < 0.18
+        return live ? (Double(level), Double(bass), true) : (0, 0, false)
     }
 
     @MainActor
@@ -390,6 +412,8 @@ final class AudioEffects {
         private var mono: [Float] = []
         private var headroom: Float = 1
         private var activeBands: UInt16 = 0
+        private var meterBassLP: Float = 0
+        private var meterBassAlpha: Float = 0.08
         private var b0 = SIMD16<Float>(repeating: 1)
         private var b1 = SIMD16<Float>.zero
         private var b2 = SIMD16<Float>.zero
@@ -408,6 +432,8 @@ final class AudioEffects {
             halls = channels.indices.map { HallReverb(rate: rate, channel: $0) }
             spatial = Spatial8D(rate: rate)
             mono = Array(repeating: 0, count: max(0, maxFrames))
+            meterBassLP = 0
+            meterBassAlpha = min(0.5, 2 * Float.pi * 140 / max(8_000, rate))
             configure(effects.snapshot() ?? current)
         }
 
@@ -458,6 +484,7 @@ final class AudioEffects {
                 for channel in channels.indices { channels[channel] = Channel() }
                 for index in halls.indices { halls[index].reset() }
                 spatial?.reset()
+                meterBassLP = 0
             }
             if let settings = effects.snapshot(), settings != current {
                 if settings.gains != current.gains || settings.eqEnabled != current.eqEnabled {
@@ -471,6 +498,7 @@ final class AudioEffects {
                 }
                 configure(settings)
             }
+            analyzeMeter(list, frames: frames)
             guard current.needsAudioMix else { return }
             let buffers = UnsafeMutableAudioBufferListPointer(list)
             let eightD = current.eightDEnabled && channels.count >= 2
@@ -560,6 +588,35 @@ final class AudioEffects {
                     }
                 }
             }
+        }
+
+        private func analyzeMeter(_ list: UnsafeMutablePointer<AudioBufferList>, frames: Int) {
+            let buffers = UnsafeMutableAudioBufferListPointer(list)
+            guard let first = buffers.first, first.mNumberChannels > 0, let raw = first.mData else { return }
+            let count = Int(first.mNumberChannels)
+            let samples = raw.assumingMemoryBound(to: Float.self)
+            let available = min(frames, Int(first.mDataByteSize) / (count * MemoryLayout<Float>.stride))
+            guard available > 0 else { return }
+            let strideStep = 4
+            var sumSq: Float = 0
+            var bassSq: Float = 0
+            var counted = 0
+            var frame = 0
+            while frame < available {
+                let base = frame * count
+                let sample = count >= 2 ? (samples[base] + samples[base + 1]) * 0.5 : samples[base]
+                sumSq += sample * sample
+                meterBassLP += (sample - meterBassLP) * meterBassAlpha
+                bassSq += meterBassLP * meterBassLP
+                counted += 1
+                frame += strideStep
+            }
+            guard counted > 0 else { return }
+            let rms = sqrtf(sumSq / Float(counted))
+            let bassRms = sqrtf(bassSq / Float(counted))
+            let level = min(1, powf(min(1, rms * 3.4), 0.78))
+            let bass = min(1, powf(min(1, bassRms * 4.2), 0.85))
+            effects.publishMeter(level: level, bass: bass)
         }
 
         private func mixHall(_ buffers: UnsafeMutableAudioBufferListPointer, frames: Int, echo: Float) {
