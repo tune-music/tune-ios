@@ -366,7 +366,7 @@ struct SearchScreen: View {
     }
 
     private func tracks(_ list: [Track], limit: Int? = nil, context: String = "Поиск") -> some View {
-        ForEach(Array(list.prefix(limit ?? list.count).enumerated()), id: \.offset) { index, track in
+        ForEach(Array(list.prefix(limit ?? list.count).enumerated()), id: \.element.id) { index, track in
             TrackRow(track: track) {
                 remember()
                 player.play(list, at: index, context: .various(context))

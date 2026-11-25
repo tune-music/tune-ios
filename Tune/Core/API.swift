@@ -784,10 +784,50 @@ final class API {
         let remoteAlbums = Set(found.albums.map(\.id))
         local.tracks.removeAll { remoteTracks.contains($0.id) }
         local.albums.removeAll { remoteAlbums.contains($0.id) }
-        var unique = SearchResult(best: found.best ?? local.best)
+        let localBest = local.tracks.first.map { SearchBest.track($0) } ?? local.albums.first.map { SearchBest.album($0) }
+        var unique = SearchResult(best: Self.preferredBest(query: text, remote: found.best, local: localBest))
         unique.append(local)
         unique.append(found)
         return unique
+    }
+
+    private static func searchTokens(_ text: String) -> [String] {
+        text.lowercased().replacingOccurrences(of: "ё", with: "е")
+            .split { !$0.isLetter && !$0.isNumber }.map(String.init)
+    }
+
+    private static func bestTokens(_ item: SearchBest) -> [String] {
+        switch item {
+        case .track(let track):
+            return searchTokens(track.title) + searchTokens(track.artists) + searchTokens(track.albumTitle)
+        case .artist(let card), .album(let card), .podcast(let card):
+            return searchTokens(card.title) + searchTokens(card.subtitle)
+        case .playlist(let playlist):
+            return searchTokens(playlist.title)
+        }
+    }
+
+    private static func bestExactTitle(_ item: SearchBest, terms: [String]) -> Bool {
+        switch item {
+        case .track(let track): return searchTokens(track.title) == terms
+        case .artist(let card), .album(let card), .podcast(let card): return searchTokens(card.title) == terms
+        case .playlist(let playlist): return searchTokens(playlist.title) == terms
+        }
+    }
+
+    private static func preferredBest(query: String, remote: SearchBest?, local: SearchBest?) -> SearchBest? {
+        guard let local else { return remote }
+        guard let remote else { return local }
+        let terms = searchTokens(query)
+        guard !terms.isEmpty else { return remote }
+        let allowPrefix = terms.reduce(0) { $0 + $1.count } >= 3
+        let tokens = bestTokens(remote)
+        let remoteMatchesAll = terms.allSatisfy { term in
+            allowPrefix ? tokens.contains { $0.hasPrefix(term) } : tokens.contains(term)
+        }
+        if !remoteMatchesAll { return local }
+        if bestExactTitle(local, terms: terms) && !bestExactTitle(remote, terms: terms) { return local }
+        return remote
     }
 
     /// Последний доступный текст, в том числе сохранённый ранними версиями Tune.
