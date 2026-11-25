@@ -67,7 +67,6 @@ struct SearchScreen: View {
         let page = requestedPage
         List {
             if text.isEmpty {
-                tabs
                 if !recent.isEmpty {
                     history
                 }
@@ -173,7 +172,7 @@ struct SearchScreen: View {
                     .accessibilityLabel("Поиск")
                     .font(.system(size: 17, weight: .medium))
                     .foregroundStyle(Theme.dim)
-                TextField(tab == .lyrics ? "Строка из песни" : "Трек, альбом, исполнитель", text: $query)
+                TextField(tab == .lyrics ? "Строка из песни" : "Трек, альбом или ссылка", text: $query)
                     .focused($focused)
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
@@ -181,7 +180,19 @@ struct SearchScreen: View {
                     .onSubmit { remember() }
                     .font(.scaled(size: 17))
                     .foregroundStyle(Theme.text)
-                if !query.isEmpty {
+                if query.isEmpty {
+                    Button {
+                        tab = tab == .lyrics ? .all : .lyrics
+                    } label: {
+                        Text("По тексту")
+                            .font(.scaled(size: 12, weight: .semibold))
+                            .foregroundStyle(tab == .lyrics ? Color.black : Theme.text)
+                            .padding(.horizontal, 10)
+                            .frame(height: 28)
+                            .background(tab == .lyrics ? Theme.accent : Theme.raised, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                } else {
                     Button {
                         query = ""
                     } label: {
@@ -420,28 +431,44 @@ struct SearchScreen: View {
         .listRowBackground(Color.clear)
         .listRowSeparator(.hidden)
         .listRowInsets(EdgeInsets(top: 14, leading: 16, bottom: 6, trailing: 16))
-        ForEach(recent, id: \.self) { text in
-            Button {
-                query = text
-            } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: "clock.arrow.circlepath")
-                        .foregroundStyle(Theme.dim)
-                    Text(text)
-                        .font(.scaled(size: 16))
-                        .foregroundStyle(Theme.text)
-                    Spacer(minLength: 0)
-                    Image(systemName: "arrow.up.left")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(Theme.dim)
+        WrapLayout(spacing: 8) {
+            ForEach(recent, id: \.self) { item in
+                HStack(spacing: 2) {
+                    Button {
+                        query = item
+                    } label: {
+                        Text(item)
+                            .font(.scaled(size: 14, weight: .medium))
+                            .foregroundStyle(Theme.text)
+                            .lineLimit(1)
+                            .padding(.leading, 12)
+                            .padding(.vertical, 7)
+                    }
+                    .buttonStyle(.plain)
+                    Button {
+                        removeRecent(item)
+                    } label: {
+                        Image(systemName: "xmark")
+                            .accessibilityLabel("Удалить \(item)")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(Theme.dim)
+                            .frame(width: 24, height: 28)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.trailing, 4)
                 }
-                .contentShape(Rectangle())
+                .background(Theme.surface, in: Capsule())
             }
-            .buttonStyle(.plain)
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
-            .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
         }
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+        .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 10, trailing: 16))
+    }
+
+    private func removeRecent(_ item: String) {
+        recent.removeAll { $0 == item }
+        UserDefaults.standard.set(recent, forKey: "recentSearches")
     }
 
     private func remember() {
@@ -671,5 +698,44 @@ private struct BestCard: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(PressStyle(scale: 0.97))
+    }
+}
+
+private struct WrapLayout: Layout {
+    var spacing: CGFloat = 8
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var rowHeight: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > 0 && x + size.width > maxWidth {
+                x = 0
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
+        return CGSize(width: proposal.width ?? x, height: y + rowHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX
+        var y = bounds.minY
+        var rowHeight: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > bounds.minX && x + size.width > bounds.maxX {
+                x = bounds.minX
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
+            subview.place(at: CGPoint(x: x, y: y), anchor: .topLeading, proposal: ProposedViewSize(size))
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
     }
 }

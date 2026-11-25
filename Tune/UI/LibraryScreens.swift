@@ -5,12 +5,20 @@ import SwiftUI
 struct LibraryScreen: View {
     @EnvironmentObject private var session: Session
     @EnvironmentObject private var downloads: Downloads
+    @EnvironmentObject private var player: Player
+    @ObservedObject private var now = Player.shared.now
     @Environment(\.navigate) private var navigate
     @State private var creating = false
     @State private var importing = false
     @State private var name = ""
+    @State private var playlistFilter = 0
+    @State private var startingLikes = false
     @AppStorage("playlistsByName") private var byName = false
     @ObservedObject private var updater = Updater.shared
+
+    private var isLikesActive: Bool {
+        now.kind == "various" && now.name == "Мне нравится"
+    }
 
     var body: some View {
         ScrollView {
@@ -38,44 +46,92 @@ struct LibraryScreen: View {
                     .padding(.horizontal, 16)
                     .padding(.bottom, 12)
                 }
-                Button {
-                    navigate(.likes)
-                } label: {
-                    HStack(spacing: 16) {
-                        SymbolCover(symbol: "heart.fill", colors: SymbolCover.likes, size: 92, corner: 18)
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Мне нравится")
-                                .font(.scaled(size: 24, weight: .bold))
-                                .foregroundStyle(Theme.text)
-                            Text(plural(session.likedIds.count, "трек", "трека", "треков"))
-                                .font(.scaled(size: 15))
-                                .foregroundStyle(Theme.dim)
+
+                HStack(spacing: 12) {
+                    Button {
+                        navigate(.likes)
+                    } label: {
+                        HStack(spacing: 12) {
+                            SymbolCover(symbol: "heart.fill", colors: SymbolCover.likes, size: 58, corner: 14)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Мне нравится")
+                                    .font(.scaled(size: 20, weight: .bold))
+                                    .foregroundStyle(Theme.text)
+                                    .lineLimit(1)
+                                Text(plural(session.likedIds.count, "трек", "трека", "треков"))
+                                    .font(.scaled(size: 14))
+                                    .foregroundStyle(Theme.dim)
+                                    .lineLimit(1)
+                            }
+                            Spacer(minLength: 0)
                         }
-                        Spacer(minLength: 0)
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(Theme.dim)
+                        .contentShape(Rectangle())
                     }
-                    .contentShape(Rectangle())
+                    .buttonStyle(.plain)
+
+                    Button {
+                        playLikes(shuffled: true)
+                    } label: {
+                        Image(systemName: "shuffle")
+                            .accessibilityLabel("Перемешать «Мне нравится»")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(Theme.text)
+                            .frame(width: 38, height: 38)
+                            .background(Theme.raised, in: Circle())
+                    }
+                    .buttonStyle(PressStyle())
+                    .disabled(session.likedIds.isEmpty || startingLikes)
+                    .opacity(session.likedIds.isEmpty ? 0.45 : 1)
+
+                    Button {
+                        playLikes(shuffled: false)
+                    } label: {
+                        ZStack {
+                            if isLikesActive && now.playing {
+                                PlayingBars(playing: true, size: 15, color: .black)
+                            } else {
+                                PlayGlyph(playing: false, size: 15)
+                                    .foregroundStyle(.black)
+                            }
+                        }
+                        .frame(width: 38, height: 38)
+                        .background(Theme.accent, in: Circle())
+                    }
+                    .buttonStyle(PressStyle())
+                    .accessibilityLabel(isLikesActive && now.playing ? "Пауза" : "Слушать «Мне нравится»")
+                    .disabled(session.likedIds.isEmpty || startingLikes)
+                    .opacity(session.likedIds.isEmpty ? 0.45 : 1)
                 }
-                .buttonStyle(.plain)
+                .padding(12)
+                .background(Theme.surface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
                 .padding(.horizontal, 16)
                 .padding(.top, 8)
-                .padding(.bottom, 20)
 
-                entry("arrow.down.circle.fill", "Скачанные треки", downloadsValue, .downloads)
-                entry("square.stack.fill", "Альбомы", session.likedAlbums.isEmpty ? "" : "\(session.likedAlbums.count)", .likedAlbums)
-                entry("music.mic", "Исполнители", session.likedArtists.isEmpty ? "" : "\(session.likedArtists.count)", .likedArtists)
-                entry("mic", "Подкасты", "", .likedPodcasts)
-                entry("book", "Аудиокниги", "", .likedBooks)
-                entry("balloon", "Детям", "", .kids)
-                entry("calendar", "Концерты", "", .concerts)
-                entry("clock.arrow.circlepath", "История", "", .history)
-                entry("chart.bar.fill", "Статистика", "", .stats)
-                if !session.disliked.isEmpty {
-                    entry("hand.thumbsdown.fill", "Не нравится", "\(session.disliked.count)", .disliked)
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
+                    libraryTile("arrow.down.circle.fill", "Скачанные", downloadsValue.isEmpty ? "На устройстве" : downloadsValue, .downloads)
+                    libraryTile("square.stack.fill", "Альбомы", session.likedAlbums.isEmpty ? "Коллекция" : "\(session.likedAlbums.count)", .likedAlbums)
+                    libraryTile("music.mic", "Исполнители", session.likedArtists.isEmpty ? "Коллекция" : "\(session.likedArtists.count)", .likedArtists)
+                    libraryTile("clock.arrow.circlepath", "История", "Недавние", .history)
                 }
-                entry("person.crop.circle.badge.minus", "Скрытые исполнители", "", .dislikedArtists)
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
+
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        libraryChip("chart.bar.fill", "Статистика", nil, .stats)
+                        libraryChip("mic", "Подкасты", nil, .likedPodcasts)
+                        libraryChip("book", "Аудиокниги", nil, .likedBooks)
+                        libraryChip("balloon", "Детям", nil, .kids)
+                        libraryChip("calendar", "Концерты", nil, .concerts)
+                        if !session.disliked.isEmpty {
+                            libraryChip("hand.thumbsdown.fill", "Не нравится", "\(session.disliked.count)", .disliked)
+                        }
+                        libraryChip("person.crop.circle.badge.minus", "Скрытые", nil, .dislikedArtists)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 4)
+                }
+                .padding(.top, 8)
 
                 HStack {
                     Text("Плейлисты")
@@ -120,8 +176,19 @@ struct LibraryScreen: View {
                     .buttonStyle(.plain)
                 }
                 .padding(.horizontal, 16)
-                .padding(.top, 26)
+                .padding(.top, 20)
                 .padding(.bottom, 10)
+
+                if !session.playlists.isEmpty && !session.likedPlaylists.isEmpty {
+                    HStack(spacing: 8) {
+                        playlistFilterPill(0, "Все")
+                        playlistFilterPill(1, "Мои")
+                        playlistFilterPill(2, "Добавленные")
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 8)
+                }
 
                 if session.playlists.isEmpty && session.likedPlaylists.isEmpty {
                     Text("Создайте плейлист или добавьте чужой в коллекцию — он появится здесь.")
@@ -130,11 +197,15 @@ struct LibraryScreen: View {
                         .padding(.horizontal, 16)
                         .padding(.top, 4)
                 }
-                ForEach(ordered(session.playlists)) { playlist in
-                    playlistRow(playlist, own: true)
+                if playlistFilter != 2 {
+                    ForEach(ordered(session.playlists)) { playlist in
+                        playlistRow(playlist, own: true)
+                    }
                 }
-                ForEach(ordered(session.likedPlaylists)) { playlist in
-                    playlistRow(playlist, own: false)
+                if playlistFilter != 1 {
+                    ForEach(ordered(session.likedPlaylists)) { playlist in
+                        playlistRow(playlist, own: false)
+                    }
                 }
             }
             .padding(.bottom, 24)
@@ -171,6 +242,21 @@ struct LibraryScreen: View {
         byName ? list.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending } : list
     }
 
+    private func playlistFilterPill(_ tag: Int, _ title: String) -> some View {
+        let on = playlistFilter == tag
+        return Button {
+            playlistFilter = tag
+        } label: {
+            Text(title)
+                .font(.scaled(size: 13, weight: .semibold))
+                .foregroundStyle(on ? Color.black : Theme.text)
+                .padding(.horizontal, 12)
+                .frame(height: 32)
+                .background(on ? Theme.accent : Theme.surface, in: Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
     private func playlistRow(_ playlist: Playlist, own: Bool) -> some View {
         Button {
             navigate(.playlist(playlist))
@@ -201,34 +287,92 @@ struct LibraryScreen: View {
         return downloads.entries.isEmpty ? "" : "\(downloads.entries.count)"
     }
 
-    private func entry(_ icon: String, _ title: String, _ value: String, _ route: Route) -> some View {
+    private func libraryTile(_ icon: String, _ title: String, _ subtitle: String, _ route: Route) -> some View {
         Button {
             navigate(route)
         } label: {
-            HStack(spacing: 14) {
+            HStack(spacing: 10) {
                 Image(systemName: icon)
-                    .font(.system(size: 20))
+                    .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(Theme.text)
-                    .frame(width: 44, height: 44)
-                    .background(Theme.raised, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
-                Text(title)
-                    .font(.scaled(size: 17, weight: .medium))
-                    .foregroundStyle(Theme.text)
-                Spacer(minLength: 0)
-                if !value.isEmpty {
-                    Text(value)
-                        .font(.scaled(size: 15))
+                    .frame(width: 38, height: 38)
+                    .background(Theme.raised, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.scaled(size: 15, weight: .semibold))
+                        .foregroundStyle(Theme.text)
+                        .lineLimit(1)
+                    Text(subtitle)
+                        .font(.scaled(size: 12))
                         .foregroundStyle(Theme.dim)
+                        .lineLimit(1)
                 }
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(Theme.dim)
+                Spacer(minLength: 0)
             }
+            .padding(12)
+            .background(Theme.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 7)
+        .buttonStyle(PressStyle(scale: 0.96))
+    }
+
+    private func libraryChip(_ icon: String, _ title: String, _ count: String?, _ route: Route) -> some View {
+        Button {
+            navigate(route)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                    .font(.system(size: 13, weight: .semibold))
+                Text(title)
+                    .font(.scaled(size: 14, weight: .medium))
+                if let count {
+                    Text(count)
+                        .font(.scaled(size: 13))
+                        .foregroundStyle(Theme.dim)
+                }
+            }
+            .foregroundStyle(Theme.text)
+            .padding(.horizontal, 13)
+            .frame(height: 36)
+            .background(Theme.surface, in: Capsule())
+            .contentShape(Capsule())
+        }
+        .buttonStyle(PressStyle(scale: 0.95))
+    }
+
+    private func playLikes(shuffled: Bool) {
+        if !shuffled && isLikesActive {
+            player.toggle()
+            return
+        }
+        guard !startingLikes else { return }
+        startingLikes = true
+        Task {
+            defer { startingLikes = false }
+            if Demo.on {
+                player.play(Demo.data.tracks, context: .various("Мне нравится"), shuffled: shuffled)
+                return
+            }
+            let cached = await Task.detached(priority: .userInitiated) {
+                Storage.load("likes-tracks.json", as: [Track].self)
+            }.value ?? []
+            var seen = Set<String>()
+            var tracks: [Track] = []
+            for track in session.localLikedTracks + cached {
+                if seen.insert(track.id).inserted { tracks.append(track) }
+            }
+            if tracks.isEmpty && !Connectivity.shared.offline && !session.offline {
+                let ids = Array(session.likedIds.prefix(60))
+                if !ids.isEmpty {
+                    tracks = (try? await API.shared.tracks(ids: ids)) ?? []
+                }
+            }
+            if tracks.isEmpty {
+                navigate(.likes)
+            } else {
+                player.play(tracks, context: .various("Мне нравится"), shuffled: shuffled)
+            }
+        }
     }
 }
 
@@ -651,7 +795,6 @@ struct SettingsScreen: View {
     @Environment(\.navigate) private var navigate
     @State private var uncensor = Settings.uncensor
     @State private var appearance = Settings.appearance
-    @AppStorage("playbackLiveActivity") private var playbackLiveActivity = false
     @AppStorage("minimizeMiniPlayer") private var minimizeMiniPlayer = true
     @State private var crossfade = Settings.crossfade
     @State private var lyricsExternal = Settings.lyricsExternal
@@ -758,11 +901,6 @@ struct SettingsScreen: View {
                     Text("Как в системе").tag(0)
                     Text("Тёмная").tag(1)
                     Text("Светлая").tag(2)
-                }
-                if #available(iOS 16.2, *) {
-                    Toggle("Текущий трек в Live Activity", isOn: $playbackLiveActivity)
-                        .tint(Theme.accentText)
-                        .onChange(of: playbackLiveActivity) { _ in Player.shared.refreshPlaybackActivity() }
                 }
                 if #available(iOS 26.1, *) {
                     Toggle("Сворачивать мини-плеер при прокрутке", isOn: $minimizeMiniPlayer)

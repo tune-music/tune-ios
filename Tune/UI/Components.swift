@@ -829,6 +829,7 @@ struct TrackRow: View {
     var fadesDisliked = true
     var onRemove: (() -> Void)?
     var historySource: String? = nil
+    var badge: String? = nil
     let action: () -> Void
 
     @State private var playback: RowPlayback
@@ -847,6 +848,7 @@ struct TrackRow: View {
         fadesDisliked: Bool = true,
         onRemove: (() -> Void)? = nil,
         historySource: String? = nil,
+        badge: String? = nil,
         action: @escaping () -> Void
     ) {
         self.track = track
@@ -854,6 +856,7 @@ struct TrackRow: View {
         self.fadesDisliked = fadesDisliked
         self.onRemove = onRemove
         self.historySource = historySource
+        self.badge = badge
         self.action = action
         let now = Player.shared.now
         let initialPlayback: RowPlayback = now.id == track.id ? (now.playing ? .playing : .paused) : .other
@@ -922,6 +925,12 @@ struct TrackRow: View {
             if number != nil {
                 Text(timeText(track.duration))
                     .font(.scaled(size: 13).monospacedDigit())
+                    .foregroundStyle(Theme.dim)
+                    .padding(.leading, 4)
+            }
+            if let badge {
+                Text(badge)
+                    .font(.scaled(size: 13, weight: .medium).monospacedDigit())
                     .foregroundStyle(Theme.dim)
                     .padding(.leading, 4)
             }

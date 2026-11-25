@@ -137,8 +137,10 @@ private struct PlayerBody: View {
                 .animation(.easeInOut(duration: 0.25), value: lyrics)
                 if let track = player.current {
                     titles(track)
-                    SeekBar(progress: player.progress) { player.seek(to: $0) }
-                        .padding(.top, 18)
+                    SeekBar(progress: player.progress, seek: { player.seek(to: $0) }) {
+                        statusIcons(track)
+                    }
+                    .padding(.top, 18)
                     controls
                         .padding(.top, 14)
                     bottom(track)
@@ -339,27 +341,101 @@ private struct PlayerBody: View {
         player.sleepAt != nil || player.sleepAfterTrack
     }
 
+    @ViewBuilder
+    private func statusIcons(_ track: Track) -> some View {
+        let hasUncensor = Uncensor.shared.has(track.id) || player.audibleVersion == .uncensored
+        let hasSound = player.sound.needsAudioMix || player.sound.speed != 1
+        if hasUncensor || hasSound || sleeping {
+            HStack(spacing: 6) {
+                if hasUncensor {
+                    let uncensored = player.audibleVersion == .uncensored
+                    let canSwitch = track.yandexAvailable != false
+                    Button {
+                        player.selectVersion(uncensored ? .yandex : .uncensored, for: track)
+                    } label: {
+                        Image(systemName: uncensored ? "lock.open.fill" : "lock.fill")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(uncensored ? Theme.accent : Color.white.opacity(0.65))
+                            .padding(.horizontal, 7)
+                            .frame(height: 20)
+                            .background(uncensored ? Theme.accent.opacity(0.18) : Color.white.opacity(0.12), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!canSwitch)
+                    .accessibilityLabel(uncensored ? "Версия без цензуры" : "Версия Яндекса")
+                }
+                if hasSound {
+                    Button {
+                        sound = true
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: "slider.horizontal.3")
+                                .font(.system(size: 10, weight: .semibold))
+                            if abs(player.sound.speed - 1) > 0.001 {
+                                Text("\(player.sound.speed.formatted(.number.precision(.fractionLength(0...2))))×")
+                                    .font(.system(size: 10, weight: .semibold).monospacedDigit())
+                            }
+                        }
+                        .foregroundStyle(Theme.accent)
+                        .padding(.horizontal, 7)
+                        .frame(height: 20)
+                        .background(Theme.accent.opacity(0.18), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Настройки звука")
+                }
+                if sleeping {
+                    Button {
+                        sleep = true
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: "moon.zzz.fill")
+                                .font(.system(size: 10, weight: .semibold))
+                            if let sleepAt = player.sleepAt {
+                                let mins = max(1, Int(ceil(sleepAt.timeIntervalSinceNow / 60)))
+                                Text("\(mins)м")
+                                    .font(.system(size: 10, weight: .semibold).monospacedDigit())
+                            } else if player.sleepAfterTrack {
+                                Text("1")
+                                    .font(.system(size: 10, weight: .semibold).monospacedDigit())
+                            }
+                        }
+                        .foregroundStyle(Theme.accent)
+                        .padding(.horizontal, 7)
+                        .frame(height: 20)
+                        .background(Theme.accent.opacity(0.18), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Таймер сна")
+                }
+            }
+        }
+    }
+
     private func bottom(_ track: Track) -> some View {
-        HStack {
+        let soundActive = player.sound.needsAudioMix || player.sound.speed != 1
+        return HStack {
             Button {
                 lyrics.toggle()
             } label: {
                 Image(systemName: "text.quote")
                     .foregroundStyle(lyrics ? Theme.accent : Color.white.opacity(0.85))
-                    .frame(width: 48, height: 44)
-                    .contentShape(Rectangle())
+                    .frame(width: 44, height: 44)
+                    .background(lyrics ? Color.white.opacity(0.14) : Color.clear, in: Circle())
+                    .contentShape(Circle())
             }
             Spacer()
             RoutePicker()
-                .frame(width: 48, height: 44)
+                .frame(width: 44, height: 44)
             Spacer()
             Button {
                 sound = true
             } label: {
                 Image(systemName: "slider.horizontal.3")
-                    .foregroundStyle(player.sound.needsAudioMix || player.sound.speed != 1 ? Theme.accent : Color.white.opacity(0.85))
+                    .foregroundStyle(soundActive ? Theme.accent : Color.white.opacity(0.85))
                     .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
+                    .background(soundActive ? Color.white.opacity(0.14) : Color.clear, in: Circle())
+                    .contentShape(Circle())
             }
             .accessibilityLabel("Настройки звука")
             Spacer()
@@ -368,22 +444,23 @@ private struct PlayerBody: View {
             } label: {
                 Image(systemName: sleeping ? "moon.zzz.fill" : "moon.zzz")
                     .foregroundStyle(sleeping ? Theme.accent : Color.white.opacity(0.85))
-                    .frame(width: 48, height: 44)
-                    .contentShape(Rectangle())
+                    .frame(width: 44, height: 44)
+                    .background(sleeping ? Color.white.opacity(0.14) : Color.clear, in: Circle())
+                    .contentShape(Circle())
             }
             Spacer()
             if let value = downloads.active[track.id] {
                 ProgressRing(value: value)
                     .frame(width: 22, height: 22)
-                    .frame(width: 48, height: 44)
+                    .frame(width: 44, height: 44)
             } else if downloads.has(track.id) {
                 Button {
                     downloads.remove(track.id)
                 } label: {
                     Image(systemName: "arrow.down.circle.fill")
                         .foregroundStyle(Theme.accent)
-                        .frame(width: 48, height: 44)
-                        .contentShape(Rectangle())
+                        .frame(width: 44, height: 44)
+                        .contentShape(Circle())
                 }
             } else {
                 Button {
@@ -391,8 +468,8 @@ private struct PlayerBody: View {
                 } label: {
                     Image(systemName: "arrow.down.circle")
                         .accessibilityLabel("Скачать")
-                        .frame(width: 48, height: 44)
-                        .contentShape(Rectangle())
+                        .frame(width: 44, height: 44)
+                        .contentShape(Circle())
                 }
             }
             Spacer()
@@ -401,8 +478,8 @@ private struct PlayerBody: View {
             } label: {
                 Image(systemName: "list.bullet")
                     .accessibilityLabel("Очередь")
-                    .frame(width: 48, height: 44)
-                    .contentShape(Rectangle())
+                    .frame(width: 44, height: 44)
+                    .contentShape(Circle())
             }
         }
         .buttonStyle(PressStyle())
@@ -599,14 +676,19 @@ private struct SleepSheet: View {
 }
 
 /// Полоса перемотки: тонкая линия, которая утолщается под пальцем.
-private struct SeekBar: View {
+private struct SeekBar<Status: View>: View {
     @ObservedObject var progress: PlaybackProgress
     let seek: (Double) -> Void
+    @ViewBuilder let status: () -> Status
     @State private var drag: Double?
+    @AppStorage("playerShowRemaining") private var showRemaining = false
 
     var body: some View {
         let length = max(progress.duration, 1)
         let value = min(max(drag ?? progress.position, 0), length)
+        let rightTime = showRemaining && progress.duration > 0
+            ? "-\(timeText(max(0, progress.duration - value)))"
+            : timeText(progress.duration)
         VStack(spacing: 6) {
             GeometryReader { geometry in
                 let width = geometry.size.width
@@ -633,11 +715,20 @@ private struct SeekBar: View {
                 .animation(.easeOut(duration: 0.15), value: drag == nil)
             }
             .frame(height: 24)
-            HStack {
+            HStack(spacing: 8) {
                 Text(timeText(value))
-                Spacer()
-                Text(timeText(progress.duration))
+                Spacer(minLength: 4)
+                status()
+                Spacer(minLength: 4)
+                Button {
+                    showRemaining.toggle()
+                } label: {
+                    Text(rightTime)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
             }
+            .frame(height: 20)
             .font(.system(size: 12, weight: .medium).monospacedDigit())
             .foregroundStyle(.white.opacity(0.6))
         }

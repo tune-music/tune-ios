@@ -58,6 +58,7 @@ struct HomeScreen: View {
     @ObservedObject private var now = Player.shared.now
     @ObservedObject private var words = WaveWords.shared
     @State private var tuning = Demo.screen == "wave"
+    @State private var waveSettings = Player.waveSettings
     @State private var trending = false
     /// Страница прокручена: под часами нужна дымка, иначе полки сливаются с ними.
     @State private var scrolled = false
@@ -72,7 +73,7 @@ struct HomeScreen: View {
         let cardIdentity = visibleCard.map { WordCardView.Identity(cardID: $0.card.id, trackID: $0.track.id) }
         ScrollViewReader { proxy in
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 28) {
+            LazyVStack(alignment: .leading, spacing: 26) {
                 if model.page.trends?.isEmpty == false {
                     Picker("Главная", selection: $trending) {
                         Text("Для вас").tag(false)
@@ -82,7 +83,7 @@ struct HomeScreen: View {
                     .padding(.horizontal, 16)
                 }
                 if !trending {
-                    WaveHero(tune: { tuning = true })
+                    WaveHero(settings: $waveSettings, tune: { tuning = true })
                     if let visibleCard, let cardIdentity {
                         ZStack {
                             WordCardView(card: visibleCard.card, track: visibleCard.track)
@@ -95,16 +96,39 @@ struct HomeScreen: View {
                         .accessibilityHidden(activeCard == nil)
                         .transition(.opacity)
                     }
-                    if Settings.waveWheel {
-                        WheelStrip(tune: { tuning = true })
-                    }
                     if connectivity.offline || session.offline || model.failed {
                         offline
                     }
-                    if !model.page.waves.isEmpty {
-                        stations
+                    Group {
+                        if Settings.waveWheel {
+                            VStack(alignment: .leading, spacing: 12) {
+                                HStack(alignment: .firstTextBaseline) {
+                                    Text("Волны")
+                                        .font(.scaled(size: 22, weight: .bold))
+                                        .foregroundStyle(Theme.text)
+                                    Spacer(minLength: 8)
+                                    Button {
+                                        navigate(.stations)
+                                    } label: {
+                                        HStack(spacing: 3) {
+                                            Text("Все")
+                                            Image(systemName: "chevron.right")
+                                                .font(.system(size: 12, weight: .semibold))
+                                        }
+                                        .font(.system(size: 15, weight: .medium))
+                                        .foregroundStyle(Theme.dim)
+                                        .contentShape(Rectangle())
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                                .padding(.horizontal, 16)
+                                WheelStrip(tune: { tuning = true })
+                            }
+                        } else if !model.page.waves.isEmpty {
+                            stations
+                        }
                     }
-                    quick.id("quick")
+                    .id("homeContent")
                     if let tracks = model.page.recent, !tracks.isEmpty {
                         recentShelf(tracks)
                     }
@@ -134,7 +158,7 @@ struct HomeScreen: View {
         .onAppear {
             // Снимок прокрученной главной: по нему проверяется читаемость верха.
             guard Demo.screen == "homescroll" else { return }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { proxy.scrollTo("quick", anchor: .top) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { proxy.scrollTo("homeContent", anchor: .top) }
         }
         }
         .overlay {
@@ -149,6 +173,11 @@ struct HomeScreen: View {
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItem(placement: .navigationBarLeading) {
+                DevicesToolbarButton {
+                    navigate(.devices)
+                }
+            }
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button {
                     navigate(.settings)
@@ -161,6 +190,9 @@ struct HomeScreen: View {
         }
         .sheet(isPresented: $tuning) {
             WaveSettingsSheet()
+        }
+        .onChange(of: tuning) { open in
+            if !open { waveSettings = Player.waveSettings }
         }
         .task { await model.load() }
         .onReceive(Downloads.shared.$entries.map(\.count).removeDuplicates()) { count in
@@ -229,20 +261,6 @@ struct HomeScreen: View {
             return WordCard(id: "demo", text: "Этот трек записали за одну ночь в домашней студии", big: "big", feedback: "neutral")
         }
         return player.isWave ? words.cards[track.id] : nil
-    }
-
-    /// Быстрый доступ: своё любимое в одно нажатие, не заходя в коллекцию.
-    private var quick: some View {
-        let columns = [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
-        return LazyVGrid(columns: columns, spacing: 10) {
-            QuickTile(title: "Мне нравится", symbol: "heart.fill", colors: SymbolCover.likes) { navigate(.likes) }
-            QuickTile(title: "Скачанное", symbol: "arrow.down", colors: SymbolCover.downloads) { navigate(.downloads) }
-            QuickTile(title: "История", symbol: "clock.arrow.circlepath", colors: SymbolCover.history) { navigate(.history) }
-            ForEach(session.playlists.prefix(3)) { playlist in
-                QuickTile(title: playlist.title, cover: playlist.cover) { navigate(.playlist(playlist)) }
-            }
-        }
-        .padding(.horizontal, 16)
     }
 
     private var offline: some View {
@@ -326,35 +344,21 @@ struct HomeScreen: View {
     }
 }
 
-/// Плитка быстрого доступа: обложка слева, название справа.
-private struct QuickTile: View {
-    let title: String
-    var symbol: String?
-    var colors: [Color] = []
-    var cover: String?
+/// Кнопка устройств Ynison в верхней панели главной.
+private struct DevicesToolbarButton: View {
     let action: () -> Void
+    @ObservedObject private var sync = Ynison.shared
+
+    private var activeRemote: Bool {
+        sync.enabled && sync.connection == .connected && sync.state.active != nil && sync.state.active != sync.deviceID
+    }
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 10) {
-                if let symbol {
-                    SymbolCover(symbol: symbol, colors: colors, size: 56, corner: 0)
-                } else {
-                    CoverView(uri: cover, size: 56, corner: 0)
-                }
-                Text(title)
-                    .font(.scaled(size: 14, weight: .semibold))
-                    .foregroundStyle(Theme.text)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
-                Spacer(minLength: 4)
-            }
-            .frame(height: 56)
-            .background(Theme.surface)
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .contentShape(Rectangle())
+            Image(systemName: "hifispeaker.and.homepod")
+                .foregroundStyle(activeRemote ? Theme.accentText : Theme.text)
+                .accessibilityLabel("Устройства")
         }
-        .buttonStyle(PressStyle())
     }
 }
 
@@ -390,10 +394,11 @@ private struct HomeSkeleton: View {
     }
 }
 
-/// «Моя волна»: переливающееся пятно, кнопка запуска и настройка.
+/// «Моя волна»: переливающееся пятно, кнопка запуска, настройка и съёмные фильтры.
 private struct WaveHero: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var phase
+    @Binding var settings: [String]
     let tune: () -> Void
 
     @EnvironmentObject private var player: Player
@@ -420,7 +425,7 @@ private struct WaveHero: View {
             WaveGlow(animated: playing && phase == .active && !reduceMotion && !lowPower)
                 .accessibilityHidden(true)
                 .allowsHitTesting(false)
-            VStack(spacing: 18) {
+            VStack(spacing: 14) {
                 if let other {
                     HStack(spacing: 7) {
                         PlayingBars(playing: now.playing, size: 13)
@@ -434,7 +439,7 @@ private struct WaveHero: View {
                     .padding(.horizontal, 24)
                 }
                 Text("Моя волна")
-                    .font(.scaled(size: 36, weight: .bold))
+                    .font(.scaled(size: 34, weight: .bold))
                     .foregroundStyle(Theme.text)
                 HStack(spacing: 12) {
                     Button {
@@ -455,7 +460,8 @@ private struct WaveHero: View {
                     Button(action: tune) {
                         HStack(spacing: 6) {
                             Image(systemName: "slider.horizontal.3")
-                            Text(Player.waveSettings.isEmpty ? "Настроить" : "Настроено")
+                                .foregroundStyle(settings.isEmpty ? Theme.text : Theme.accentText)
+                            Text("Настроить")
                         }
                         .font(.system(size: 16, weight: .semibold))
                         .foregroundStyle(Theme.text)
@@ -465,13 +471,45 @@ private struct WaveHero: View {
                     }
                     .buttonStyle(.plain)
                 }
+                if !settings.isEmpty {
+                    HStack(spacing: 6) {
+                        ForEach(settings, id: \.self) { seed in
+                            if let title = WaveSettingsSheet.label(for: seed) {
+                                Button {
+                                    removeFilter(seed)
+                                } label: {
+                                    HStack(spacing: 5) {
+                                        Text(title)
+                                            .font(.scaled(size: 13, weight: .medium))
+                                            .foregroundStyle(Theme.text)
+                                        Image(systemName: "xmark")
+                                            .font(.system(size: 10, weight: .bold))
+                                            .foregroundStyle(Theme.dim)
+                                    }
+                                    .padding(.horizontal, 11)
+                                    .padding(.vertical, 6)
+                                    .background(Theme.raised, in: Capsule())
+                                }
+                                .buttonStyle(PressStyle(scale: 0.94))
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                }
             }
         }
         .frame(maxWidth: .infinity)
-        .frame(height: 300)
+        .frame(height: 236)
         .onReceive(NotificationCenter.default.publisher(for: .NSProcessInfoPowerStateDidChange)) { _ in
             lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
         }
+    }
+
+    private func removeFilter(_ seed: String) {
+        let next = settings.filter { $0 != seed }
+        settings = next
+        Player.waveSettings = next
+        if active { player.playWave() }
     }
 }
 
@@ -529,6 +567,15 @@ struct WaveSettingsSheet: View {
         ("Под настроение", [("Бодрое", "settingMoodEnergy:active"), ("Весёлое", "settingMoodEnergy:fun"), ("Спокойное", "settingMoodEnergy:calm"), ("Грустное", "settingMoodEnergy:sad")]),
         ("По языку", [("Русский", "settingLanguage:russian"), ("Иностранный", "settingLanguage:not-russian"), ("Без слов", "settingLanguage:without-words")]),
     ]
+
+    static func label(for seed: String) -> String? {
+        for group in groups {
+            if let option = group.options.first(where: { $0.seed == seed }) {
+                return option.name
+            }
+        }
+        return nil
+    }
 
     @EnvironmentObject private var player: Player
     @Environment(\.dismiss) private var dismiss

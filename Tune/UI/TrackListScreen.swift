@@ -668,9 +668,12 @@ struct TrackListScreen: View {
                 header(count: all.count)
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
-                    .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 14, trailing: 16))
-                if !model.filters.isEmpty && !reordering {
-                    TrackFilterBar(filters: model.filters, selected: $selectedFilter)
+                    .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 10, trailing: 16))
+                if !all.isEmpty && !reordering {
+                    controlsBar
+                    if !plainOrder {
+                        activeFilterBar(shownCount: tracks.count, totalCount: all.count)
+                    }
                 }
                 if kind == .downloads, hasDownloadPanel {
                     DownloadsPanel()
@@ -703,7 +706,7 @@ struct TrackListScreen: View {
         return TrackListChrome(
             chrome: chrome,
             navTitle: navTitle,
-            alwaysShown: kind == .likes,
+            alwaysShown: false,
             searching: searching,
             title: title,
             cover: cover,
@@ -1282,18 +1285,112 @@ struct TrackListScreen: View {
         }
     }
 
+    private var isSystemList: Bool {
+        switch kind {
+        case .likes, .downloads, .history, .disliked: return true
+        default: return false
+        }
+    }
+
+    @ViewBuilder private var controlsBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                Menu {
+                    Picker("Сортировка", selection: $sort) {
+                        ForEach(sortOptions) { item in
+                            Text(item.name).tag(item)
+                        }
+                    }
+                } label: {
+                    let active = sort != .original
+                    HStack(spacing: 5) {
+                        Image(systemName: "arrow.up.arrow.down")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text(active ? sort.name : "Порядок")
+                            .font(.scaled(size: 13, weight: .semibold))
+                    }
+                    .foregroundStyle(active ? Color.black : Theme.text)
+                    .padding(.horizontal, 12)
+                    .frame(height: 32)
+                    .background(active ? Theme.accent : Theme.raised, in: Capsule())
+                }
+                if kind != .downloads {
+                    Button {
+                        onlyDownloaded.toggle()
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "arrow.down.circle")
+                                .font(.system(size: 12, weight: .semibold))
+                            Text("Скачанные")
+                                .font(.scaled(size: 13, weight: .semibold))
+                        }
+                        .foregroundStyle(onlyDownloaded ? Color.black : Theme.text)
+                        .padding(.horizontal, 12)
+                        .frame(height: 32)
+                        .background(onlyDownloaded ? Theme.accent : Theme.raised, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+                ForEach(model.filters) { item in
+                    let on = selectedFilter == item.id
+                    Button {
+                        selectedFilter = on ? nil : item.id
+                    } label: {
+                        Text(item.name)
+                            .font(.scaled(size: 13, weight: .semibold))
+                            .foregroundStyle(on ? Color.black : Theme.text)
+                            .padding(.horizontal, 12)
+                            .frame(height: 32)
+                            .background(on ? Theme.accent : Theme.raised, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(on ? .isSelected : [])
+                }
+            }
+            .padding(.horizontal, 16)
+        }
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+        .listRowInsets(EdgeInsets(top: 2, leading: 0, bottom: 8, trailing: 0))
+    }
+
+    private func activeFilterBar(shownCount: Int, totalCount: Int) -> some View {
+        let filtered = onlyDownloaded || selectedFilter != nil || !filter.isEmpty
+        return HStack {
+            Text(filtered ? "Показано \(shownCount) из \(totalCount)" : "Сортировка: \(sort.name)")
+                .font(.scaled(size: 13))
+                .foregroundStyle(Theme.dim)
+            Spacer(minLength: 8)
+            Button("Сбросить") {
+                onlyDownloaded = false
+                selectedFilter = nil
+                sort = .original
+                filter = ""
+            }
+            .font(.scaled(size: 13, weight: .semibold))
+            .foregroundStyle(Theme.accentText)
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Theme.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+        .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 8, trailing: 16))
+    }
+
     @ViewBuilder private var artwork: some View {
         switch kind {
         case .likes:
-            SymbolCover(symbol: "heart.fill", colors: SymbolCover.likes, size: 200, corner: 22)
+            SymbolCover(symbol: "heart.fill", colors: SymbolCover.likes, size: 82, corner: 18)
         case .downloads:
-            SymbolCover(symbol: "arrow.down", colors: SymbolCover.downloads, size: 200, corner: 22)
+            SymbolCover(symbol: "arrow.down", colors: SymbolCover.downloads, size: 82, corner: 18)
         case .history:
-            SymbolCover(symbol: "clock.arrow.circlepath", colors: SymbolCover.history, size: 200, corner: 22)
+            SymbolCover(symbol: "clock.arrow.circlepath", colors: SymbolCover.history, size: 82, corner: 18)
         case .disliked:
-            SymbolCover(symbol: "hand.thumbsdown.fill", colors: SymbolCover.disliked, size: 200, corner: 22)
+            SymbolCover(symbol: "hand.thumbsdown.fill", colors: SymbolCover.disliked, size: 82, corner: 18)
         default:
-            CoverView(uri: cover, size: 220, corner: 18)
+            CoverView(uri: cover, size: 196, corner: 18)
         }
     }
 
@@ -1311,76 +1408,108 @@ struct TrackListScreen: View {
         return parts.joined(separator: " · ")
     }
 
+    @ViewBuilder
     private func header(count: Int) -> some View {
-        VStack(spacing: 6) {
-            artwork
-                .shadow(color: .black.opacity(0.45), radius: 22, y: 12)
-                .padding(.bottom, 12)
-                .photosPicker(isPresented: $choosingCover, selection: $coverPhoto, matching: .images)
-                .onChange(of: coverPhoto) { photo in
-                    guard let photo else { return }
-                    Task { await uploadCover(photo) }
-                }
-            Text(kindName.uppercased())
-                .font(.scaled(size: 11, weight: .semibold))
-                .kerning(1)
-                .foregroundStyle(Theme.text.opacity(0.6))
-            Text(title)
-                .font(.scaled(size: 26, weight: .bold))
-                .foregroundStyle(Theme.text)
-                .multilineTextAlignment(.center)
-                .lineLimit(3)
-                .background {
-                    if kind != .likes {
-                        HeaderWatch { navTitle.setProgress($0) }
+        if isSystemList {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 14) {
+                    artwork
+                        .shadow(color: .black.opacity(0.3), radius: 14, y: 6)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(kindName.uppercased())
+                            .font(.scaled(size: 11, weight: .semibold))
+                            .kerning(1)
+                            .foregroundStyle(Theme.text.opacity(0.6))
+                        Text(title)
+                            .font(.scaled(size: 24, weight: .bold))
+                            .foregroundStyle(Theme.text)
+                            .lineLimit(2)
+                            .background {
+                                HeaderWatch { navTitle.setProgress($0) }
+                            }
+                        Text(count > 0 ? summary(count) : kindName)
+                            .font(.scaled(size: 13))
+                            .foregroundStyle(Theme.dim)
+                            .lineLimit(1)
                     }
+                    Spacer(minLength: 0)
                 }
-            if !model.subtitle.isEmpty {
-                Button {
-                    if let artist = model.album?.artist, !artist.id.isEmpty { navigate(.artist(artist.id, artist.name)) }
-                } label: {
-                    Text(model.subtitle)
-                        .font(.scaled(size: 15, weight: .medium))
-                        .foregroundStyle(Theme.text.opacity(0.75))
-                        .multilineTextAlignment(.center)
-                }
-                .buttonStyle(.plain)
+                headerActions(count: count)
             }
-            if count > 0 {
-                Text(summary(count))
-                    .font(.scaled(size: 13))
-                    .foregroundStyle(Theme.text.opacity(0.55))
-                    .multilineTextAlignment(.center)
-            }
-            if let about = model.info?.about, !about.isEmpty {
-                Text(about)
-                    .font(.scaled(size: 14))
-                    .foregroundStyle(Theme.text.opacity(0.7))
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            VStack(spacing: 6) {
+                artwork
+                    .shadow(color: .black.opacity(0.45), radius: 22, y: 12)
+                    .padding(.bottom, 8)
+                    .photosPicker(isPresented: $choosingCover, selection: $coverPhoto, matching: .images)
+                    .onChange(of: coverPhoto) { photo in
+                        guard let photo else { return }
+                        Task { await uploadCover(photo) }
+                    }
+                Text(kindName.uppercased())
+                    .font(.scaled(size: 11, weight: .semibold))
+                    .kerning(1)
+                    .foregroundStyle(Theme.text.opacity(0.6))
+                Text(title)
+                    .font(.scaled(size: 26, weight: .bold))
+                    .foregroundStyle(Theme.text)
                     .multilineTextAlignment(.center)
                     .lineLimit(3)
-                    .padding(.top, 4)
-            }
-            HStack(spacing: 14) {
-                RoundButton(symbol: kind == .downloads ? "trash" : "arrow.down.to.line") {
-                    if kind == .downloads {
-                        confirmRemove = true
-                    } else {
-                        downloads.download(all)
-                        session.show("Скачиваем: \(plural(all.count, "трек", "трека", "треков"))")
+                    .background {
+                        HeaderWatch { navTitle.setProgress($0) }
                     }
+                if !model.subtitle.isEmpty {
+                    Button {
+                        if let artist = model.album?.artist, !artist.id.isEmpty { navigate(.artist(artist.id, artist.name)) }
+                    } label: {
+                        Text(model.subtitle)
+                            .font(.scaled(size: 15, weight: .medium))
+                            .foregroundStyle(Theme.text.opacity(0.75))
+                            .multilineTextAlignment(.center)
+                    }
+                    .buttonStyle(.plain)
                 }
-                PlayButton(context: context) {
-                    player.play(shown.isEmpty ? all : shown, context: context)
+                if count > 0 {
+                    Text(summary(count))
+                        .font(.scaled(size: 13))
+                        .foregroundStyle(Theme.text.opacity(0.55))
+                        .multilineTextAlignment(.center)
                 }
-                RoundButton(symbol: "shuffle") {
-                    player.play(shown.isEmpty ? all : shown, context: context, shuffled: true)
+                if let about = model.info?.about, !about.isEmpty {
+                    Text(about)
+                        .font(.scaled(size: 14))
+                        .foregroundStyle(Theme.text.opacity(0.7))
+                        .multilineTextAlignment(.center)
+                        .lineLimit(3)
+                        .padding(.top, 4)
+                }
+                headerActions(count: count)
+                    .padding(.top, 10)
+            }
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    private func headerActions(count: Int) -> some View {
+        HStack(spacing: 14) {
+            RoundButton(symbol: kind == .downloads ? "trash" : "arrow.down.to.line") {
+                if kind == .downloads {
+                    confirmRemove = true
+                } else {
+                    downloads.download(all)
+                    session.show("Скачиваем: \(plural(all.count, "трек", "трека", "треков"))")
                 }
             }
-            .padding(.top, 14)
-            .disabled(count == 0)
-            .opacity(count == 0 ? 0.5 : 1)
+            PlayButton(context: context) {
+                player.play(shown.isEmpty ? all : shown, context: context)
+            }
+            RoundButton(symbol: "shuffle") {
+                player.play(shown.isEmpty ? all : shown, context: context, shuffled: true)
+            }
         }
-        .frame(maxWidth: .infinity)
+        .disabled(count == 0)
+        .opacity(count == 0 ? 0.5 : 1)
     }
 
     private func uploadCover(_ photo: PhotosPickerItem) async {

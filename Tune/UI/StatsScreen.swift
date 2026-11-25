@@ -161,7 +161,7 @@ struct StatsScreen: View {
                     .foregroundStyle(Theme.text)
                     .plain(top: 0, bottom: 6)
                 ForEach(Array(data.tracks.enumerated()), id: \.element.id) { index, item in
-                    TrackRow(track: item.track, number: index + 1) {
+                    TrackRow(track: item.track, number: index + 1, badge: "\(item.count)×") {
                         player.play(top, at: index, context: .various("Любимые треки"))
                     }
                 }
