@@ -965,6 +965,9 @@ struct TrackRow: View {
             }
             .tint(.indigo)
         }
+        .onChange(of: track.id) { _ in
+            syncRowState()
+        }
         .onReceive(player.now.$id) { id in
             let next: RowPlayback = id == track.id ? (player.now.playing ? .playing : .paused) : .other
             if playback != next { playback = next }
@@ -990,6 +993,20 @@ struct TrackRow: View {
             let value = ids.contains(track.id)
             if disliked != value { disliked = value }
         }
+    }
+
+    private func syncRowState() {
+        let now = player.now
+        let nextPlayback: RowPlayback = now.id == track.id ? (now.playing ? .playing : .paused) : .other
+        if playback != nextPlayback { playback = nextPlayback }
+        let nextProgress = downloads.active[track.id]
+        if downloadProgress != nextProgress { downloadProgress = nextProgress }
+        let nextDownloaded = downloads.downloadedIds.contains(track.id)
+        if downloaded != nextDownloaded { downloaded = nextDownloaded }
+        let nextLiked = Session.shared.isLiked(track.id)
+        if liked != nextLiked { liked = nextLiked }
+        let nextDisliked = Session.shared.disliked.contains(track.id)
+        if disliked != nextDisliked { disliked = nextDisliked }
     }
 
     private enum RowPlayback {
