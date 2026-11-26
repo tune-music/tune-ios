@@ -56,8 +56,32 @@ final class TrackListModel: ObservableObject {
     private var cachedLikesLoaded = false
     private var staleLikedTracks = Set<String>()
     private static var filterCache: [String: [TrackFilter]] = [:]
+    private static var filtersByPlace: [String: [TrackFilter]] = [:]
     private var filterTask: Task<Void, Never>?
     private var filterKey: String?
+
+    init(kind: ListKind) {
+        self.kind = kind
+        switch kind {
+        case .playlist(let playlist):
+            title = playlist.title
+            cover = playlist.cover
+        case .artist(_, let name), .artistFamiliar(_, let name, _):
+            title = name
+        default:
+            break
+        }
+        if !Demo.on, let place = Self.filterPlace(for: kind) {
+            if let mem = Self.filtersByPlace[place] {
+                filters = mem
+            } else if let disk = Storage.load(Self.filterCacheFile(for: place), as: [TrackFilter].self) {
+                Self.filtersByPlace[place] = disk
+                filters = disk
+            }
+        }
+    }
+
+    private let kind: ListKind
 
     func updateLocalLikes(_ local: [Track]) {
         let newIDs = Set(local.map(\.id))
@@ -276,34 +300,47 @@ final class TrackListModel: ObservableObject {
         }
     }
 
-    func loadFilters(for kind: ListKind) {
-        let place: String
+    private static func filterPlace(for kind: ListKind, albumKind: String? = nil) -> String? {
         switch kind {
-        case .likes: place = "likes"
-        case .playlist(let playlist): place = "playlist:\(playlist.id)"
+        case .likes: return "likes"
+        case .downloads: return "downloads"
+        case .history: return "history"
+        case .playlist(let playlist): return "playlist:\(playlist.id)"
         case .album(let id):
-            if album?.kind == "podcast" || album?.kind == "audiobook" {
-                filters = []
-                return
-            }
-            place = "album:\(id)"
-        case .artist(let id, _): place = "artist-tracks:\(id)"
-        default:
-            filters = []
+            if albumKind == "podcast" || albumKind == "audiobook" { return nil }
+            return "album:\(id)"
+        case .artist(let id, _): return "artist-tracks:\(id)"
+        case .artistFamiliar(let id, _, let wave): return "artist-familiar:\(id):\(wave)"
+        case .disliked: return nil
+        }
+    }
+
+    private static func filterCacheFile(for place: String) -> String {
+        _ = Storage.lists
+        return "Lists/filters-" + Storage.hash(place) + ".json"
+    }
+
+    func loadFilters(for kind: ListKind, sourceTracks: [Track]? = nil) {
+        guard let place = Self.filterPlace(for: kind, albumKind: album?.kind) else {
+            if !filters.isEmpty { filters = [] }
             return
         }
+        let source = sourceTracks ?? tracks
         var seen = Set<String>()
-        let ids = tracks.map(\.id).filter { !$0.isEmpty && $0.allSatisfy(\.isNumber) && seen.insert($0).inserted }
+        let ids = source.map(\.id).filter { !$0.isEmpty && $0.allSatisfy(\.isNumber) && seen.insert($0).inserted }
         let cacheKey = "\(place):\(ids.count):\(ids.first ?? ""):\(ids.last ?? "")"
         if filterKey == cacheKey { return }
         filterKey = cacheKey
         filterTask?.cancel()
         guard ids.count >= 4 else {
-            filters = []
+            if !source.isEmpty {
+                Self.filtersByPlace[place] = []
+                if !filters.isEmpty { filters = [] }
+            }
             return
         }
         if let cached = Self.filterCache[cacheKey] {
-            filters = cached
+            if filters != cached { filters = cached }
             return
         }
         guard !Connectivity.shared.offline, !Session.shared.offline else { return }
@@ -311,7 +348,12 @@ final class TrackListModel: ObservableObject {
             guard let loaded = try? await API.shared.trackFilters(ids: ids), !Task.isCancelled else { return }
             guard let self, self.filterKey == cacheKey else { return }
             Self.filterCache[cacheKey] = loaded
-            self.filters = loaded
+            Self.filtersByPlace[place] = loaded
+            if self.filters != loaded { self.filters = loaded }
+            if !Demo.on {
+                let file = Self.filterCacheFile(for: place)
+                Task.detached(priority: .utility) { Storage.save(loaded, file) }
+            }
         }
     }
 
@@ -380,7 +422,12 @@ private struct TrackListChrome<Content: View>: View {
 struct TrackListScreen: View {
     let kind: ListKind
 
-    @StateObject private var model = TrackListModel()
+    @StateObject private var model: TrackListModel
+
+    init(kind: ListKind) {
+        self.kind = kind
+        _model = StateObject(wrappedValue: TrackListModel(kind: kind))
+    }
     private var player: Player { Player.shared }
     private var downloads: Downloads { Downloads.shared }
     @State private var downloadEntries: [Downloads.Entry] = []
@@ -587,7 +634,12 @@ struct TrackListScreen: View {
                 }
             }
             .onReceive(downloads.$entries.removeDuplicates()) { entries in
-                if (kind == .downloads || onlyDownloaded), downloadEntries != entries { downloadEntries = entries }
+                if (kind == .downloads || onlyDownloaded), downloadEntries != entries {
+                    downloadEntries = entries
+                    if kind == .downloads {
+                        model.loadFilters(for: kind, sourceTracks: entries.map(\.track))
+                    }
+                }
             }
             .onChange(of: onlyDownloaded) { enabled in
                 if enabled { downloadEntries = downloads.entries }
@@ -669,7 +721,7 @@ struct TrackListScreen: View {
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
                     .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 10, trailing: 16))
-                if !all.isEmpty && !reordering {
+                if !reordering {
                     controlsBar
                     if !plainOrder {
                         activeFilterBar(shownCount: tracks.count, totalCount: all.count)
@@ -739,6 +791,10 @@ struct TrackListScreen: View {
             guard !prepared else { return }
             prepared = true
             if let playlist { auto = Settings.autoPlaylists.contains(playlist.id) }
+            if kind == .downloads {
+                downloadEntries = downloads.entries
+                model.loadFilters(for: kind, sourceTracks: downloadEntries.map(\.track))
+            }
             // Без сети и в офлайн-режиме сразу показано то, что можно слушать.
             if kind != .downloads, Connectivity.shared.offline || session.offline { onlyDownloaded = true }
         }
@@ -1390,7 +1446,7 @@ struct TrackListScreen: View {
         case .disliked:
             SymbolCover(symbol: "hand.thumbsdown.fill", colors: SymbolCover.disliked, size: 82, corner: 18)
         default:
-            CoverView(uri: cover, size: 196, corner: 18)
+            CoverView(uri: cover, size: 168, corner: 18)
         }
     }
 

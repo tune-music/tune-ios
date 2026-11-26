@@ -144,6 +144,7 @@ struct HomeScreen: View {
                 }
             }
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.34), value: cardIdentity)
+            .padding(.top, 4)
             .padding(.bottom, 24)
             .background(alignment: .top) {
                 GeometryReader { geometry in
@@ -194,7 +195,11 @@ struct HomeScreen: View {
             WaveSettingsSheet()
         }
         .onChange(of: tuning) { open in
-            if !open { waveSettings = Player.waveSettings }
+            if !open {
+                withAnimation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.84)) {
+                    waveSettings = Player.waveSettings
+                }
+            }
         }
         .task { await model.load() }
         .onReceive(Downloads.shared.$entries.map(\.count).removeDuplicates()) { count in
@@ -523,31 +528,37 @@ private struct WaveHero: View {
                 }
                 .buttonStyle(.plain)
             }
-            if !settings.isEmpty {
-                HStack(spacing: 6) {
-                    ForEach(settings, id: \.self) { seed in
-                        if let title = WaveSettingsSheet.label(for: seed) {
-                            Button {
-                                removeFilter(seed)
-                            } label: {
-                                HStack(spacing: 5) {
-                                    Text(title)
-                                        .font(.scaled(size: 13, weight: .medium))
-                                        .foregroundStyle(Theme.text)
-                                    Image(systemName: "xmark")
-                                        .font(.system(size: 10, weight: .bold))
-                                        .foregroundStyle(Theme.dim)
+            ZStack {
+                if !settings.isEmpty {
+                    HStack(spacing: 6) {
+                        ForEach(settings, id: \.self) { seed in
+                            if let title = WaveSettingsSheet.label(for: seed) {
+                                Button {
+                                    removeFilter(seed)
+                                } label: {
+                                    HStack(spacing: 5) {
+                                        Text(title)
+                                            .font(.scaled(size: 13, weight: .medium))
+                                            .foregroundStyle(Theme.text)
+                                        Image(systemName: "xmark")
+                                            .font(.system(size: 10, weight: .bold))
+                                            .foregroundStyle(Theme.dim)
+                                    }
+                                    .padding(.horizontal, 11)
+                                    .padding(.vertical, 6)
+                                    .background(Theme.raised, in: Capsule())
                                 }
-                                .padding(.horizontal, 11)
-                                .padding(.vertical, 6)
-                                .background(Theme.raised, in: Capsule())
+                                .buttonStyle(PressStyle(scale: 0.94))
+                                .transition(.opacity.combined(with: .scale(scale: 0.86)))
                             }
-                            .buttonStyle(PressStyle(scale: 0.94))
                         }
                     }
+                    .padding(.horizontal, 16)
+                    .animation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.84), value: settings)
+                    .transition(.opacity.combined(with: .scale(scale: 0.9)))
                 }
-                .padding(.horizontal, 16)
             }
+            .frame(height: 32)
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: other)
         .frame(maxWidth: .infinity)
@@ -574,7 +585,9 @@ private struct WaveHero: View {
 
     private func removeFilter(_ seed: String) {
         let next = settings.filter { $0 != seed }
-        settings = next
+        withAnimation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.84)) {
+            settings = next
+        }
         Player.waveSettings = next
         if active { player.playWave() }
     }
@@ -611,6 +624,13 @@ private struct WavePalette {
         highlight: RGB(r: 1.0, g: 0.91, b: 0.58)
     )
 
+    static let tuneLight = WavePalette(
+        primary: RGB(r: 0.96, g: 0.62, b: 0.04),
+        secondary: RGB(r: 0.95, g: 0.36, b: 0.04),
+        deep: RGB(r: 0.84, g: 0.18, b: 0.04),
+        highlight: RGB(r: 1.0, g: 0.74, b: 0.10)
+    )
+
     func lerp(to target: WavePalette, factor: Double) -> WavePalette {
         WavePalette(
             primary: primary.lerp(to: target.primary, factor: factor),
@@ -620,20 +640,20 @@ private struct WavePalette {
         )
     }
 
-    static func from(hex: String?) -> WavePalette {
-        guard let hex else { return .tuneDefault }
+    static func from(hex: String?, light: Bool) -> WavePalette {
+        guard let hex else { return light ? .tuneLight : .tuneDefault }
         let digits = hex.hasPrefix("#") ? String(hex.dropFirst()) : hex
-        guard digits.count == 6, let value = UInt32(digits, radix: 16) else { return .tuneDefault }
+        guard digits.count == 6, let value = UInt32(digits, radix: 16) else { return light ? .tuneLight : .tuneDefault }
         let r = Double((value >> 16) & 0xFF) / 255
         let g = Double((value >> 8) & 0xFF) / 255
         let b = Double(value & 0xFF) / 255
         let (h, s, v) = rgbToHsb(r: r, g: g, b: b)
-        let sat = s < 0.08 ? s : max(s, 0.72)
-        let secSat = s < 0.08 ? s : max(s, 0.78)
-        let primary = hsbToRgb(h: h, s: sat, b: max(v, 0.88))
-        let secondary = hsbToRgb(h: (h + 0.06).truncatingRemainder(dividingBy: 1.0), s: secSat, b: max(v, 0.82))
-        let deep = hsbToRgb(h: (h + 0.95).truncatingRemainder(dividingBy: 1.0), s: min(1.0, s * 1.05 + 0.12), b: max(0.55, v * 0.72))
-        let highlight = hsbToRgb(h: h, s: max(0.18, s * 0.38), b: 1.0)
+        let sat = s < 0.08 ? s : max(s, light ? 0.80 : 0.72)
+        let secSat = s < 0.08 ? s : max(s, light ? 0.84 : 0.78)
+        let primary = hsbToRgb(h: h, s: sat, b: light ? min(max(v, 0.72), 0.86) : max(v, 0.88))
+        let secondary = hsbToRgb(h: (h + 0.06).truncatingRemainder(dividingBy: 1.0), s: secSat, b: light ? min(max(v, 0.68), 0.80) : max(v, 0.82))
+        let deep = hsbToRgb(h: (h + 0.95).truncatingRemainder(dividingBy: 1.0), s: min(1.0, s * 1.05 + 0.15), b: light ? max(0.48, v * 0.65) : max(0.55, v * 0.72))
+        let highlight = hsbToRgb(h: h, s: light ? max(0.55, s * 0.75) : max(0.18, s * 0.38), b: light ? 0.92 : 1.0)
         return WavePalette(primary: primary, secondary: secondary, deep: deep, highlight: highlight)
     }
 
@@ -736,12 +756,12 @@ private struct WaveGlow: View {
                             y: center.y + CGFloat(sin(angle * 1.25)) * orbitY
                         )
                         let radius = maxSpread * CGFloat(0.72 + 0.18 * energy + 0.08 * kick + 0.06 * surge + 0.07 * sin(angle + 1.0))
-                        let baseAlpha = (isLight ? 0.32 : 0.40) * power
+                        let baseAlpha = (isLight ? 0.48 : 0.40) * power
                         let gradient = Gradient(stops: [
                             .init(color: blobs[index].opacity(baseAlpha), location: 0.0),
-                            .init(color: blobs[index].opacity(baseAlpha * 0.62), location: 0.28),
-                            .init(color: blobs[index].opacity(baseAlpha * 0.24), location: 0.58),
-                            .init(color: blobs[index].opacity(baseAlpha * 0.05), location: 0.82),
+                            .init(color: blobs[index].opacity(baseAlpha * (isLight ? 0.72 : 0.62)), location: 0.28),
+                            .init(color: blobs[index].opacity(baseAlpha * (isLight ? 0.34 : 0.24)), location: 0.58),
+                            .init(color: blobs[index].opacity(baseAlpha * (isLight ? 0.09 : 0.05)), location: 0.82),
                             .init(color: .clear, location: 1.0),
                         ])
                         layer.fill(
@@ -754,10 +774,10 @@ private struct WaveGlow: View {
                 // 2. Размытые органические контуры волны (полярные гармоники)
                 context.drawLayer { layer in
                     layer.blendMode = isLight ? .normal : .plusLighter
-                    layer.addFilter(.blur(radius: isLight ? 15 : 18))
+                    layer.addFilter(.blur(radius: isLight ? 12 : 18))
                     let contours: [(rx: Double, ry: Double, speed: Double, offset: Double, color: Color, alpha: Double)] = [
-                        (0.41, 0.20, 1.0, 0.0, amber, isLight ? 0.28 : 0.40),
-                        (0.34, 0.16, -0.82, 1.9, tangerine, isLight ? 0.22 : 0.34),
+                        (0.41, 0.20, 1.0, 0.0, amber, isLight ? 0.46 : 0.40),
+                        (0.34, 0.16, -0.82, 1.9, tangerine, isLight ? 0.38 : 0.34),
                     ]
                     let amp = 0.04 + 0.05 * activity + 0.11 * kick + 0.06 * surge
                     for contour in contours {
@@ -772,7 +792,7 @@ private struct WaveGlow: View {
                             offset: contour.offset,
                             amp: amp
                         )
-                        layer.fill(path, with: .color(contour.color.opacity(contour.alpha * 0.42 * power)))
+                        layer.fill(path, with: .color(contour.color.opacity(contour.alpha * (isLight ? 0.50 : 0.42) * power)))
                         layer.stroke(
                             path,
                             with: .color(contour.color.opacity(contour.alpha * power)),
@@ -806,18 +826,19 @@ private struct WaveGlow: View {
                                 freq: ribbon.freq,
                                 time: time * ribbon.speed + ribbon.phase
                             )
-                            let alpha = (isGlowPass ? (isLight ? 0.26 : 0.48) : (isLight ? 0.42 : 0.68)) * power
+                            let alpha = (isGlowPass ? (isLight ? 0.44 : 0.48) : (isLight ? 0.82 : 0.68)) * power
+                            let centerColor = isLight ? ribbon.color : champagne
                             let gradient = Gradient(stops: [
                                 .init(color: .clear, location: 0.0),
-                                .init(color: ribbon.color.opacity(alpha * 0.75), location: 0.22),
-                                .init(color: champagne.opacity(alpha), location: 0.50),
-                                .init(color: ribbon.color.opacity(alpha * 0.75), location: 0.78),
+                                .init(color: ribbon.color.opacity(alpha * 0.8), location: 0.22),
+                                .init(color: centerColor.opacity(alpha), location: 0.50),
+                                .init(color: ribbon.color.opacity(alpha * 0.8), location: 0.78),
                                 .init(color: .clear, location: 1.0),
                             ])
                             layer.stroke(
                                 path,
                                 with: .linearGradient(gradient, startPoint: CGPoint(x: leftX, y: center.y), endPoint: CGPoint(x: rightX, y: center.y)),
-                                style: StrokeStyle(lineWidth: ribbon.width * (isGlowPass ? 3.2 : 1.0), lineCap: .round)
+                                style: StrokeStyle(lineWidth: ribbon.width * (isGlowPass ? 3.2 : (isLight ? 1.25 : 1.0)), lineCap: .round)
                             )
                         }
                     }
@@ -835,8 +856,8 @@ private struct WaveGlow: View {
                         let py = center.y + CGFloat(sin(angle * 1.3 + seed)) * orbit * 0.52
                         let pulse = 0.45 + 0.55 * sin(time * 1.9 + seed * 4.0)
                         let r = CGFloat(1.4 + Double(i % 3) * 0.7) * CGFloat(0.85 + 0.25 * energy + 0.25 * kick)
-                        let sparkAlpha = (isLight ? 0.28 : 0.52) * power * pulse
-                        let sparkColor = i % 2 == 0 ? champagne : amber
+                        let sparkAlpha = (isLight ? 0.58 : 0.52) * power * pulse
+                        let sparkColor = isLight ? (i % 2 == 0 ? amber : tangerine) : (i % 2 == 0 ? champagne : amber)
                         let glowR = r * 2.6
                         layer.fill(
                             Path(ellipseIn: CGRect(x: px - glowR, y: py - glowR, width: glowR * 2, height: glowR * 2)),
@@ -862,7 +883,7 @@ private struct WaveGlow: View {
     private func step(at date: Date) -> (phase: Double, energy: Double, activity: Double, audioLevel: Double, audioBass: Double, palette: WavePalette, surge: Double) {
         let targetAct = playing ? 1.0 : 0.0
         let targetEn = targetEnergy
-        let targetPalette = WavePalette.from(hex: waveHex)
+        let targetPalette = WavePalette.from(hex: waveHex, light: colorScheme == .light)
 
         if motion.lastWaveKey != waveKey {
             if !motion.lastWaveKey.isEmpty {

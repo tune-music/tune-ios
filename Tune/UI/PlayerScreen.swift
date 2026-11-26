@@ -11,9 +11,13 @@ typealias CoverSwipe = TrackDrag
 struct PlayerScreen: View {
     private enum DragLock { case horizontal, vertical, ignored }
 
+    private final class GestureStateBox {
+        var axis: DragLock?
+        var origin: CGFloat = 0
+    }
+
     @StateObject private var swipe = CoverSwipe()
-    @State private var axis: DragLock?
-    @State private var origin: CGFloat = 0
+    @State private var gestureBox = GestureStateBox()
     /// Текст песни показывается на месте обложки.
     @State private var lyrics = Demo.screen == "lyrics"
 
@@ -32,31 +36,32 @@ struct PlayerScreen: View {
                 DragGesture(minimumDistance: 8)
                     .onChanged { value in
                         let move = value.translation
-                        if axis == nil {
+                        if gestureBox.axis == nil {
                             if abs(move.width) > abs(move.height) {
-                                axis = lyrics ? .ignored : .horizontal
-                                origin = move.width
+                                gestureBox.axis = lyrics ? .ignored : .horizontal
+                                gestureBox.origin = move.width
                             } else {
-                                axis = .vertical
+                                gestureBox.axis = .vertical
                             }
                         }
-                        switch axis {
+                        switch gestureBox.axis {
                         case .vertical:
                             PlayerWindow.shared.drag(move.height)
                         case .horizontal:
-                            swipe.move(move.width - origin)
+                            swipe.move(move.width - gestureBox.origin)
                         case .ignored, nil:
                             break
                         }
                     }
                     .onEnded { value in
-                        let locked = axis
-                        axis = nil
+                        let locked = gestureBox.axis
+                        gestureBox.axis = nil
                         switch locked {
                         case .horizontal:
                             let far = abs(value.translation.width) > 70 || abs(value.predictedEndTranslation.width) > 220
                             let ahead = value.translation.width < 0
-                            swipe.release {
+                            let flickVelocity = (value.predictedEndTranslation.width - value.translation.width) * 4
+                            swipe.release(velocity: flickVelocity) {
                                 guard far else { return }
                                 if ahead { Player.shared.next() } else { Player.shared.previous() }
                             }
@@ -99,6 +104,20 @@ private struct PlayerCover: View {
             .frame(width: side, height: side)
             .scaleEffect(player.isPlaying ? 1 : 0.9)
             .animation(.spring(response: 0.45, dampingFraction: 0.75), value: player.isPlaying)
+            .task(id: player.current?.id) {
+                guard !Demo.on, !Connectivity.shared.offline, !Settings.offlineMode,
+                      !ProcessInfo.processInfo.isLowPowerModeEnabled else { return }
+                let decodeSide = ImageLoader.side(for: 360)
+                let queue = player.queue
+                let current = player.index
+                let neighbors = [current - 1, current + 1]
+                    .filter { queue.indices.contains($0) }
+                    .compactMap { queue[$0].cover }
+                for cover in neighbors {
+                    if Task.isCancelled { return }
+                    _ = await ImageLoader.shared.load(cover, side: decodeSide)
+                }
+            }
     }
 }
 

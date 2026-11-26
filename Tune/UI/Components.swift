@@ -2,10 +2,31 @@ import Combine
 import SwiftUI
 
 @MainActor
+final class AppActivity: ObservableObject {
+    static let shared = AppActivity()
+    @Published private(set) var active = UIApplication.shared.applicationState != .background
+    private var tokens: [NSObjectProtocol] = []
+
+    private init() {
+        let center = NotificationCenter.default
+        tokens.append(center.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.active = true }
+        })
+        tokens.append(center.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.active = false }
+        })
+        tokens.append(center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.active = false }
+        })
+    }
+}
+
+@MainActor
 private final class RefreshBox: NSObject {
+    var action: (@MainActor () async -> Void)?
     var task: Task<Void, Never>?
     weak var scrollView: UIScrollView?
-    weak var probe: ScrollDragProbe.ProbeView?
+    private weak var refreshControl: UIRefreshControl?
     private weak var observedPan: UIPanGestureRecognizer?
     private var releaseContinuation: CheckedContinuation<Void, Never>?
     private var waitingRelease = false
@@ -15,6 +36,21 @@ private final class RefreshBox: NSObject {
     }
 
     func attach(_ scroll: UIScrollView) {
+        if !scroll.alwaysBounceVertical {
+            scroll.alwaysBounceVertical = true
+        }
+        if scroll.refreshControl == nil {
+            let control = UIRefreshControl()
+            control.tintColor = .secondaryLabel
+            control.addTarget(self, action: #selector(triggered(_:)), for: .valueChanged)
+            scroll.refreshControl = control
+            refreshControl = control
+        } else if refreshControl !== scroll.refreshControl {
+            let control = scroll.refreshControl
+            control?.removeTarget(self, action: #selector(triggered(_:)), for: .valueChanged)
+            control?.addTarget(self, action: #selector(triggered(_:)), for: .valueChanged)
+            refreshControl = control
+        }
         guard scrollView !== scroll || observedPan !== scroll.panGestureRecognizer else { return }
         detachPan()
         scrollView = scroll
@@ -28,11 +64,33 @@ private final class RefreshBox: NSObject {
         observedPan = nil
     }
 
+    func cancel() {
+        task?.cancel()
+        task = nil
+        resumeReleaseWait()
+        if refreshControl?.isRefreshing == true {
+            refreshControl?.endRefreshing()
+        }
+    }
+
+    @objc private func triggered(_ control: UIRefreshControl) {
+        guard task == nil, !Connectivity.shared.offline, let action else {
+            control.endRefreshing()
+            return
+        }
+        task = Task { @MainActor [weak self, weak control] in
+            await action()
+            await self?.waitForRelease()
+            control?.endRefreshing()
+            self?.task = nil
+        }
+    }
+
     @objc private func panChanged(_ pan: UIPanGestureRecognizer) {
         switch pan.state {
         case .ended, .cancelled, .failed:
             if waitingRelease {
-                scrollView?.refreshControl?.endRefreshing()
+                refreshControl?.endRefreshing()
             }
             resumeReleaseWait()
         default:
@@ -41,7 +99,6 @@ private final class RefreshBox: NSObject {
     }
 
     func waitForRelease() async {
-        probe?.attach()
         guard let scroll = scrollView, scroll.isDragging || scroll.isTracking else { return }
         waitingRelease = true
         let deadline = Date().addingTimeInterval(8)
@@ -93,6 +150,7 @@ private final class RefreshBox: NSObject {
 
 private struct ScrollDragProbe: UIViewRepresentable {
     let box: RefreshBox
+    let action: @MainActor () async -> Void
 
     final class ProbeView: UIView {
         weak var box: RefreshBox?
@@ -106,11 +164,14 @@ private struct ScrollDragProbe: UIViewRepresentable {
             }
         }
 
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            attach()
+        }
+
         func attach() {
-            guard let box else { return }
-            box.probe = self
-            guard window != nil else { return }
-            if let existing = box.scrollView, existing.window != nil, existing.refreshControl != nil {
+            guard let box, window != nil else { return }
+            if let existing = box.scrollView, existing.window != nil {
                 box.attach(existing)
                 return
             }
@@ -138,8 +199,12 @@ private struct ScrollDragProbe: UIViewRepresentable {
                 let (view, depth) = queue[index]
                 index += 1
                 if let scroll = view as? UIScrollView {
-                    if scroll.refreshControl != nil { return scroll }
-                    if fallback == nil, scroll.alwaysBounceVertical { fallback = scroll }
+                    if !scroll.alwaysBounceHorizontal && (root.bounds.height == 0 || scroll.bounds.height >= root.bounds.height * 0.5) {
+                        return scroll
+                    }
+                    if fallback == nil, scroll.alwaysBounceVertical || !scroll.alwaysBounceHorizontal {
+                        fallback = scroll
+                    }
                 }
                 if depth < 12 {
                     for child in view.subviews { queue.append((child, depth + 1)) }
@@ -154,11 +219,13 @@ private struct ScrollDragProbe: UIViewRepresentable {
         view.backgroundColor = .clear
         view.isUserInteractionEnabled = false
         view.box = box
+        box.action = action
         return view
     }
 
     func updateUIView(_ uiView: ProbeView, context: Context) {
         uiView.box = box
+        box.action = action
         uiView.attach()
     }
 }
@@ -169,34 +236,12 @@ private struct ScreenRefresh: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .background(ScrollDragProbe(box: box))
-            .refreshable { await refresh() }
+            .background(ScrollDragProbe(box: box, action: action))
+            .onAppear { box.action = action }
             .onReceive(Connectivity.shared.$online) { online in
-                if !online {
-                    box.task?.cancel()
-                    box.resumeReleaseWait()
-                }
+                if !online { box.cancel() }
             }
-            .onDisappear {
-                box.task?.cancel()
-                box.resumeReleaseWait()
-            }
-    }
-
-    @MainActor
-    private func refresh() async {
-        guard box.task == nil, !Connectivity.shared.offline, !Task.isCancelled else { return }
-        let work = Task { await action() }
-        box.task = work
-        await withTaskCancellationHandler {
-            await work.value
-        } onCancel: {
-            work.cancel()
-        }
-        box.task = nil
-        // Не завершаем системный refreshable, пока палец всё ещё тянет список:
-        // иначе UIRefreshControl резко убирает верхний отступ прямо под пальцем.
-        await box.waitForRelease()
+            .onDisappear { box.cancel() }
     }
 }
 
@@ -964,7 +1009,7 @@ struct TrackMarks: View {
 /// Живые полоски играющего трека: прыгают, пока звук идёт, и замирают на паузе.
 struct PlayingBars: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.scenePhase) private var phase
+    @ObservedObject private var app = AppActivity.shared
     let playing: Bool
     var size: CGFloat = 16
     var color: Color = Theme.accentText
@@ -974,7 +1019,7 @@ struct PlayingBars: View {
     private static let rest: [Double] = [0.45, 0.85, 0.6, 0.35]
 
     var body: some View {
-        let still = !playing || phase != .active || reduceMotion || ProcessInfo.processInfo.isLowPowerModeEnabled
+        let still = !playing || !app.active || reduceMotion || ProcessInfo.processInfo.isLowPowerModeEnabled
         TimelineView(.animation(minimumInterval: 1.0 / 30, paused: still)) { context in
             let time = context.date.timeIntervalSinceReferenceDate
             HStack(alignment: .bottom, spacing: size * 0.12) {
