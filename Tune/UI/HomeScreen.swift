@@ -437,7 +437,7 @@ private struct WaveHero: View {
     @Environment(\.scenePhase) private var phase
     @Environment(\.colorScheme) private var colorScheme
     @Binding var settings: [String]
-    let waves: [Wave]
+    let waves: [WaveCard]
     let tune: () -> Void
 
     @EnvironmentObject private var player: Player
