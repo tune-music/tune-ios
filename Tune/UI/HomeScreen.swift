@@ -84,7 +84,7 @@ struct HomeScreen: View {
                     .padding(.horizontal, 16)
                 }
                 if !trending {
-                    WaveHero(settings: $waveSettings, tune: { tuning = true })
+                    WaveHero(settings: $waveSettings, waves: model.page.waves, tune: { tuning = true })
                         .zIndex(-1)
                     if let visibleCard, let cardIdentity {
                         ZStack {
@@ -437,6 +437,7 @@ private struct WaveHero: View {
     @Environment(\.scenePhase) private var phase
     @Environment(\.colorScheme) private var colorScheme
     @Binding var settings: [String]
+    let waves: [Wave]
     let tune: () -> Void
 
     @EnvironmentObject private var player: Player
@@ -450,10 +451,16 @@ private struct WaveHero: View {
     private var waveHex: String? {
         guard now.kind == "radio", let item = now.item, item != "user:onyourwave" else { return nil }
         if let color = now.color, !color.isEmpty { return color }
-        return wheel.items.first(where: {
+        if let wheelColor = wheel.items.first(where: {
             if case .wave(let seeds) = $0.action { return seeds.joined(separator: ",") == item }
             return false
-        })?.color
+        })?.color, !wheelColor.isEmpty {
+            return wheelColor
+        }
+        if let stationColor = waves.first(where: { $0.id == item })?.color, !stationColor.isEmpty {
+            return stationColor
+        }
+        return nil
     }
 
     private var waveKey: String {

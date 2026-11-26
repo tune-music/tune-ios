@@ -1653,6 +1653,7 @@ final class Player: NSObject, ObservableObject {
         /// Откуда играла очередь: после перезапуска на главной и в списках видно, что играет.
         var kind: String?
         var item: String?
+        var color: String? = nil
         /// Волна: её сессия и затравки, чтобы она продолжилась и после перезапуска.
         var session: String?
         var seeds: [String]?
@@ -1660,7 +1661,7 @@ final class Player: NSObject, ObservableObject {
 
     private func saveQueue() {
         if Demo.on { return }
-        let saved = Saved(queue: queue, name: contextName, kind: now.kind, item: now.item, session: wave, seeds: waveSeeds)
+        let saved = Saved(queue: queue, name: contextName, kind: now.kind, item: now.item, color: now.color, session: wave, seeds: waveSeeds)
         Task.detached(priority: .utility) { Storage.save(saved, "player.json") }
         savePosition()
     }
@@ -1678,11 +1679,11 @@ final class Player: NSObject, ObservableObject {
         contextName = saved.name
         let kind = saved.kind.flatMap { $0.isEmpty ? nil : $0 } ?? "various"
         context = PlayContext(kind: kind, item: saved.item, name: saved.name)
-        mark(kind, saved.item, saved.name)
+        mark(kind, saved.item, saved.name, color: saved.color)
         if kind == "radio" {
             wave = saved.session
             waveSeeds = saved.seeds ?? []
-            if wave == nil, !waveSeeds.isEmpty { offlineWave = WaveRequest(seeds: waveSeeds, name: saved.name) }
+            if wave == nil, !waveSeeds.isEmpty { offlineWave = WaveRequest(seeds: waveSeeds, name: saved.name, color: saved.color) }
         }
         index = min(max(UserDefaults.standard.integer(forKey: "playerIndex"), 0), saved.queue.count - 1)
         let position = UserDefaults.standard.double(forKey: "playerPosition")
