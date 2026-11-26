@@ -16,6 +16,7 @@ final class TrackPage: UIView {
     private let artist = UILabel()
     private var request = 0
     private(set) var track: Track?
+    private var lastShadowBounds: CGRect = .zero
 
     init(style: Style) {
         self.style = style
@@ -23,6 +24,7 @@ final class TrackPage: UIView {
         isUserInteractionEnabled = false
         art.contentMode = .scaleAspectFill
         art.clipsToBounds = true
+        art.layer.drawsAsynchronously = true
         art.backgroundColor = UIColor(white: 0.14, alpha: 1)
         art.layer.cornerCurve = .continuous
         note.tintColor = UIColor(white: 0.32, alpha: 1)
@@ -58,8 +60,11 @@ final class TrackPage: UIView {
             art.frame = bounds
             let mark = bounds.width * 0.36
             note.frame = CGRect(x: (bounds.width - mark) / 2, y: (bounds.height - mark) / 2, width: mark, height: mark)
-            // Готовый контур тени: система не вычисляет её по содержимому на каждом кадре.
-            layer.shadowPath = UIBezierPath(roundedRect: bounds, cornerRadius: 22).cgPath
+            // Готовый контур тени: обновляем только при реальном изменении размеров.
+            if bounds != lastShadowBounds {
+                lastShadowBounds = bounds
+                layer.shadowPath = UIBezierPath(roundedRect: bounds, cornerRadius: 22).cgPath
+            }
         case .row:
             let side = min(42, max(0, bounds.height - 8))
             art.frame = CGRect(x: 0, y: (bounds.height - side) / 2, width: side, height: side)
@@ -101,7 +106,7 @@ final class TrackPage: UIView {
         request += 1
         let mine = request
         let uri = track?.cover
-        let side = ImageLoader.side(for: style == .cover ? max(bounds.width, 300) : 42)
+        let side = ImageLoader.side(for: style == .cover ? 360 : 44)
         if let ready = ImageLoader.shared.cached(uri, side: side) {
             art.image = ready
             note.isHidden = true
@@ -112,7 +117,9 @@ final class TrackPage: UIView {
         Task { @MainActor [weak self] in
             let image = await ImageLoader.shared.load(uri, side: side)
             guard let self, self.request == mine, let image else { return }
-            self.art.image = image
+            UIView.transition(with: self.art, duration: 0.12, options: [.transitionCrossDissolve, .allowUserInteraction]) {
+                self.art.image = image
+            }
             self.note.isHidden = true
         }
     }
@@ -128,6 +135,7 @@ final class TrackPagerView: UIView {
     /// С какой стороны стоит соседняя страница: true — справа.
     private var ahead = true
     private var run = 0
+    private var animator: UIViewPropertyAnimator?
 
     var trackId: String? { front.track?.id }
 
@@ -169,7 +177,7 @@ final class TrackPagerView: UIView {
                 return
             }
             let far = abs(move.x) > 50 || abs(pan.velocity.x) > 600
-            own.release {
+            own.release(velocity: pan.velocity.x) {
                 guard far else { return }
                 if move.x < 0 { Player.shared.next() } else { Player.shared.previous() }
             }
@@ -226,32 +234,42 @@ final class TrackPagerView: UIView {
     private func freeze() {
         let a = place(of: front)
         let b = place(of: back)
+        animator?.stopAnimation(true)
+        animator = nil
         front.layer.removeAllAnimations()
         back.layer.removeAllAnimations()
         front.transform = shift(a)
         back.transform = shift(b)
     }
 
-    private func animate(_ changes: @escaping () -> Void) {
+    private func animate(velocity: CGFloat = 0, _ changes: @escaping () -> Void) {
         run += 1
+        animator?.stopAnimation(true)
+        animator = nil
         if UIAccessibility.isReduceMotionEnabled {
             changes()
             back.isHidden = true
             return
         }
         let mine = run
-        UIView.animate(
-            withDuration: 0.42, delay: 0, usingSpringWithDamping: 1, initialSpringVelocity: 0,
-            options: [.allowUserInteraction, .beginFromCurrentState], animations: changes
-        ) { [weak self] done in
-            guard let self, done, self.run == mine else { return }
+        let normV = min(max(abs(velocity) / max(step, 1), 0), 3.5)
+        let timing = UISpringTimingParameters(dampingRatio: 0.94, initialVelocity: CGVector(dx: normV, dy: 0))
+        let prop = UIViewPropertyAnimator(duration: 0.36, timingParameters: timing)
+        prop.addAnimations(changes)
+        prop.addCompletion { [weak self] position in
+            guard let self, position == .end, self.run == mine else { return }
             self.back.isHidden = true
+            self.animator = nil
         }
+        animator = prop
+        prop.startAnimation()
     }
 
     /// Исходное положение: играющий трек по центру, соседа не видно.
     private func rest() {
         run += 1
+        animator?.stopAnimation(true)
+        animator = nil
         front.layer.removeAllAnimations()
         back.layer.removeAllAnimations()
         front.transform = .identity
@@ -272,7 +290,7 @@ final class TrackPagerView: UIView {
 
     /// Лента под пальцем: вместе с играющим треком едет соседний.
     func drag(_ x: CGFloat, neighbor: (Bool) -> Track?) {
-        if run > 0, front.layer.animationKeys()?.isEmpty == false { freeze() }
+        if animator != nil || (run > 0 && front.layer.animationKeys()?.isEmpty == false) { freeze() }
         front.transform = shift(x)
         guard x != 0 else { return }
         let side = x < 0
@@ -295,7 +313,7 @@ final class TrackPagerView: UIView {
     }
 
     /// Трек сменился: новый доезжает до центра оттуда, где стоит, прежний уезжает за край.
-    func change(to track: Track, back goingBack: Bool) {
+    func change(to track: Track, back goingBack: Bool, velocity: CGFloat = 0) {
         guard track.id != front.track?.id else { return }
         // Лента не на экране (другая вкладка) или ещё без размера: двигать нечего.
         // Иначе прежний трек «уезжал» на пару точек и оставался лежать поверх нового.
@@ -310,15 +328,17 @@ final class TrackPagerView: UIView {
         // Сосед уже на экране и это тот самый трек — он продолжает движение со своего места.
         let ready = !back.isHidden && back.track?.id == track.id && ahead == side
         if !ready {
+            let startFrom = min(max(from, -step * 0.35), step * 0.35)
+            front.transform = shift(startFrom)
             back.show(track)
             back.isHidden = false
-            back.transform = shift(from + (side ? step : -step))
+            back.transform = shift(startFrom + (side ? step : -step))
         }
         swap(&front, &back)
         bringSubviewToFront(front)
         ahead = !side
         let away = side ? -step : step
-        animate {
+        animate(velocity: velocity) {
             self.front.transform = .identity
             self.back.transform = self.shift(away)
         }
@@ -380,11 +400,11 @@ final class TrackDrag: ObservableObject {
     }
 
     /// Палец отпущен. `turn` переключает трек, если жест был достаточно длинным.
-    func release(_ turn: () -> Void) {
+    func release(velocity: CGFloat = 0, _ turn: () -> Void) {
         let before = Player.shared.current?.id
         turn()
         if let now = Player.shared.current, now.id != before {
-            view?.change(to: now, back: Player.shared.movedBack)
+            view?.change(to: now, back: Player.shared.movedBack, velocity: velocity)
         } else {
             view?.settle()
         }

@@ -1,304 +1,156 @@
 import Combine
 import SwiftUI
 
+@MainActor
+final class AppActivity: ObservableObject {
+    static let shared = AppActivity()
+    @Published private(set) var active = UIApplication.shared.applicationState != .background
+    private var tokens: [NSObjectProtocol] = []
+
+    private init() {
+        let center = NotificationCenter.default
+        tokens.append(center.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.active = true }
+        })
+        tokens.append(center.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.active = false }
+        })
+        tokens.append(center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.active = false }
+        })
+    }
+}
+
+@MainActor
 private final class RefreshBox: NSObject {
     var action: (@MainActor () async -> Void)?
-    var offline = false
     var task: Task<Void, Never>?
     weak var scrollView: UIScrollView?
-    weak var overlay: RefreshOverlayView?
-
-    private var offsetObserver: NSKeyValueObservation?
+    private weak var refreshControl: UIRefreshControl?
     private weak var observedPan: UIPanGestureRecognizer?
-    private let haptic = UIImpactFeedbackGenerator(style: .medium)
-    private var armedForDrag = false
-    private var triggeredInDrag = false
-    private var isRefreshing = false
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+    private var waitingRelease = false
 
-    private let revealDistance: CGFloat = 14
-    private let triggerDistance: CGFloat = 64
+    nonisolated override init() {
+        super.init()
+    }
 
     func attach(_ scroll: UIScrollView) {
         if !scroll.alwaysBounceVertical {
             scroll.alwaysBounceVertical = true
         }
-        guard scrollView !== scroll else { return }
-        detach()
-        scrollView = scroll
-        offsetObserver = scroll.observe(\.contentOffset, options: [.new]) { [weak self] _, _ in
-            self?.handleScroll()
+        if scroll.refreshControl == nil {
+            let control = UIRefreshControl()
+            control.tintColor = .secondaryLabel
+            control.addTarget(self, action: #selector(triggered(_:)), for: .valueChanged)
+            scroll.refreshControl = control
+            refreshControl = control
+        } else if refreshControl !== scroll.refreshControl {
+            let control = scroll.refreshControl
+            control?.removeTarget(self, action: #selector(triggered(_:)), for: .valueChanged)
+            control?.addTarget(self, action: #selector(triggered(_:)), for: .valueChanged)
+            refreshControl = control
         }
+        guard scrollView !== scroll || observedPan !== scroll.panGestureRecognizer else { return }
+        detachPan()
+        scrollView = scroll
         let pan = scroll.panGestureRecognizer
         pan.addTarget(self, action: #selector(panChanged(_:)))
         observedPan = pan
     }
 
-    func detach() {
-        offsetObserver?.invalidate()
-        offsetObserver = nil
+    func detachPan() {
         observedPan?.removeTarget(self, action: #selector(panChanged(_:)))
         observedPan = nil
-        scrollView = nil
     }
 
     func cancel() {
         task?.cancel()
         task = nil
-        isRefreshing = false
-        armedForDrag = false
-        triggeredInDrag = false
-        updateVisual(animated: false)
+        resumeReleaseWait()
+        if refreshControl?.isRefreshing == true {
+            refreshControl?.endRefreshing()
+        }
+    }
+
+    @objc private func triggered(_ control: UIRefreshControl) {
+        guard task == nil, !Connectivity.shared.offline, let action else {
+            control.endRefreshing()
+            return
+        }
+        task = Task { @MainActor [weak self, weak control] in
+            await action()
+            await self?.waitForRelease()
+            control?.endRefreshing()
+            self?.task = nil
+        }
     }
 
     @objc private func panChanged(_ pan: UIPanGestureRecognizer) {
         switch pan.state {
-        case .began:
-            triggeredInDrag = false
-            if let scroll = scrollView {
-                // Засчитываем pull-to-refresh только если жест начался от самого верха,
-                // а не при докручивании списка снизу вверх или ловле инерционного отскока.
-                let offsetFromTop = scroll.contentOffset.y + scroll.adjustedContentInset.top
-                armedForDrag = !scroll.isDecelerating && offsetFromTop <= 20 && offsetFromTop >= -35
-            } else {
-                armedForDrag = false
-            }
-            if armedForDrag { haptic.prepare() }
         case .ended, .cancelled, .failed:
-            armedForDrag = false
-            triggeredInDrag = false
-            updateVisual(animated: true)
+            if waitingRelease {
+                refreshControl?.endRefreshing()
+            }
+            resumeReleaseWait()
         default:
             break
         }
     }
 
-    private func handleScroll() {
-        guard let scroll = scrollView else { return }
-        let pull = currentPull(scroll)
-        let panState = scroll.panGestureRecognizer.state
-        let activeDrag = armedForDrag && scroll.isDragging && (panState == .began || panState == .changed)
-        if activeDrag && !triggeredInDrag && !offline && task == nil && pull >= triggerDistance {
-            triggeredInDrag = true
-            haptic.impactOccurred()
-            startRefresh()
-        }
-        updateVisual(pull: pull, activeDrag: activeDrag, animated: false)
-    }
-
-    private func currentPull(_ scroll: UIScrollView) -> CGFloat {
-        max(0, -(scroll.contentOffset.y + scroll.adjustedContentInset.top))
-    }
-
-    private func startRefresh() {
-        guard task == nil, let action else { return }
-        let started = Date()
-        isRefreshing = true
-        updateVisual(animated: true)
-        task = Task { @MainActor [weak self] in
-            await action()
-            let elapsed = Date().timeIntervalSince(started)
-            if elapsed < 0.25 && !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: UInt64((0.25 - elapsed) * 1_000_000_000))
-            }
-            guard let self else { return }
-            self.task = nil
-            self.isRefreshing = false
-            self.updateVisual(animated: true)
-        }
-    }
-
-    func updateVisual(animated: Bool) {
-        guard let scroll = scrollView else {
-            overlay?.hide(animated: animated)
-            return
-        }
-        let panState = scroll.panGestureRecognizer.state
-        let activeDrag = armedForDrag && scroll.isDragging && (panState == .began || panState == .changed)
-        updateVisual(pull: currentPull(scroll), activeDrag: activeDrag, animated: animated)
-    }
-
-    private func updateVisual(pull: CGFloat, activeDrag: Bool, animated: Bool) {
-        guard let overlay else { return }
-        if isRefreshing {
-            let y: CGFloat = pull > 18 ? min(pull * 0.5, 70) : 22
-            overlay.showSpinning(at: y, showPill: pull < 18, animated: animated)
-        } else if !triggeredInDrag && activeDrag && pull > revealDistance && !offline {
-            let progress = min(max((pull - revealDistance) / (triggerDistance - revealDistance), 0), 1)
-            overlay.showProgress(progress, at: max(20, pull * 0.5))
-        } else {
-            overlay.hide(animated: animated)
-        }
-    }
-
-    deinit {
-        offsetObserver?.invalidate()
-        observedPan?.removeTarget(self, action: nil)
-    }
-}
-
-private final class RefreshOverlayView: UIView {
-    weak var box: RefreshBox?
-    private let pill = UIVisualEffectView(effect: UIBlurEffect(style: .systemChromeMaterial))
-    private let ticksHost = UIView()
-    private var spokes: [CALayer] = []
-    private var pillVisible = false
-    private var spinning = false
-    private var lastAngle: CGFloat = 0
-    private var lastBounds: CGRect = .zero
-
-    override init(frame: CGRect) {
-        super.init(frame: frame)
-        isUserInteractionEnabled = false
-        clipsToBounds = false
-
-        pill.frame = CGRect(x: 0, y: 0, width: 34, height: 34)
-        pill.layer.cornerRadius = 17
-        pill.clipsToBounds = true
-        pill.alpha = 0
-        addSubview(pill)
-
-        ticksHost.frame = CGRect(x: 0, y: 0, width: 22, height: 22)
-        ticksHost.alpha = 0
-        ticksHost.isHidden = true
-        addSubview(ticksHost)
-
-        for index in 0..<8 {
-            let spoke = CALayer()
-            spoke.bounds = CGRect(x: 0, y: 0, width: 2, height: 5.5)
-            spoke.cornerRadius = 1
-            spoke.backgroundColor = UIColor.secondaryLabel.cgColor
-            let angle = CGFloat(index) * (.pi / 4)
-            let radius: CGFloat = 7
-            spoke.position = CGPoint(x: 11 + sin(angle) * radius, y: 11 - cos(angle) * radius)
-            spoke.transform = CATransform3DMakeRotation(angle, 0, 0, 1)
-            ticksHost.layer.addSublayer(spoke)
-            spokes.append(spoke)
-        }
-    }
-
-    required init?(coder: NSCoder) { nil }
-
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        guard bounds != lastBounds else { return }
-        lastBounds = bounds
-        box?.updateVisual(animated: false)
-    }
-
-    override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
-        super.traitCollectionDidChange(previousTraitCollection)
-        if previousTraitCollection?.hasDifferentColorAppearance(comparedTo: traitCollection) == true {
-            let color = UIColor.secondaryLabel.cgColor
-            for spoke in spokes { spoke.backgroundColor = color }
-        }
-    }
-
-    func showProgress(_ progress: CGFloat, at y: CGFloat) {
-        let center = CGPoint(x: bounds.midX, y: y)
-        stopSpin()
-        lastAngle = progress * 0.35
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        ticksHost.isHidden = false
-        ticksHost.center = center
-        ticksHost.alpha = progress
-        let scale = 0.8 + 0.2 * progress
-        ticksHost.transform = CGAffineTransform(scaleX: scale, y: scale).rotated(by: lastAngle)
-        for (index, spoke) in spokes.enumerated() {
-            let level = min(max(progress * 8 - CGFloat(index), 0.15), 1)
-            spoke.opacity = Float(level)
-        }
-        CATransaction.commit()
-        setPillVisible(false, center: center, animated: false)
-    }
-
-    func showSpinning(at y: CGFloat, showPill: Bool, animated: Bool) {
-        let center = CGPoint(x: bounds.midX, y: y)
-        ticksHost.isHidden = false
-        ticksHost.center = center
-        setPillVisible(showPill, center: center, animated: animated)
-        if !spinning {
-            spinning = true
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            ticksHost.transform = CGAffineTransform(rotationAngle: lastAngle)
-            for (index, spoke) in spokes.enumerated() {
-                spoke.opacity = Float(0.22 + 0.78 * CGFloat(index) / 7)
-            }
-            CATransaction.commit()
-            let spin = CABasicAnimation(keyPath: "transform.rotation.z")
-            spin.fromValue = lastAngle
-            spin.toValue = lastAngle + (.pi * 2)
-            spin.duration = 0.75
-            spin.repeatCount = .infinity
-            spin.isRemovedOnCompletion = false
-            ticksHost.layer.add(spin, forKey: "spin")
-        }
-        if animated && ticksHost.alpha < 1 {
-            UIView.animate(withDuration: 0.16) { self.ticksHost.alpha = 1 }
-        } else {
-            ticksHost.alpha = 1
-        }
-    }
-
-    func hide(animated: Bool) {
-        setPillVisible(false, center: ticksHost.center, animated: animated)
-        if animated && !ticksHost.isHidden && ticksHost.alpha > 0 {
-            UIView.animate(withDuration: 0.18, animations: {
-                self.ticksHost.alpha = 0
-            }, completion: { _ in
-                if self.ticksHost.alpha == 0 {
-                    self.ticksHost.isHidden = true
-                    self.stopSpin()
+    func waitForRelease() async {
+        guard let scroll = scrollView, scroll.isDragging || scroll.isTracking else { return }
+        waitingRelease = true
+        let deadline = Date().addingTimeInterval(8)
+        let watcher = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+                guard let self, self.waitingRelease else { break }
+                if Date() >= deadline {
+                    self.resumeReleaseWait()
+                    break
                 }
-            })
-        } else {
-            ticksHost.alpha = 0
-            ticksHost.isHidden = true
-            stopSpin()
+                if let current = self.scrollView, !current.isDragging && !current.isTracking {
+                    self.resumeReleaseWait()
+                    break
+                }
+            }
+        }
+        defer {
+            waitingRelease = false
+            watcher.cancel()
+            resumeReleaseWait()
+        }
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                let panState = scroll.panGestureRecognizer.state
+                let finished = (!scroll.isDragging && !scroll.isTracking)
+                    || panState == .ended || panState == .cancelled || panState == .failed
+                    || Task.isCancelled
+                if finished {
+                    continuation.resume()
+                    return
+                }
+                releaseContinuation?.resume()
+                releaseContinuation = continuation
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                self?.resumeReleaseWait()
+            }
         }
     }
 
-    private func stopSpin() {
-        guard spinning else { return }
-        spinning = false
-        ticksHost.layer.removeAnimation(forKey: "spin")
-    }
-
-    private func setPillVisible(_ visible: Bool, center: CGPoint, animated: Bool) {
-        pill.center = center
-        guard visible != pillVisible else { return }
-        pillVisible = visible
-        let target: CGFloat = visible ? 1 : 0
-        if animated {
-            UIView.animate(withDuration: 0.18) { self.pill.alpha = target }
-        } else {
-            pill.alpha = target
-        }
-    }
-}
-
-private struct RefreshOverlay: UIViewRepresentable {
-    let box: RefreshBox
-    let action: @MainActor () async -> Void
-
-    func makeUIView(context: Context) -> RefreshOverlayView {
-        let view = RefreshOverlayView()
-        view.box = box
-        box.overlay = view
-        box.action = action
-        return view
-    }
-
-    func updateUIView(_ uiView: RefreshOverlayView, context: Context) {
-        uiView.box = box
-        box.overlay = uiView
-        box.action = action
+    func resumeReleaseWait() {
+        let continuation = releaseContinuation
+        releaseContinuation = nil
+        continuation?.resume()
     }
 }
 
 private struct ScrollDragProbe: UIViewRepresentable {
     let box: RefreshBox
+    let action: @MainActor () async -> Void
 
     final class ProbeView: UIView {
         weak var box: RefreshBox?
@@ -306,7 +158,7 @@ private struct ScrollDragProbe: UIViewRepresentable {
         override func didMoveToWindow() {
             super.didMoveToWindow()
             if window == nil {
-                box?.detach()
+                box?.detachPan()
             } else {
                 attach()
             }
@@ -367,11 +219,13 @@ private struct ScrollDragProbe: UIViewRepresentable {
         view.backgroundColor = .clear
         view.isUserInteractionEnabled = false
         view.box = box
+        box.action = action
         return view
     }
 
     func updateUIView(_ uiView: ProbeView, context: Context) {
         uiView.box = box
+        box.action = action
         uiView.attach()
     }
 }
@@ -382,18 +236,9 @@ private struct ScreenRefresh: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .background(ScrollDragProbe(box: box))
-            .overlay(alignment: .top) {
-                RefreshOverlay(box: box, action: action)
-                    .frame(height: 120)
-                    .allowsHitTesting(false)
-            }
-            .onAppear {
-                box.action = action
-                box.offline = Connectivity.shared.offline
-            }
+            .background(ScrollDragProbe(box: box, action: action))
+            .onAppear { box.action = action }
             .onReceive(Connectivity.shared.$online) { online in
-                box.offline = !online
                 if !online { box.cancel() }
             }
             .onDisappear { box.cancel() }
@@ -829,6 +674,7 @@ struct TrackRow: View {
     var fadesDisliked = true
     var onRemove: (() -> Void)?
     var historySource: String? = nil
+    var badge: String? = nil
     let action: () -> Void
 
     @State private var playback: RowPlayback
@@ -847,6 +693,7 @@ struct TrackRow: View {
         fadesDisliked: Bool = true,
         onRemove: (() -> Void)? = nil,
         historySource: String? = nil,
+        badge: String? = nil,
         action: @escaping () -> Void
     ) {
         self.track = track
@@ -854,6 +701,7 @@ struct TrackRow: View {
         self.fadesDisliked = fadesDisliked
         self.onRemove = onRemove
         self.historySource = historySource
+        self.badge = badge
         self.action = action
         let now = Player.shared.now
         let initialPlayback: RowPlayback = now.id == track.id ? (now.playing ? .playing : .paused) : .other
@@ -922,6 +770,12 @@ struct TrackRow: View {
             if number != nil {
                 Text(timeText(track.duration))
                     .font(.scaled(size: 13).monospacedDigit())
+                    .foregroundStyle(Theme.dim)
+                    .padding(.leading, 4)
+            }
+            if let badge {
+                Text(badge)
+                    .font(.scaled(size: 13, weight: .medium).monospacedDigit())
                     .foregroundStyle(Theme.dim)
                     .padding(.leading, 4)
             }
@@ -1155,7 +1009,7 @@ struct TrackMarks: View {
 /// Живые полоски играющего трека: прыгают, пока звук идёт, и замирают на паузе.
 struct PlayingBars: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.scenePhase) private var phase
+    @ObservedObject private var app = AppActivity.shared
     let playing: Bool
     var size: CGFloat = 16
     var color: Color = Theme.accentText
@@ -1165,7 +1019,7 @@ struct PlayingBars: View {
     private static let rest: [Double] = [0.45, 0.85, 0.6, 0.35]
 
     var body: some View {
-        let still = !playing || phase != .active || reduceMotion || ProcessInfo.processInfo.isLowPowerModeEnabled
+        let still = !playing || !app.active || reduceMotion || ProcessInfo.processInfo.isLowPowerModeEnabled
         TimelineView(.animation(minimumInterval: 1.0 / 30, paused: still)) { context in
             let time = context.date.timeIntervalSinceReferenceDate
             HStack(alignment: .bottom, spacing: size * 0.12) {
@@ -1254,7 +1108,7 @@ struct HomeCard: View {
             }
         case .wave(let wave):
             Button {
-                Player.shared.playWave(seeds: wave.seeds, name: wave.title)
+                Player.shared.playWave(seeds: wave.seeds, name: wave.title, color: wave.color)
             } label: {
                 Label("Запустить заново", systemImage: "play")
             }
@@ -1272,7 +1126,7 @@ struct HomeCard: View {
             case .album(let card): navigate(.album(card.id))
             case .artist(let card): navigate(.artist(card.id, card.title))
             case .playlist(let playlist): navigate(.playlist(playlist))
-            case .wave(let wave): Player.shared.tapWave(seeds: wave.seeds, name: wave.title)
+            case .wave(let wave): Player.shared.tapWave(seeds: wave.seeds, name: wave.title, color: wave.color)
             }
         } label: {
             switch item {

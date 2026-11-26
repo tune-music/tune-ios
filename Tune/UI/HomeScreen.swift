@@ -1,3 +1,4 @@
+import AVFoundation
 import SwiftUI
 
 @MainActor
@@ -58,6 +59,7 @@ struct HomeScreen: View {
     @ObservedObject private var now = Player.shared.now
     @ObservedObject private var words = WaveWords.shared
     @State private var tuning = Demo.screen == "wave"
+    @State private var waveSettings = Player.waveSettings
     @State private var trending = false
     /// Страница прокручена: под часами нужна дымка, иначе полки сливаются с ними.
     @State private var scrolled = false
@@ -72,7 +74,7 @@ struct HomeScreen: View {
         let cardIdentity = visibleCard.map { WordCardView.Identity(cardID: $0.card.id, trackID: $0.track.id) }
         ScrollViewReader { proxy in
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 28) {
+            LazyVStack(alignment: .leading, spacing: 26) {
                 if model.page.trends?.isEmpty == false {
                     Picker("Главная", selection: $trending) {
                         Text("Для вас").tag(false)
@@ -82,7 +84,8 @@ struct HomeScreen: View {
                     .padding(.horizontal, 16)
                 }
                 if !trending {
-                    WaveHero(tune: { tuning = true })
+                    WaveHero(settings: $waveSettings, waves: model.page.waves, tune: { tuning = true })
+                        .zIndex(-1)
                     if let visibleCard, let cardIdentity {
                         ZStack {
                             WordCardView(card: visibleCard.card, track: visibleCard.track)
@@ -95,16 +98,39 @@ struct HomeScreen: View {
                         .accessibilityHidden(activeCard == nil)
                         .transition(.opacity)
                     }
-                    if Settings.waveWheel {
-                        WheelStrip(tune: { tuning = true })
-                    }
                     if connectivity.offline || session.offline || model.failed {
                         offline
                     }
-                    if !model.page.waves.isEmpty {
-                        stations
+                    Group {
+                        if Settings.waveWheel {
+                            VStack(alignment: .leading, spacing: 12) {
+                                HStack(alignment: .firstTextBaseline) {
+                                    Text("Волны")
+                                        .font(.scaled(size: 22, weight: .bold))
+                                        .foregroundStyle(Theme.text)
+                                    Spacer(minLength: 8)
+                                    Button {
+                                        navigate(.stations)
+                                    } label: {
+                                        HStack(spacing: 3) {
+                                            Text("Все")
+                                            Image(systemName: "chevron.right")
+                                                .font(.system(size: 12, weight: .semibold))
+                                        }
+                                        .font(.system(size: 15, weight: .medium))
+                                        .foregroundStyle(Theme.dim)
+                                        .contentShape(Rectangle())
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                                .padding(.horizontal, 16)
+                                WheelStrip(tune: { tuning = true })
+                            }
+                        } else if !model.page.waves.isEmpty {
+                            stations
+                        }
                     }
-                    quick.id("quick")
+                    .id("homeContent")
                     if let tracks = model.page.recent, !tracks.isEmpty {
                         recentShelf(tracks)
                     }
@@ -118,6 +144,7 @@ struct HomeScreen: View {
                 }
             }
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.34), value: cardIdentity)
+            .padding(.top, 4)
             .padding(.bottom, 24)
             .background(alignment: .top) {
                 GeometryReader { geometry in
@@ -134,7 +161,7 @@ struct HomeScreen: View {
         .onAppear {
             // Снимок прокрученной главной: по нему проверяется читаемость верха.
             guard Demo.screen == "homescroll" else { return }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { proxy.scrollTo("quick", anchor: .top) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { proxy.scrollTo("homeContent", anchor: .top) }
         }
         }
         .overlay {
@@ -149,6 +176,11 @@ struct HomeScreen: View {
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItem(placement: .navigationBarLeading) {
+                DevicesToolbarButton {
+                    navigate(.devices)
+                }
+            }
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button {
                     navigate(.settings)
@@ -161,6 +193,13 @@ struct HomeScreen: View {
         }
         .sheet(isPresented: $tuning) {
             WaveSettingsSheet()
+        }
+        .onChange(of: tuning) { open in
+            if !open {
+                withAnimation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.84)) {
+                    waveSettings = Player.waveSettings
+                }
+            }
         }
         .task { await model.load() }
         .onReceive(Downloads.shared.$entries.map(\.count).removeDuplicates()) { count in
@@ -231,20 +270,6 @@ struct HomeScreen: View {
         return player.isWave ? words.cards[track.id] : nil
     }
 
-    /// Быстрый доступ: своё любимое в одно нажатие, не заходя в коллекцию.
-    private var quick: some View {
-        let columns = [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
-        return LazyVGrid(columns: columns, spacing: 10) {
-            QuickTile(title: "Мне нравится", symbol: "heart.fill", colors: SymbolCover.likes) { navigate(.likes) }
-            QuickTile(title: "Скачанное", symbol: "arrow.down", colors: SymbolCover.downloads) { navigate(.downloads) }
-            QuickTile(title: "История", symbol: "clock.arrow.circlepath", colors: SymbolCover.history) { navigate(.history) }
-            ForEach(session.playlists.prefix(3)) { playlist in
-                QuickTile(title: playlist.title, cover: playlist.cover) { navigate(.playlist(playlist)) }
-            }
-        }
-        .padding(.horizontal, 16)
-    }
-
     private var offline: some View {
         Button {
             navigate(.downloads)
@@ -296,7 +321,7 @@ struct HomeScreen: View {
                 ForEach(model.page.waves) { wave in
                     let active = now.from("radio", wave.id)
                     Button {
-                        player.tapWave(seeds: wave.seeds, name: wave.title)
+                        player.tapWave(seeds: wave.seeds, name: wave.title, color: wave.color)
                     } label: {
                         HStack(spacing: 7) {
                             if active {
@@ -326,35 +351,21 @@ struct HomeScreen: View {
     }
 }
 
-/// Плитка быстрого доступа: обложка слева, название справа.
-private struct QuickTile: View {
-    let title: String
-    var symbol: String?
-    var colors: [Color] = []
-    var cover: String?
+/// Кнопка устройств Ynison в верхней панели главной.
+private struct DevicesToolbarButton: View {
     let action: () -> Void
+    @ObservedObject private var sync = Ynison.shared
+
+    private var activeRemote: Bool {
+        sync.enabled && sync.connection == .connected && sync.state.active != nil && sync.state.active != sync.deviceID
+    }
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 10) {
-                if let symbol {
-                    SymbolCover(symbol: symbol, colors: colors, size: 56, corner: 0)
-                } else {
-                    CoverView(uri: cover, size: 56, corner: 0)
-                }
-                Text(title)
-                    .font(.scaled(size: 14, weight: .semibold))
-                    .foregroundStyle(Theme.text)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
-                Spacer(minLength: 4)
-            }
-            .frame(height: 56)
-            .background(Theme.surface)
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .contentShape(Rectangle())
+            Image(systemName: "hifispeaker.and.homepod")
+                .foregroundStyle(activeRemote ? Theme.accentText : Theme.text)
+                .accessibilityLabel("Устройства")
         }
-        .buttonStyle(PressStyle())
     }
 }
 
@@ -390,17 +401,71 @@ private struct HomeSkeleton: View {
     }
 }
 
-/// «Моя волна»: переливающееся пятно, кнопка запуска и настройка.
+/// Системная громкость устройства (0...1), чтобы волна откликалась яркостью и размахом.
+@MainActor
+private final class DeviceVolume: ObservableObject {
+    @Published private(set) var level: Double
+    private var observation: NSKeyValueObservation?
+
+    init() {
+        let session = AVAudioSession.sharedInstance()
+        level = Double(session.outputVolume)
+        observation = session.observe(\.outputVolume, options: [.initial, .new]) { session, _ in
+            let value = Double(session.outputVolume)
+            Task { @MainActor [weak self] in
+                guard let self, abs(self.level - value) > 0.005 else { return }
+                self.level = value
+            }
+        }
+    }
+
+    func refresh() {
+        let value = Double(AVAudioSession.sharedInstance().outputVolume)
+        if abs(level - value) > 0.005 {
+            level = value
+        }
+    }
+
+    deinit {
+        observation?.invalidate()
+    }
+}
+
+/// «Моя волна»: органическое свечение с откликом на звук и громкость, кнопка запуска, настройка и съёмные фильтры.
 private struct WaveHero: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var phase
+    @Environment(\.colorScheme) private var colorScheme
+    @Binding var settings: [String]
+    let waves: [WaveCard]
     let tune: () -> Void
 
     @EnvironmentObject private var player: Player
     @ObservedObject private var now = Player.shared.now
+    @ObservedObject private var wheel = WaveWheel.shared
+    @StateObject private var volume = DeviceVolume()
     @State private var lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
 
     private var active: Bool { now.from("radio", "user:onyourwave") }
+
+    private var waveHex: String? {
+        guard now.kind == "radio", let item = now.item, item != "user:onyourwave" else { return nil }
+        if let color = now.color, !color.isEmpty { return color }
+        if let wheelColor = wheel.items.first(where: {
+            if case .wave(let seeds) = $0.action { return seeds.joined(separator: ",") == item }
+            return false
+        })?.color, !wheelColor.isEmpty {
+            return wheelColor
+        }
+        if let stationColor = waves.first(where: { $0.id == item })?.color, !stationColor.isEmpty {
+            return stationColor
+        }
+        return nil
+    }
+
+    private var waveKey: String {
+        "\(now.kind):\(now.item ?? "")"
+    }
 
     /// Подпись под названием: что играет, если это не сама «Моя волна».
     private var other: String? {
@@ -416,109 +481,522 @@ private struct WaveHero: View {
 
     var body: some View {
         let playing = active && now.playing
-        ZStack {
-            WaveGlow(animated: playing && phase == .active && !reduceMotion && !lowPower)
-                .accessibilityHidden(true)
-                .allowsHitTesting(false)
-            VStack(spacing: 18) {
-                if let other {
-                    HStack(spacing: 7) {
-                        PlayingBars(playing: now.playing, size: 13)
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundStyle(Theme.accentText)
-                        Text("Сейчас играет: \(other)")
-                            .font(.scaled(size: 14, weight: .medium))
-                            .foregroundStyle(Theme.text.opacity(0.85))
-                            .lineLimit(1)
-                    }
-                    .padding(.horizontal, 24)
+        VStack(spacing: 14) {
+            if let other {
+                HStack(spacing: 7) {
+                    PlayingBars(playing: now.playing, size: 13)
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(Theme.accentText)
+                    Text("Сейчас играет: \(other)")
+                        .font(.scaled(size: 14, weight: .medium))
+                        .foregroundStyle(Theme.text.opacity(0.85))
+                        .lineLimit(1)
                 }
-                Text("Моя волна")
-                    .font(.scaled(size: 36, weight: .bold))
-                    .foregroundStyle(Theme.text)
-                HStack(spacing: 12) {
-                    Button {
-                        player.tapWave()
-                    } label: {
-                        HStack(spacing: 8) {
-                            PlayGlyph(playing: playing, size: 18)
+                .padding(.horizontal, 24)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+            Text("Моя волна")
+                .font(.scaled(size: 35, weight: .bold))
+                .foregroundStyle(Theme.text)
+                .shadow(color: colorScheme == .dark ? .black.opacity(0.45) : .clear, radius: 12, y: 2)
+            HStack(spacing: 12) {
+                Button {
+                    player.tapWave()
+                } label: {
+                    HStack(spacing: 8) {
+                        PlayGlyph(playing: playing, size: 18)
+                        ZStack {
+                            Text("Слушать").opacity(0)
                             Text(playing ? "Пауза" : "Слушать")
-                                .font(.scaled(size: 17, weight: .semibold))
+                                .id(playing)
+                                .transition(.opacity.combined(with: .scale(scale: 0.92)))
                         }
-                        .foregroundStyle(.black)
-                        .padding(.horizontal, 26)
-                        .frame(height: 48)
-                        .background(Theme.accent, in: Capsule())
-                        .contentShape(Capsule())
+                        .font(.scaled(size: 17, weight: .semibold))
                     }
-                    .buttonStyle(PressStyle())
-                    Button(action: tune) {
-                        HStack(spacing: 6) {
-                            Image(systemName: "slider.horizontal.3")
-                            Text(Player.waveSettings.isEmpty ? "Настроить" : "Настроено")
+                    .foregroundStyle(.black)
+                    .padding(.horizontal, 26)
+                    .frame(height: 48)
+                    .background(Theme.accent, in: Capsule())
+                    .contentShape(Capsule())
+                    .animation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.82), value: playing)
+                }
+                .buttonStyle(PressStyle())
+                Button(action: tune) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "slider.horizontal.3")
+                            .foregroundStyle(settings.isEmpty ? Theme.text : Theme.accentText)
+                        Text("Настроить")
+                    }
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(Theme.text)
+                    .padding(.horizontal, 20)
+                    .frame(height: 48)
+                    .glass(in: Capsule(), interactive: true)
+                }
+                .buttonStyle(.plain)
+            }
+            ZStack {
+                if !settings.isEmpty {
+                    HStack(spacing: 6) {
+                        ForEach(settings, id: \.self) { seed in
+                            if let title = WaveSettingsSheet.label(for: seed) {
+                                Button {
+                                    removeFilter(seed)
+                                } label: {
+                                    HStack(spacing: 5) {
+                                        Text(title)
+                                            .font(.scaled(size: 13, weight: .medium))
+                                            .foregroundStyle(Theme.text)
+                                        Image(systemName: "xmark")
+                                            .font(.system(size: 10, weight: .bold))
+                                            .foregroundStyle(Theme.dim)
+                                    }
+                                    .padding(.horizontal, 11)
+                                    .padding(.vertical, 6)
+                                    .background(Theme.raised, in: Capsule())
+                                }
+                                .buttonStyle(PressStyle(scale: 0.94))
+                                .transition(.opacity.combined(with: .scale(scale: 0.86)))
+                            }
                         }
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(Theme.text)
-                        .padding(.horizontal, 20)
-                        .frame(height: 48)
-                        .glass(in: Capsule(), interactive: true)
                     }
-                    .buttonStyle(.plain)
+                    .padding(.horizontal, 16)
+                    .animation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.84), value: settings)
+                    .transition(.opacity.combined(with: .scale(scale: 0.9)))
                 }
             }
+            .frame(height: 32)
         }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: other)
         .frame(maxWidth: .infinity)
-        .frame(height: 300)
+        .frame(height: 244)
+        .background(alignment: .center) {
+            WaveGlow(
+                playing: now.playing,
+                animated: phase == .active && !reduceMotion && !lowPower,
+                volume: volume.level,
+                waveHex: waveHex,
+                waveKey: waveKey
+            )
+            .frame(height: 540)
+            .accessibilityHidden(true)
+            .allowsHitTesting(false)
+        }
+        .onChange(of: phase) { state in
+            if state == .active { volume.refresh() }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .NSProcessInfoPowerStateDidChange)) { _ in
             lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
         }
     }
+
+    private func removeFilter(_ seed: String) {
+        let next = settings.filter { $0 != seed }
+        withAnimation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.84)) {
+            settings = next
+        }
+        Player.waveSettings = next
+        if active { player.playWave() }
+    }
+}
+
+private struct RGB {
+    var r: Double
+    var g: Double
+    var b: Double
+
+    func lerp(to target: RGB, factor: Double) -> RGB {
+        RGB(
+            r: r + (target.r - r) * factor,
+            g: g + (target.g - g) * factor,
+            b: b + (target.b - b) * factor
+        )
+    }
+
+    var color: Color {
+        Color(red: r, green: g, blue: b)
+    }
+}
+
+private struct WavePalette {
+    var primary: RGB
+    var secondary: RGB
+    var deep: RGB
+    var highlight: RGB
+
+    static let tuneDefault = WavePalette(
+        primary: RGB(r: 1.0, g: 0.78, b: 0.18),
+        secondary: RGB(r: 1.0, g: 0.50, b: 0.10),
+        deep: RGB(r: 0.90, g: 0.24, b: 0.06),
+        highlight: RGB(r: 1.0, g: 0.91, b: 0.58)
+    )
+
+    static let tuneLight = WavePalette(
+        primary: RGB(r: 0.96, g: 0.62, b: 0.04),
+        secondary: RGB(r: 0.95, g: 0.36, b: 0.04),
+        deep: RGB(r: 0.84, g: 0.18, b: 0.04),
+        highlight: RGB(r: 1.0, g: 0.74, b: 0.10)
+    )
+
+    func lerp(to target: WavePalette, factor: Double) -> WavePalette {
+        WavePalette(
+            primary: primary.lerp(to: target.primary, factor: factor),
+            secondary: secondary.lerp(to: target.secondary, factor: factor),
+            deep: deep.lerp(to: target.deep, factor: factor),
+            highlight: highlight.lerp(to: target.highlight, factor: factor)
+        )
+    }
+
+    static func from(hex: String?, light: Bool) -> WavePalette {
+        guard let hex else { return light ? .tuneLight : .tuneDefault }
+        let digits = hex.hasPrefix("#") ? String(hex.dropFirst()) : hex
+        guard digits.count == 6, let value = UInt32(digits, radix: 16) else { return light ? .tuneLight : .tuneDefault }
+        let r = Double((value >> 16) & 0xFF) / 255
+        let g = Double((value >> 8) & 0xFF) / 255
+        let b = Double(value & 0xFF) / 255
+        let (h, s, v) = rgbToHsb(r: r, g: g, b: b)
+        let sat = s < 0.08 ? s : max(s, light ? 0.80 : 0.72)
+        let secSat = s < 0.08 ? s : max(s, light ? 0.84 : 0.78)
+        let primary = hsbToRgb(h: h, s: sat, b: light ? min(max(v, 0.72), 0.86) : max(v, 0.88))
+        let secondary = hsbToRgb(h: (h + 0.06).truncatingRemainder(dividingBy: 1.0), s: secSat, b: light ? min(max(v, 0.68), 0.80) : max(v, 0.82))
+        let deep = hsbToRgb(h: (h + 0.95).truncatingRemainder(dividingBy: 1.0), s: min(1.0, s * 1.05 + 0.15), b: light ? max(0.48, v * 0.65) : max(0.55, v * 0.72))
+        let highlight = hsbToRgb(h: h, s: light ? max(0.55, s * 0.75) : max(0.18, s * 0.38), b: light ? 0.92 : 1.0)
+        return WavePalette(primary: primary, secondary: secondary, deep: deep, highlight: highlight)
+    }
+
+    private static func rgbToHsb(r: Double, g: Double, b: Double) -> (Double, Double, Double) {
+        let maxC = max(r, max(g, b))
+        let minC = min(r, min(g, b))
+        let delta = maxC - minC
+        var h: Double = 0
+        if delta > 0.0001 {
+            if maxC == r {
+                h = ((g - b) / delta).truncatingRemainder(dividingBy: 6)
+            } else if maxC == g {
+                h = (b - r) / delta + 2
+            } else {
+                h = (r - g) / delta + 4
+            }
+            h /= 6
+            if h < 0 { h += 1 }
+        }
+        let s = maxC > 0 ? delta / maxC : 0
+        return (h, s, maxC)
+    }
+
+    private static func hsbToRgb(h: Double, s: Double, b: Double) -> RGB {
+        let c = b * s
+        let hp = h * 6
+        let x = c * (1 - abs(hp.truncatingRemainder(dividingBy: 2) - 1))
+        let m = b - c
+        let (r1, g1, b1): (Double, Double, Double)
+        switch hp {
+        case 0..<1: (r1, g1, b1) = (c, x, 0)
+        case 1..<2: (r1, g1, b1) = (x, c, 0)
+        case 2..<3: (r1, g1, b1) = (0, c, x)
+        case 3..<4: (r1, g1, b1) = (0, x, c)
+        case 4..<5: (r1, g1, b1) = (x, 0, c)
+        default:    (r1, g1, b1) = (c, 0, x)
+        }
+        return RGB(r: r1 + m, g: g1 + m, b: b1 + m)
+    }
+}
+
+private final class WaveMotion {
+    var phase: Double = 0
+    var lastDate: Date?
+    var energy: Double = 0.5
+    var activity: Double = 0
+    var audioLevel: Double = 0
+    var audioBass: Double = 0
+    var palette: WavePalette = .tuneDefault
+    var lastWaveKey: String = ""
+    var surge: Double = 0
 }
 
 private struct WaveGlow: View {
+    let playing: Bool
     let animated: Bool
-    @State private var phase: Double = 0
-    @State private var started: Date?
+    let volume: Double
+    let waveHex: String?
+    let waveKey: String
+
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var motion = WaveMotion()
+
+    private var targetEnergy: Double {
+        pow(min(max(volume, 0), 1), 0.85)
+    }
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 60, paused: !animated)) { frame in
-            let time = phase + (started.map { max(0, frame.date.timeIntervalSince($0)) } ?? 0)
+            let state = step(at: frame.date)
             Canvas { context, size in
-                let radius = min(size.width * 0.53, 208)
-                let speeds = [0.69, 0.42, 0.53]
-                let colors = [
-                    Color(red: 1, green: 0.72, blue: 0.12),
-                    Color(red: 1, green: 0.43, blue: 0.08),
-                    Color(red: 0.91, green: 0.25, blue: 0.05)
+                let isLight = colorScheme == .light
+                let energy = state.energy
+                let activity = state.activity
+                let time = state.phase
+                let volScale = 0.22 + 0.78 * energy
+                let sonic = state.audioLevel * volScale * activity
+                let kick = state.audioBass * volScale * activity
+                let surge = state.surge
+                let power = (0.24 + 0.34 * energy) + (0.22 + 0.32 * energy) * activity + 0.28 * sonic + 0.16 * surge
+                let center = CGPoint(x: size.width * 0.5, y: size.height * 0.48)
+                let maxSpread = min(size.width * 0.52, size.height * 0.42)
+
+                let amber = state.palette.primary.color
+                let tangerine = state.palette.secondary.color
+                let vermilion = state.palette.deep.color
+                let champagne = state.palette.highlight.color
+
+                // 1. Дышащее атмосферное свечение без резких границ
+                context.drawLayer { layer in
+                    layer.blendMode = isLight ? .normal : .plusLighter
+                    let speeds = [0.58, 0.37, 0.46]
+                    let blobs = [amber, tangerine, vermilion]
+                    for index in blobs.indices {
+                        let angle = time * speeds[index] + Double(index) * 2.1
+                        let orbitX = maxSpread * (0.20 + 0.14 * energy + 0.06 * sonic)
+                        let orbitY = maxSpread * (0.10 + 0.08 * energy + 0.04 * kick)
+                        let c = CGPoint(
+                            x: center.x + CGFloat(cos(angle)) * orbitX,
+                            y: center.y + CGFloat(sin(angle * 1.25)) * orbitY
+                        )
+                        let radius = maxSpread * CGFloat(0.72 + 0.18 * energy + 0.08 * kick + 0.06 * surge + 0.07 * sin(angle + 1.0))
+                        let baseAlpha = (isLight ? 0.48 : 0.40) * power
+                        let gradient = Gradient(stops: [
+                            .init(color: blobs[index].opacity(baseAlpha), location: 0.0),
+                            .init(color: blobs[index].opacity(baseAlpha * (isLight ? 0.72 : 0.62)), location: 0.28),
+                            .init(color: blobs[index].opacity(baseAlpha * (isLight ? 0.34 : 0.24)), location: 0.58),
+                            .init(color: blobs[index].opacity(baseAlpha * (isLight ? 0.09 : 0.05)), location: 0.82),
+                            .init(color: .clear, location: 1.0),
+                        ])
+                        layer.fill(
+                            Path(ellipseIn: CGRect(x: c.x - radius, y: c.y - radius, width: radius * 2, height: radius * 2)),
+                            with: .radialGradient(gradient, center: c, startRadius: 0, endRadius: radius)
+                        )
+                    }
+                }
+
+                // 2. Размытые органические контуры волны (полярные гармоники)
+                context.drawLayer { layer in
+                    layer.blendMode = isLight ? .normal : .plusLighter
+                    layer.addFilter(.blur(radius: isLight ? 12 : 18))
+                    let contours: [(rx: Double, ry: Double, speed: Double, offset: Double, color: Color, alpha: Double)] = [
+                        (0.41, 0.20, 1.0, 0.0, amber, isLight ? 0.46 : 0.40),
+                        (0.34, 0.16, -0.82, 1.9, tangerine, isLight ? 0.38 : 0.34),
+                    ]
+                    let amp = 0.04 + 0.05 * activity + 0.11 * kick + 0.06 * surge
+                    for contour in contours {
+                        let scale = 0.84 + 0.14 * energy + 0.10 * kick + 0.08 * surge
+                        let rx = min(size.width * contour.rx, maxSpread * 1.12) * scale
+                        let ry = min(size.height * contour.ry, maxSpread * 0.60) * scale
+                        let path = organicLoop(
+                            center: center,
+                            rx: rx,
+                            ry: ry,
+                            time: time * contour.speed,
+                            offset: contour.offset,
+                            amp: amp
+                        )
+                        layer.fill(path, with: .color(contour.color.opacity(contour.alpha * (isLight ? 0.50 : 0.42) * power)))
+                        layer.stroke(
+                            path,
+                            with: .color(contour.color.opacity(contour.alpha * power)),
+                            style: StrokeStyle(lineWidth: 9 + 7 * CGFloat(energy) + 5 * CGFloat(kick), lineCap: .round, lineJoin: .round)
+                        )
+                    }
+                }
+
+                // 3. Шёлковые акустические нити с плавным затуханием к краям
+                let ribbons: [(freq: Double, speed: Double, phase: Double, yBias: CGFloat, color: Color, width: CGFloat)] = [
+                    (2.1, 1.55, 0.0, -8, champagne, 1.4),
+                    (3.0, -1.15, 1.7, 4, amber, 1.2),
+                    (1.5, 0.90, 3.3, 12, tangerine, 1.0),
                 ]
-                for index in colors.indices {
-                    let angle = time * speeds[index] + Double(index) * 2.1
-                    let center = CGPoint(x: size.width / 2 + CGFloat(cos(angle)) * radius * 0.4,
-                                         y: size.height * 0.44 + CGFloat(sin(angle * 1.2)) * radius * 0.24)
-                    let spread = radius * CGFloat(0.82 + 0.1 * sin(angle + 1))
-                    let gradient = Gradient(colors: [colors[index].opacity(0.58), colors[index].opacity(0.22), .clear])
-                    context.fill(Path(CGRect(origin: .zero, size: size)),
-                                 with: .radialGradient(gradient, center: center, startRadius: 0, endRadius: spread))
+                let ribbonAmp = CGFloat(4.5 + 4.5 * energy + 12.0 * sonic + 14.0 * kick + 8.0 * surge)
+                let leftX = size.width * 0.06
+                let rightX = size.width * 0.94
+                let spanX = rightX - leftX
+
+                for pass in 0..<2 {
+                    let isGlowPass = pass == 0
+                    context.drawLayer { layer in
+                        layer.blendMode = isLight ? .normal : .plusLighter
+                        if isGlowPass { layer.addFilter(.blur(radius: 3.0)) }
+                        for ribbon in ribbons {
+                            let path = silkWave(
+                                leftX: leftX,
+                                spanX: spanX,
+                                baseY: center.y + ribbon.yBias,
+                                amp: ribbonAmp,
+                                freq: ribbon.freq,
+                                time: time * ribbon.speed + ribbon.phase
+                            )
+                            let alpha = (isGlowPass ? (isLight ? 0.44 : 0.48) : (isLight ? 0.82 : 0.68)) * power
+                            let centerColor = isLight ? ribbon.color : champagne
+                            let gradient = Gradient(stops: [
+                                .init(color: .clear, location: 0.0),
+                                .init(color: ribbon.color.opacity(alpha * 0.8), location: 0.22),
+                                .init(color: centerColor.opacity(alpha), location: 0.50),
+                                .init(color: ribbon.color.opacity(alpha * 0.8), location: 0.78),
+                                .init(color: .clear, location: 1.0),
+                            ])
+                            layer.stroke(
+                                path,
+                                with: .linearGradient(gradient, startPoint: CGPoint(x: leftX, y: center.y), endPoint: CGPoint(x: rightX, y: center.y)),
+                                style: StrokeStyle(lineWidth: ribbon.width * (isGlowPass ? 3.2 : (isLight ? 1.25 : 1.0)), lineCap: .round)
+                            )
+                        }
+                    }
+                }
+
+                // 4. Мягкие тёплые искры вокруг центра
+                context.drawLayer { layer in
+                    layer.blendMode = isLight ? .normal : .plusLighter
+                    let count = 10
+                    for i in 0..<count {
+                        let seed = Double(i) * 1.6180339
+                        let angle = time * (0.28 + Double(i % 3) * 0.14) + seed * 3.1
+                        let orbit = maxSpread * CGFloat(0.26 + Double(i % 5) * 0.11) * CGFloat(0.75 + 0.28 * energy + 0.12 * sonic)
+                        let px = center.x + CGFloat(cos(angle)) * orbit * 1.08
+                        let py = center.y + CGFloat(sin(angle * 1.3 + seed)) * orbit * 0.52
+                        let pulse = 0.45 + 0.55 * sin(time * 1.9 + seed * 4.0)
+                        let r = CGFloat(1.4 + Double(i % 3) * 0.7) * CGFloat(0.85 + 0.25 * energy + 0.25 * kick)
+                        let sparkAlpha = (isLight ? 0.58 : 0.52) * power * pulse
+                        let sparkColor = isLight ? (i % 2 == 0 ? amber : tangerine) : (i % 2 == 0 ? champagne : amber)
+                        let glowR = r * 2.6
+                        layer.fill(
+                            Path(ellipseIn: CGRect(x: px - glowR, y: py - glowR, width: glowR * 2, height: glowR * 2)),
+                            with: .radialGradient(
+                                Gradient(colors: [sparkColor.opacity(sparkAlpha), .clear]),
+                                center: CGPoint(x: px, y: py),
+                                startRadius: 0,
+                                endRadius: glowR
+                            )
+                        )
+                    }
                 }
             }
         }
-        .onAppear { setAnimated(animated) }
-        .onChange(of: animated) { setAnimated($0) }
-        .onDisappear { setAnimated(false) }
-        .mask {
-            LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.22),
-                                   .init(color: .black, location: 0.72), .init(color: .clear, location: 1)],
-                           startPoint: .top, endPoint: .bottom)
+        .onChange(of: animated) { enabled in
+            if !enabled { motion.lastDate = nil }
+        }
+        .onDisappear {
+            motion.lastDate = nil
         }
     }
 
-    private func setAnimated(_ enabled: Bool) {
-        if enabled {
-            if started == nil { started = .now }
-        } else if let started {
-            phase += Date().timeIntervalSince(started)
-            self.started = nil
+    private func step(at date: Date) -> (phase: Double, energy: Double, activity: Double, audioLevel: Double, audioBass: Double, palette: WavePalette, surge: Double) {
+        let targetAct = playing ? 1.0 : 0.0
+        let targetEn = targetEnergy
+        let targetPalette = WavePalette.from(hex: waveHex, light: colorScheme == .light)
+
+        if motion.lastWaveKey != waveKey {
+            if !motion.lastWaveKey.isEmpty {
+                motion.surge = min(1.0, motion.surge + 0.5)
+            }
+            motion.lastWaveKey = waveKey
         }
+
+        if animated {
+            let dt = motion.lastDate.map { min(max(date.timeIntervalSince($0), 0), 0.05) } ?? 0
+            motion.lastDate = date
+            if dt > 0 {
+                motion.energy += (targetEn - motion.energy) * min(1, dt * 6.5)
+                motion.activity += (targetAct - motion.activity) * min(1, dt * 3.2)
+                motion.palette = motion.palette.lerp(to: targetPalette, factor: min(1, dt * 3.0))
+                motion.surge *= exp(-dt * 2.6)
+
+                let targetAudio: Double
+                let targetBass: Double
+                if playing {
+                    let meter = Player.shared.audioMeter()
+                    if meter.live {
+                        targetAudio = meter.level
+                        targetBass = meter.bass
+                    } else {
+                        let synth = 0.24 + 0.18 * sin(motion.phase * 2.4) + 0.12 * sin(motion.phase * 4.1 + 1.1)
+                        let beat = pow(max(0, sin(motion.phase * 1.9)), 3.0)
+                        targetAudio = min(1, max(0, synth))
+                        targetBass = min(1, 0.12 + 0.24 * beat)
+                    }
+                } else {
+                    targetAudio = 0
+                    targetBass = 0
+                }
+
+                let levelRate = targetAudio > motion.audioLevel ? 18.0 : 6.5
+                let bassRate = targetBass > motion.audioBass ? 22.0 : 7.5
+                motion.audioLevel += (targetAudio - motion.audioLevel) * min(1, dt * levelRate)
+                motion.audioBass += (targetBass - motion.audioBass) * min(1, dt * bassRate)
+
+                let idleSpeed = 0.22 + 0.10 * motion.energy
+                let activeSpeed = (0.35 + 0.85 * motion.energy + 0.75 * motion.audioLevel * (0.25 + 0.75 * motion.energy)) * motion.activity
+                motion.phase += dt * (idleSpeed + activeSpeed)
+            } else {
+                motion.energy = targetEn
+                motion.activity = targetAct
+                motion.palette = targetPalette
+            }
+            return (motion.phase, motion.energy, motion.activity, motion.audioLevel, motion.audioBass, motion.palette, motion.surge)
+        } else {
+            motion.lastDate = nil
+            motion.energy = targetEn
+            motion.activity = targetAct
+            motion.palette = targetPalette
+            motion.audioLevel = 0
+            motion.audioBass = 0
+            motion.surge = 0
+            return (motion.phase, targetEn, targetAct, 0, 0, targetPalette, 0)
+        }
+    }
+
+    private func organicLoop(center: CGPoint, rx: CGFloat, ry: CGFloat, time: Double, offset: Double, amp: Double) -> Path {
+        let steps = 48
+        var pts: [CGPoint] = []
+        pts.reserveCapacity(steps)
+        for i in 0..<steps {
+            let theta = (Double(i) / Double(steps)) * .pi * 2
+            let wave = 0.45 * sin(2 * theta + time)
+                + 0.35 * sin(3 * theta - 1.35 * time + offset)
+                + 0.20 * sin(5 * theta + 2.1 * time)
+            let scale = CGFloat(1.0 + amp * wave)
+            pts.append(CGPoint(
+                x: center.x + CGFloat(cos(theta)) * rx * scale,
+                y: center.y + CGFloat(sin(theta)) * ry * scale
+            ))
+        }
+        var path = Path()
+        let start = CGPoint(x: (pts[steps - 1].x + pts[0].x) / 2, y: (pts[steps - 1].y + pts[0].y) / 2)
+        path.move(to: start)
+        for i in 0..<steps {
+            let next = pts[(i + 1) % steps]
+            let mid = CGPoint(x: (pts[i].x + next.x) / 2, y: (pts[i].y + next.y) / 2)
+            path.addQuadCurve(to: mid, control: pts[i])
+        }
+        path.closeSubpath()
+        return path
+    }
+
+    private func silkWave(leftX: CGFloat, spanX: CGFloat, baseY: CGFloat, amp: CGFloat, freq: Double, time: Double) -> Path {
+        let steps = 64
+        var path = Path()
+        for i in 0...steps {
+            let u = Double(i) / Double(steps)
+            let env = sin(.pi * u)
+            let window = env * env
+            let yWave = sin(u * .pi * 2 * freq + time) * 0.65
+                + sin(u * .pi * 2 * (freq * 1.7) - time * 1.3) * 0.35
+            let x = leftX + spanX * CGFloat(u)
+            let y = baseY + amp * CGFloat(window * yWave)
+            if i == 0 {
+                path.move(to: CGPoint(x: x, y: y))
+            } else {
+                path.addLine(to: CGPoint(x: x, y: y))
+            }
+        }
+        return path
     }
 }
 
@@ -529,6 +1007,15 @@ struct WaveSettingsSheet: View {
         ("Под настроение", [("Бодрое", "settingMoodEnergy:active"), ("Весёлое", "settingMoodEnergy:fun"), ("Спокойное", "settingMoodEnergy:calm"), ("Грустное", "settingMoodEnergy:sad")]),
         ("По языку", [("Русский", "settingLanguage:russian"), ("Иностранный", "settingLanguage:not-russian"), ("Без слов", "settingLanguage:without-words")]),
     ]
+
+    static func label(for seed: String) -> String? {
+        for group in groups {
+            if let option = group.options.first(where: { $0.seed == seed }) {
+                return option.name
+            }
+        }
+        return nil
+    }
 
     @EnvironmentObject private var player: Player
     @Environment(\.dismiss) private var dismiss
@@ -636,7 +1123,7 @@ private struct WheelStrip: View {
         return Button {
             wheel.clicked(item)
             switch item.action {
-            case .wave(let wave): Player.shared.tapWave(seeds: wave, name: item.title)
+            case .wave(let wave): Player.shared.tapWave(seeds: wave, name: item.title, color: item.color)
             case .album(let id): navigate(.album(id))
             case .setting: tune()
             }
