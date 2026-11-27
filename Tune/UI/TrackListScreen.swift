@@ -677,6 +677,14 @@ struct TrackListScreen: View {
             .onReceive(NotificationCenter.default.publisher(for: Session.restoredLikesSynced)) { _ in
                 if kind == .likes || isArtistCollection { Task { await model.load(kind, force: true) } }
             }
+            .onReceive(NotificationCenter.default.publisher(for: Session.catalogLibrarySynced)) { _ in
+                if kind == .likes {
+                    model.updateLocalLikes(Session.shared.localLikedTracks)
+                    Task { await model.load(kind, force: true) }
+                } else if own {
+                    Task { await model.load(kind, force: true) }
+                }
+            }
             .onReceive(NotificationCenter.default.publisher(for: Session.uploadedTrackEdited)) { note in
                 guard let edited = note.object as? Track else { return }
                 model.updateUploadedTrack(edited, kind: kind)

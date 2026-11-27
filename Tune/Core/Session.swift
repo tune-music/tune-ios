@@ -24,6 +24,7 @@ final class Session: ObservableObject {
     @Published private(set) var likedIds: [String] = []
     @Published private(set) var localLikedTracks: [Track] = []
     static let restoredLikesSynced = Notification.Name("tune.restoredLikesSynced")
+    static let catalogLibrarySynced = Notification.Name("tune.catalogLibrarySynced")
     static let uploadedTrackEdited = Notification.Name("tune.uploadedTrackEdited")
     @Published private(set) var playlists: [Playlist] = []
     @Published private(set) var likedPlaylists: [Playlist] = []
@@ -60,6 +61,7 @@ final class Session: ObservableObject {
             return
         }
         accounts = AccountStore.load()
+        TuneSyncService.installHooks()
         if let saved: Saved = Storage.load("session.json") {
             profile = saved.profile
             if let uid = saved.profile?.uid {
@@ -71,11 +73,14 @@ final class Session: ObservableObject {
             let local = Set(localIDs)
             likedIds = localIDs + saved.liked.filter { !local.contains($0) && (Settings.catalog || !TuneCatalogID.isSyntheticTrack($0)) }
             likedSet = Set(likedIds)
-            playlists = saved.playlists
+            playlists = saved.playlists.filter { !TuneSyncCodec.isSyncPlaylist(title: $0.title, description: $0.description) }
             for pl in playlists {
                 appliedCatalogPlaylistCounts[pl.id] = Settings.catalog ? CatalogLibraryStore.shared.playlistTracks(owner: pl.owner, kind: pl.kind).count : 0
             }
-            likedPlaylists = (saved.likedPlaylists ?? []).filter { Settings.catalog || $0.owner != TuneCatalogID.owner }
+            likedPlaylists = (saved.likedPlaylists ?? []).filter {
+                !TuneSyncCodec.isSyncPlaylist(title: $0.title, description: $0.description)
+                    && (Settings.catalog || $0.owner != TuneCatalogID.owner)
+            }
             likedAlbums = Set((saved.albums ?? []).filter { Settings.catalog || !TuneCatalogID.isSyntheticAlbum($0) })
             likedArtists = Set((saved.artists ?? []).filter { Settings.catalog || !TuneCatalogID.isSyntheticArtist($0) })
             disliked = Set((saved.disliked ?? []).filter { Settings.catalog || !TuneCatalogID.isSyntheticTrack($0) })
@@ -110,38 +115,54 @@ final class Session: ObservableObject {
         }
     }
 
+    func applySyncedCatalogLibrary(uid: String) {
+        guard !Demo.on, profile?.uid == uid else { return }
+        reconcileCatalogVisibility()
+        NotificationCenter.default.post(name: Self.catalogLibrarySynced, object: nil)
+    }
+
     func reconcileCatalogVisibility() {
         guard !Demo.on else { return }
-        if Settings.catalog {
-            let catalogLikes = CatalogLibraryStore.shared.likedTracks
-            let mergedLikes = Self.uniqueIDs(catalogLikes + likedIds)
-            if mergedLikes != likedIds {
-                likedIds = mergedLikes
-                likedSet = Set(mergedLikes)
-            }
-            disliked.formUnion(CatalogLibraryStore.shared.dislikedTracks)
-            likedAlbums.formUnion(CatalogLibraryStore.shared.likedAlbums)
-            likedArtists.formUnion(CatalogLibraryStore.shared.likedArtists)
-            blockedArtists.formUnion(CatalogLibraryStore.shared.dislikedArtists)
-            let localPlaylists: [Playlist] = CatalogLibraryStore.shared.likedPlaylists.compactMap { kind in
+        let catalogLikes = Settings.catalog ? CatalogLibraryStore.shared.likedTracks : []
+        let yandexLikes = likedIds.filter { !TuneCatalogID.isSyntheticTrack($0) }
+        let nextLikes = Self.uniqueIDs(catalogLikes + yandexLikes)
+        if nextLikes != likedIds {
+            likedIds = nextLikes
+            likedSet = Set(nextLikes)
+        }
+
+        let catalogDisliked = Settings.catalog ? Set(CatalogLibraryStore.shared.dislikedTracks) : []
+        let nextDisliked = disliked.filter { !TuneCatalogID.isSyntheticTrack($0) }.union(catalogDisliked)
+        if nextDisliked != disliked { disliked = nextDisliked }
+
+        let catalogAlbums = Settings.catalog ? Set(CatalogLibraryStore.shared.likedAlbums) : []
+        let nextAlbums = likedAlbums.filter { !TuneCatalogID.isSyntheticAlbum($0) }.union(catalogAlbums)
+        if nextAlbums != likedAlbums { likedAlbums = nextAlbums }
+
+        let catalogArtists = Settings.catalog ? Set(CatalogLibraryStore.shared.likedArtists) : []
+        let nextArtists = likedArtists.filter { !TuneCatalogID.isSyntheticArtist($0) }.union(catalogArtists)
+        if nextArtists != likedArtists { likedArtists = nextArtists }
+
+        let catalogBlocked = Settings.catalog ? Set(CatalogLibraryStore.shared.dislikedArtists) : []
+        let nextBlocked = blockedArtists.filter { !TuneCatalogID.isSyntheticArtist($0) }.union(catalogBlocked)
+        if nextBlocked != blockedArtists {
+            blockedArtists = nextBlocked
+            UserDefaults.standard.set(Array(nextBlocked), forKey: "blockedArtists")
+        }
+
+        let localPlaylists: [Playlist] = Settings.catalog
+            ? CatalogLibraryStore.shared.likedPlaylists.compactMap { kind in
                 guard let (fields, _) = Uncensor.shared.catalogPlaylist(kind) else { return nil }
                 return API.catalogPlaylistCard(kind: kind, fields: fields)
             }
-            var seenPlaylists = Set<String>()
-            let mergedPlaylists = (localPlaylists + likedPlaylists).filter { seenPlaylists.insert($0.id).inserted }
-            if mergedPlaylists != likedPlaylists { likedPlaylists = mergedPlaylists }
-        } else {
-            let filteredLikes = likedIds.filter { !TuneCatalogID.isSyntheticTrack($0) }
-            if filteredLikes != likedIds {
-                likedIds = filteredLikes
-                likedSet = Set(filteredLikes)
-            }
-            disliked = disliked.filter { !TuneCatalogID.isSyntheticTrack($0) }
-            likedAlbums = likedAlbums.filter { !TuneCatalogID.isSyntheticAlbum($0) }
-            likedArtists = likedArtists.filter { !TuneCatalogID.isSyntheticArtist($0) }
-            blockedArtists = blockedArtists.filter { !TuneCatalogID.isSyntheticArtist($0) }
-            likedPlaylists.removeAll { $0.owner == TuneCatalogID.owner }
+            : []
+        let yandexPlaylists = likedPlaylists.filter {
+            $0.owner != TuneCatalogID.owner && !TuneSyncCodec.isSyncPlaylist(title: $0.title, description: $0.description)
         }
+        var seenPlaylists = Set<String>()
+        let nextLikedPlaylists = (localPlaylists + yandexPlaylists).filter { seenPlaylists.insert($0.id).inserted }
+        if nextLikedPlaylists != likedPlaylists { likedPlaylists = nextLikedPlaylists }
+
         for index in playlists.indices {
             let pl = playlists[index]
             let prevApplied = appliedCatalogPlaylistCounts[pl.id] ?? 0
@@ -338,12 +359,16 @@ final class Session: ObservableObject {
             guard !Task.isCancelled, token == requestedToken else { return }
             if let ids = snapshot.0, revision == likesRevision { setLiked(ids) }
             if let lists = snapshot.1 {
-                if lists != playlists { playlists = lists }
-                for pl in lists {
+                let visible = lists.filter { !TuneSyncCodec.isSyncPlaylist(title: $0.title, description: $0.description) }
+                if visible != playlists { playlists = visible }
+                for pl in visible {
                     appliedCatalogPlaylistCounts[pl.id] = Settings.catalog ? CatalogLibraryStore.shared.playlistTracks(owner: pl.owner, kind: pl.kind).count : 0
                 }
             }
-            if let lists = snapshot.2, lists != likedPlaylists { likedPlaylists = lists }
+            if let lists = snapshot.2 {
+                let visible = lists.filter { !TuneSyncCodec.isSyncPlaylist(title: $0.title, description: $0.description) }
+                if visible != likedPlaylists { likedPlaylists = visible }
+            }
             if let ids = snapshot.3, Set(ids) != likedAlbums { likedAlbums = Set(ids) }
             if let ids = snapshot.4, Set(ids) != likedArtists { likedArtists = Set(ids) }
             if let ids = snapshot.5, Set(ids) != disliked { disliked = Set(ids) }
