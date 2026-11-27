@@ -657,10 +657,8 @@ struct CatalogLibrary: Codable, Equatable {
     }
 
     mutating func clearPlaylist(_ key: String, now: Int64? = nil) {
-        let had = playlistTracks.removeValue(forKey: key) != nil || playlistMeta[key] != nil
-        if had {
-            playlistMeta[key] = now ?? TuneSyncCodec.nowSeconds()
-        }
+        playlistTracks.removeValue(forKey: key)
+        playlistMeta[key] = now ?? TuneSyncCodec.nowSeconds()
     }
 
     mutating func setPin(_ key: String, pinned: Bool, now: Int64? = nil) {
