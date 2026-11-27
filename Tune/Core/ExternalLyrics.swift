@@ -415,7 +415,7 @@ enum ExternalLyrics {
         netease: ((Track) async throws -> LyricsText?)? = nil,
         onFailure: ((Source, Error) -> Void)? = nil
     ) async -> (LyricsText, complete: Bool) {
-        var sources: [Source] = track.isPrivate ? [] : [.yandex]
+        var sources: [Source] = (track.isPrivate || TuneCatalogID.isSyntheticTrack(track.id)) ? [] : [.yandex]
         if options.external {
             if options.neteaseFirst && options.netease { sources.append(.netease) }
             if options.lrclib { sources.append(.lrclib) }

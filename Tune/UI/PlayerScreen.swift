@@ -362,7 +362,8 @@ private struct PlayerBody: View {
 
     @ViewBuilder
     private func statusIcons(_ track: Track) -> some View {
-        let hasUncensor = Uncensor.shared.has(track.id) || player.audibleVersion == .uncensored
+        let isCatalog = Uncensor.shared.displaysCatalogBadge(for: track)
+        let hasUncensor = !isCatalog && (Uncensor.shared.has(track.id) || player.audibleVersion == .uncensored)
         let hasSound = player.sound.needsAudioMix || player.sound.speed != 1
         if hasUncensor || hasSound || sleeping {
             HStack(spacing: 6) {

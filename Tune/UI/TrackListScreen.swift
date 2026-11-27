@@ -84,10 +84,16 @@ final class TrackListModel: ObservableObject {
     private let kind: ListKind
 
     func updateLocalLikes(_ local: [Track]) {
-        let newIDs = Set(local.map(\.id))
+        let catalogLikes = Session.shared.catalogLikedTracksList()
+        let combined = catalogLikes + local
+        let newIDs = Set(combined.map(\.id))
         let excluded = localLikeIDs.union(newIDs)
         localLikeIDs = newIDs
-        let updated = local + tracks.filter { !excluded.contains($0.id) }
+        let rest = tracks.filter {
+            !excluded.contains($0.id) && (Settings.catalog || !TuneCatalogID.isSyntheticTrack($0.id))
+        }
+        var seen = Set<String>()
+        let updated = (combined + rest).filter { seen.insert($0.id).inserted }
         applyLikes(updated)
     }
 
@@ -234,9 +240,12 @@ final class TrackListModel: ObservableObject {
             cachedLikesLoaded = true
             let cached = await Task.detached(priority: .userInitiated) { Storage.load("likes-tracks.json", as: [Track].self) }.value
             if let cached, tracks.allSatisfy({ localLikeIDs.contains($0.id) }) {
-                tracks = cached
+                tracks = cached.filter { Settings.catalog || !TuneCatalogID.isSyntheticTrack($0.id) }
                 updateLocalLikes(Session.shared.localLikedTracks)
                 loading = false
+            } else if tracks.isEmpty {
+                updateLocalLikes(Session.shared.localLikedTracks)
+                if !tracks.isEmpty { loading = false }
             }
         }
         if Session.shared.profile == nil {
@@ -274,10 +283,12 @@ final class TrackListModel: ObservableObject {
                 loading = false
             }
         }
-        let local = Session.shared.localLikedTracks
-        localLikeIDs = Set(local.map(\.id))
+        let local = Session.shared.catalogLikedTracksList() + Session.shared.localLikedTracks
+        var seenLocal = Set<String>()
+        let uniqueLocal = local.filter { seenLocal.insert($0.id).inserted }
+        localLikeIDs = Set(uniqueLocal.map(\.id))
         Session.shared.setLiked(ids)
-        applyLikes(local + ordered.filter { !localLikeIDs.contains($0.id) })
+        applyLikes(uniqueLocal + ordered.filter { !localLikeIDs.contains($0.id) })
         staleLikedTracks.removeAll()
         Downloads.shared.auto(ordered)
         if !Demo.on {
@@ -327,7 +338,9 @@ final class TrackListModel: ObservableObject {
         }
         let source = sourceTracks ?? tracks
         var seen = Set<String>()
-        let ids = source.map(\.id).filter { !$0.isEmpty && $0.allSatisfy(\.isNumber) && seen.insert($0).inserted }
+        let ids = source.map(\.id).filter {
+            !$0.isEmpty && $0.allSatisfy(\.isNumber) && !TuneCatalogID.isSyntheticTrack($0) && seen.insert($0).inserted
+        }
         let cacheKey = "\(place):\(ids.count):\(ids.first ?? ""):\(ids.last ?? "")"
         if filterKey == cacheKey { return }
         filterKey = cacheKey
@@ -597,9 +610,12 @@ struct TrackListScreen: View {
 
     private var shareURL: URL? {
         switch kind {
-        case .album(let id): return URL(string: "https://music.yandex.ru/album/\(id)")
-        case .playlist(let playlist): return playlist.shareURL
-        default: return nil
+        case .album(let id):
+            return TuneCatalogID.isSyntheticAlbum(id) ? nil : URL(string: "https://music.yandex.ru/album/\(id)")
+        case .playlist(let playlist):
+            return playlist.shareURL
+        default:
+            return nil
         }
     }
 
@@ -633,6 +649,11 @@ struct TrackListScreen: View {
                     if familiarLikes != updated { familiarLikes = updated }
                 }
             }
+            .onReceive(Session.shared.$likedIds.map { $0.filter(TuneCatalogID.isSyntheticTrack) }.removeDuplicates()) { _ in
+                if kind == .likes {
+                    model.updateLocalLikes(Session.shared.localLikedTracks)
+                }
+            }
             .onReceive(downloads.$entries.removeDuplicates()) { entries in
                 if (kind == .downloads || onlyDownloaded), downloadEntries != entries {
                     downloadEntries = entries
@@ -664,6 +685,14 @@ struct TrackListScreen: View {
                 guard let target = note.object as? ReplacementTarget else { return }
                 if kind == .likes { model.metadataChanged(target) }
                 Task { await model.load(kind, force: true) }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: Uncensor.changed)) { _ in
+                if kind == .likes {
+                    model.updateLocalLikes(Session.shared.localLikedTracks)
+                }
+                if kind != .downloads {
+                    Task { await model.load(kind, force: true) }
+                }
             }
             .fileImporter(isPresented: $importingAudio, allowedContentTypes: [.audio], allowsMultipleSelection: true) { result in
                 switch result {
@@ -1795,8 +1824,10 @@ struct ArtistScreen: View {
                         PlayButton(context: PlayContext(kind: "artist", item: id, name: page.name)) {
                             player.play(page.popular, context: PlayContext(kind: "artist", item: id, name: page.name))
                         }
-                        RoundButton(symbol: "dot.radiowaves.left.and.right") {
-                            player.playWave(seeds: ["artist:\(id)"], name: page.name)
+                        if !TuneCatalogID.isSyntheticArtist(id) {
+                            RoundButton(symbol: "dot.radiowaves.left.and.right") {
+                                player.playWave(seeds: ["artist:\(id)"], name: page.name)
+                            }
                         }
                     }
                     .padding(.top, 12)
@@ -1888,7 +1919,7 @@ struct ArtistScreen: View {
                     } label: {
                         Label("Подменить исполнителя", systemImage: "pencil")
                     }
-                    if let url = URL(string: "https://music.yandex.ru/artist/\(id)") {
+                    if !TuneCatalogID.isSyntheticArtist(id), let url = URL(string: "https://music.yandex.ru/artist/\(id)") {
                         ShareLink(item: url) { Label("Поделиться", systemImage: "square.and.arrow.up") }
                     }
                 } label: {
@@ -1898,6 +1929,9 @@ struct ArtistScreen: View {
         }
         .task { if page == nil { await load() } }
         .onReceive(NotificationCenter.default.publisher(for: MetadataOverrides.changed)) { _ in
+            Task { await load() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Uncensor.changed)) { _ in
             Task { await load() }
         }
         .task(id: page?.cover) {
@@ -1996,7 +2030,9 @@ struct ArtistScreen: View {
             return
         }
         var seen = Set<String>()
-        let ids = popular.map(\.id).filter { !$0.isEmpty && $0.allSatisfy(\.isNumber) && seen.insert($0).inserted }
+        let ids = popular.map(\.id).filter {
+            !$0.isEmpty && $0.allSatisfy(\.isNumber) && !TuneCatalogID.isSyntheticTrack($0) && seen.insert($0).inserted
+        }
         guard ids.count >= 4 else {
             filters = []
             selectedFilter = nil

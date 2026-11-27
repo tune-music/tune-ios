@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import UIKit
 import WebKit
@@ -46,6 +47,8 @@ final class Session: ObservableObject {
     private var likesRevision = 0
     private var refreshTask: Task<Void, Never>?
     private var toastTask: Task<Void, Never>?
+    private var bag = Set<AnyCancellable>()
+    private var appliedCatalogPlaylistCounts: [String: Int] = [:]
 
     private init() {
         token = Demo.on ? "demo" : TokenStore.token
@@ -61,17 +64,94 @@ final class Session: ObservableObject {
             profile = saved.profile
             if let uid = saved.profile?.uid {
                 loadRestoredLikes(uid)
+                CatalogLibraryStore.shared.load(uid: uid)
             }
-            let localIDs = localLikedTracks.map(\.id)
+            let catalogLikes = CatalogLibraryStore.shared.likedTracks
+            let localIDs = Self.uniqueIDs(catalogLikes + localLikedTracks.map(\.id))
             let local = Set(localIDs)
-            likedIds = localIDs + saved.liked.filter { !local.contains($0) }
+            likedIds = localIDs + saved.liked.filter { !local.contains($0) && (Settings.catalog || !TuneCatalogID.isSyntheticTrack($0)) }
             likedSet = Set(likedIds)
             playlists = saved.playlists
-            likedPlaylists = saved.likedPlaylists ?? []
-            likedAlbums = Set(saved.albums ?? [])
-            likedArtists = Set(saved.artists ?? [])
-            disliked = Set(saved.disliked ?? [])
+            for pl in playlists {
+                appliedCatalogPlaylistCounts[pl.id] = Settings.catalog ? CatalogLibraryStore.shared.playlistTracks(owner: pl.owner, kind: pl.kind).count : 0
+            }
+            likedPlaylists = (saved.likedPlaylists ?? []).filter { Settings.catalog || $0.owner != TuneCatalogID.owner }
+            likedAlbums = Set((saved.albums ?? []).filter { Settings.catalog || !TuneCatalogID.isSyntheticAlbum($0) })
+            likedArtists = Set((saved.artists ?? []).filter { Settings.catalog || !TuneCatalogID.isSyntheticArtist($0) })
+            disliked = Set((saved.disliked ?? []).filter { Settings.catalog || !TuneCatalogID.isSyntheticTrack($0) })
+            if Settings.catalog {
+                likedAlbums.formUnion(CatalogLibraryStore.shared.likedAlbums)
+                likedArtists.formUnion(CatalogLibraryStore.shared.likedArtists)
+                disliked.formUnion(CatalogLibraryStore.shared.dislikedTracks)
+                blockedArtists.formUnion(CatalogLibraryStore.shared.dislikedArtists)
+            }
         }
+        NotificationCenter.default.publisher(for: Uncensor.changed)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.catalogChanged()
+            }
+            .store(in: &bag)
+    }
+
+    private static func uniqueIDs(_ ids: [String]) -> [String] {
+        var seen = Set<String>()
+        return ids.filter { seen.insert($0).inserted }
+    }
+
+    func catalogLikedTracksList() -> [Track] {
+        CatalogLibraryStore.shared.likedTracks.compactMap(Uncensor.shared.catalogTrack).compactMap(API.parseTrack)
+    }
+
+    private func catalogChanged() {
+        reconcileCatalogVisibility()
+        if token != nil, !Demo.on, !Connectivity.shared.offline, !Settings.offlineMode {
+            Task { await refresh() }
+        }
+    }
+
+    func reconcileCatalogVisibility() {
+        guard !Demo.on else { return }
+        if Settings.catalog {
+            let catalogLikes = CatalogLibraryStore.shared.likedTracks
+            let mergedLikes = Self.uniqueIDs(catalogLikes + likedIds)
+            if mergedLikes != likedIds {
+                likedIds = mergedLikes
+                likedSet = Set(mergedLikes)
+            }
+            disliked.formUnion(CatalogLibraryStore.shared.dislikedTracks)
+            likedAlbums.formUnion(CatalogLibraryStore.shared.likedAlbums)
+            likedArtists.formUnion(CatalogLibraryStore.shared.likedArtists)
+            blockedArtists.formUnion(CatalogLibraryStore.shared.dislikedArtists)
+            let localPlaylists: [Playlist] = CatalogLibraryStore.shared.likedPlaylists.compactMap { kind in
+                guard let (fields, _) = Uncensor.shared.catalogPlaylist(kind) else { return nil }
+                return API.catalogPlaylistCard(kind: kind, fields: fields)
+            }
+            var seenPlaylists = Set<String>()
+            let mergedPlaylists = (localPlaylists + likedPlaylists).filter { seenPlaylists.insert($0.id).inserted }
+            if mergedPlaylists != likedPlaylists { likedPlaylists = mergedPlaylists }
+        } else {
+            let filteredLikes = likedIds.filter { !TuneCatalogID.isSyntheticTrack($0) }
+            if filteredLikes != likedIds {
+                likedIds = filteredLikes
+                likedSet = Set(filteredLikes)
+            }
+            disliked = disliked.filter { !TuneCatalogID.isSyntheticTrack($0) }
+            likedAlbums = likedAlbums.filter { !TuneCatalogID.isSyntheticAlbum($0) }
+            likedArtists = likedArtists.filter { !TuneCatalogID.isSyntheticArtist($0) }
+            blockedArtists = blockedArtists.filter { !TuneCatalogID.isSyntheticArtist($0) }
+            likedPlaylists.removeAll { $0.owner == TuneCatalogID.owner }
+        }
+        for index in playlists.indices {
+            let pl = playlists[index]
+            let prevApplied = appliedCatalogPlaylistCounts[pl.id] ?? 0
+            let nextApplied = Settings.catalog ? CatalogLibraryStore.shared.playlistTracks(owner: pl.owner, kind: pl.kind).count : 0
+            if prevApplied != nextApplied {
+                playlists[index].count = max(0, pl.count - prevApplied + nextApplied)
+                appliedCatalogPlaylistCounts[pl.id] = nextApplied
+            }
+        }
+        save()
     }
 
     func isLiked(_ id: String) -> Bool {
@@ -184,6 +264,8 @@ final class Session: ObservableObject {
         likedAlbums = []
         likedArtists = []
         disliked = []
+        appliedCatalogPlaylistCounts.removeAll()
+        CatalogLibraryStore.shared.clearInMemory()
         for name in ["session.json", "likes-tracks.json", "home.json", "liked-albums.json", "liked-artists.json", "top-artists.json"] {
             Storage.remove(name)
         }
@@ -240,6 +322,7 @@ final class Session: ObservableObject {
             let uid = profile.uid
             if previousUID != uid {
                 loadRestoredLikes(uid)
+                CatalogLibraryStore.shared.load(uid: uid)
                 for track in localLikedTracks.reversed() { apply(track.id, true) }
                 for (id, liked) in restoredChanges where !liked { apply(id, false) }
             }
@@ -254,11 +337,17 @@ final class Session: ObservableObject {
                             try? await albumsTask, try? await artistsTask, try? await dislikedTask)
             guard !Task.isCancelled, token == requestedToken else { return }
             if let ids = snapshot.0, revision == likesRevision { setLiked(ids) }
-            if let lists = snapshot.1, lists != playlists { playlists = lists }
+            if let lists = snapshot.1 {
+                if lists != playlists { playlists = lists }
+                for pl in lists {
+                    appliedCatalogPlaylistCounts[pl.id] = Settings.catalog ? CatalogLibraryStore.shared.playlistTracks(owner: pl.owner, kind: pl.kind).count : 0
+                }
+            }
             if let lists = snapshot.2, lists != likedPlaylists { likedPlaylists = lists }
             if let ids = snapshot.3, Set(ids) != likedAlbums { likedAlbums = Set(ids) }
             if let ids = snapshot.4, Set(ids) != likedArtists { likedArtists = Set(ids) }
             if let ids = snapshot.5, Set(ids) != disliked { disliked = Set(ids) }
+            reconcileCatalogVisibility()
             save()
             Uploads.shared.resume()
             syncRestoredLikes()
@@ -272,9 +361,11 @@ final class Session: ObservableObject {
     // MARK: - Лайки и дизлайки
 
     func setLiked(_ ids: [String]) {
-        let local = localLikedTracks.map(\.id)
+        let local = Self.uniqueIDs(CatalogLibraryStore.shared.likedTracks + localLikedTracks.map(\.id))
         let localIDs = Set(local)
-        let ids = local + ids.filter { !localIDs.contains($0) && restoredChanges[$0] != false }
+        let ids = local + ids.filter {
+            !localIDs.contains($0) && restoredChanges[$0] != false && (Settings.catalog || !TuneCatalogID.isSyntheticTrack($0))
+        }
         guard pendingLikes.isEmpty, ids != likedIds else { return }
         likedSet = Set(ids)
         likedIds = ids
@@ -301,7 +392,13 @@ final class Session: ObservableObject {
             disliked.remove(track.id)
             Downloads.shared.auto([track])
         }
-        if localLikedTracks.contains(where: { $0.id == track.id }) || (track.uncensored && track.yandexAvailable == false) {
+        if TuneCatalogID.isSyntheticTrack(track.id) {
+            pendingLikes.remove(track.id)
+            CatalogLibraryStore.shared.setTrackLiked(track.id, liked)
+            save()
+            return
+        }
+        if localLikedTracks.contains(where: { $0.id == track.id }) || ((track.uncensored || track.isCatalog) && track.yandexAvailable == false) {
             pendingLikes.remove(track.id)
             var updated = localLikedTracks.filter { $0.id != track.id }
             if liked {
@@ -415,6 +512,11 @@ final class Session: ObservableObject {
         } else {
             disliked.remove(track.id)
         }
+        if TuneCatalogID.isSyntheticTrack(track.id) {
+            CatalogLibraryStore.shared.setTrackDisliked(track.id, now)
+            save()
+            return now
+        }
         Task {
             do {
                 try await API.shared.setDisliked(uid: uid, track: track.id, disliked: now)
@@ -444,6 +546,11 @@ final class Session: ObservableObject {
         let liked = !likedAlbums.contains(id)
         if liked { likedAlbums.insert(id) } else { likedAlbums.remove(id) }
         show(liked ? "Альбом добавлен в коллекцию" : "Альбом убран из коллекции")
+        if TuneCatalogID.isSyntheticAlbum(id) {
+            CatalogLibraryStore.shared.setAlbumLiked(id, liked)
+            save()
+            return
+        }
         Task {
             do {
                 try await API.shared.setLiked(uid: uid, kind: "albums", param: "album-id", id: id, liked: liked)
@@ -460,6 +567,11 @@ final class Session: ObservableObject {
         let liked = !likedArtists.contains(id)
         if liked { likedArtists.insert(id) } else { likedArtists.remove(id) }
         show(liked ? "Исполнитель добавлен в коллекцию" : "Исполнитель убран из коллекции")
+        if TuneCatalogID.isSyntheticArtist(id) {
+            CatalogLibraryStore.shared.setArtistLiked(id, liked)
+            save()
+            return
+        }
         Task {
             do {
                 try await API.shared.setLiked(uid: uid, kind: "artists", param: "artist-id", id: id, liked: liked)
@@ -482,6 +594,12 @@ final class Session: ObservableObject {
         if blocked { blockedArtists.insert(artist.id) } else { blockedArtists.remove(artist.id) }
         UserDefaults.standard.set(Array(blockedArtists), forKey: "blockedArtists")
         show(blocked ? "\(artist.name) больше не будет в рекомендациях" : "\(artist.name) снова в рекомендациях")
+        if TuneCatalogID.isSyntheticArtist(artist.id) {
+            CatalogLibraryStore.shared.setArtistDisliked(artist.id, blocked)
+            if blocked { likedArtists.remove(artist.id) }
+            save()
+            return
+        }
         Task {
             do {
                 try await API.shared.setBlocked(uid: uid, artist: artist.id, blocked: blocked)
@@ -496,6 +614,9 @@ final class Session: ObservableObject {
     func clearBlocked(_ id: String) {
         blockedArtists.remove(id)
         UserDefaults.standard.set(Array(blockedArtists), forKey: "blockedArtists")
+        if TuneCatalogID.isSyntheticArtist(id) {
+            CatalogLibraryStore.shared.setArtistDisliked(id, false)
+        }
     }
 
     func togglePlaylist(_ playlist: Playlist) {
@@ -503,6 +624,11 @@ final class Session: ObservableObject {
         let liked = !isLiked(playlist)
         if liked { likedPlaylists.insert(playlist, at: 0) } else { likedPlaylists.removeAll { $0.id == playlist.id } }
         show(liked ? "Плейлист добавлен в коллекцию" : "Плейлист убран из коллекции")
+        if playlist.owner == TuneCatalogID.owner {
+            CatalogLibraryStore.shared.setPlaylistLiked(playlist.kind, liked)
+            save()
+            return
+        }
         Task {
             do {
                 try await API.shared.setLiked(uid: uid, playlist: playlist, liked: liked)
@@ -561,6 +687,7 @@ final class Session: ObservableObject {
         do {
             try await API.shared.deletePlaylist(uid: uid, kind: playlist.kind)
             playlists.removeAll { $0.id == playlist.id }
+            appliedCatalogPlaylistCounts.removeValue(forKey: playlist.id)
             save()
             return true
         } catch {
@@ -577,9 +704,15 @@ final class Session: ObservableObject {
     func add(_ tracks: [Track], to playlist: Playlist, atEnd: Bool = false, announce: Bool = true) async -> Bool {
         guard let uid = profile?.uid, playlist.owner == uid, !tracks.isEmpty else { return false }
         do {
+            let prevLocal = CatalogLibraryStore.shared.playlistTracks(owner: uid, kind: playlist.kind).count
             try await API.shared.addToPlaylist(uid: uid, kind: playlist.kind, tracks: tracks, atEnd: atEnd)
             guard profile?.uid == uid else { return false }
-            if let index = playlists.firstIndex(where: { $0.id == playlist.id }) { playlists[index].count += tracks.count }
+            let nextLocal = CatalogLibraryStore.shared.playlistTracks(owner: uid, kind: playlist.kind).count
+            let yandexCount = tracks.filter { !TuneCatalogID.isSyntheticTrack($0.id) }.count
+            if let index = playlists.firstIndex(where: { $0.id == playlist.id }) {
+                playlists[index].count += yandexCount + max(0, nextLocal - prevLocal)
+                appliedCatalogPlaylistCounts[playlist.id] = nextLocal
+            }
             if announce {
                 show(tracks.count == 1 ? "Добавлено в «\(playlist.title)»" : "В «\(playlist.title)» добавлено: \(plural(tracks.count, "трек", "трека", "треков"))")
             }
@@ -606,8 +739,17 @@ final class Session: ObservableObject {
     func remove(_ track: Track, from playlist: Playlist) async -> Bool {
         guard let uid = profile?.uid else { return false }
         do {
+            let prevLocal = CatalogLibraryStore.shared.playlistTracks(owner: uid, kind: playlist.kind).count
             try await API.shared.removeFromPlaylist(uid: uid, kind: playlist.kind, track: track)
-            if let index = playlists.firstIndex(where: { $0.id == playlist.id }), playlists[index].count > 0 { playlists[index].count -= 1 }
+            let nextLocal = CatalogLibraryStore.shared.playlistTracks(owner: uid, kind: playlist.kind).count
+            if let index = playlists.firstIndex(where: { $0.id == playlist.id }) {
+                if TuneCatalogID.isSyntheticTrack(track.id) {
+                    playlists[index].count = max(0, playlists[index].count - max(0, prevLocal - nextLocal))
+                } else if playlists[index].count > 0 {
+                    playlists[index].count -= 1
+                }
+                appliedCatalogPlaylistCounts[playlist.id] = nextLocal
+            }
             save()
             return true
         } catch {

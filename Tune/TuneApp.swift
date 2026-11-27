@@ -199,6 +199,7 @@ struct RootView: View {
         }
         .onChange(of: phase) { now in
             if now == .active {
+                Uncensor.shared.refreshCatalogIfNeeded()
                 Ynison.shared.updateConnection()
                 Player.shared.refreshPlaybackActivity()
                 if !Demo.on, !Settings.offlineMode { Downloads.shared.resumeAssets() }

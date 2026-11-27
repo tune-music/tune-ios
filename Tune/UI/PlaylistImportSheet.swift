@@ -98,7 +98,7 @@ struct PlaylistImportSheet: View {
                 guard !input.ids.isEmpty else { throw TuneError("В списке нет ссылок на треки Яндекс Музыки.") }
                 var found: [Track] = []
                 for ids in input.ids.chunked(100) {
-                    found += try await API.shared.tracks(ids: ids).filter { !$0.unavailable || $0.uncensored }
+                    found += try await API.shared.tracks(ids: ids).filter { !$0.unavailable || $0.uncensored || $0.isCatalog }
                 }
                 guard !found.isEmpty else { throw TuneError("Яндекс не вернул доступных треков из списка.") }
                 guard session.profile?.uid == uid else { return }

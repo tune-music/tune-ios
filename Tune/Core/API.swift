@@ -122,9 +122,11 @@ final class API {
     static func parseTrack(_ source: JSON) -> Track? {
         var value = source
         var uncensored = false
+        var catalog = false
         if let fields = source.dict, let id = source["id"].idText, let patched = Uncensor.shared.patch(track: fields, id: id) {
             value = JSON(patched.fields)
             uncensored = patched.file
+            catalog = patched.catalog
         }
         guard let id = value["id"].idText, let title = value["title"].string else { return nil }
         let artists = value["artists"].array.map(Uncensor.shared.patch(artist:)).compactMap { artist -> ArtistRef? in
@@ -136,7 +138,7 @@ final class API {
            let patch = Uncensor.shared.patch(album: fields, id: albumID) {
             album = JSON(patch)
         }
-        let cover = value["coverUri"].string ?? album["coverUri"].string
+        let cover = value["coverUri"].string ?? album["coverUri"].string ?? album["cover"]["uri"].string
         let lyrics = value["lyricsInfo"]
         return Track(
             id: id,
@@ -159,18 +161,27 @@ final class API {
             fade: value["type"].string == "music" ? FadePoints.parse(value["fade"]) : nil,
             mixFade: value["type"].string == "music" ? FadePoints.parse(value["mixFade"]) : nil,
             ugc: value["trackSource"].string.map { $0 == "UGC" },
-            yandexAvailable: source["available"].bool)
+            yandexAvailable: source["available"].bool,
+            catalog: catalog ? true : nil)
     }
 
     private static func parsePlaylist(_ value: JSON, owner: String) -> Playlist? {
         guard let kind = value["kind"].idText, let title = value["title"].string else { return nil }
-        let cover = value["cover"]["uri"].string ?? value["cover"]["itemsUri"][0].string ?? value["ogImage"].string
+        let cover = value["coverUri"].string ?? value["cover"]["uri"].string ?? value["cover"]["itemsUri"][0].string ?? value["ogImage"].string
         return Playlist(
             owner: value["owner"]["uid"].idText ?? value["uid"].idText ?? owner,
             kind: kind,
             title: title,
             count: value["trackCount"].int ?? 0,
             cover: (cover?.isEmpty ?? true) ? nil : cover)
+    }
+
+    static func catalogPlaylistCard(kind: String, fields: [String: Any]) -> Playlist? {
+        guard let title = fields["title"] as? String, !title.isEmpty else { return nil }
+        let count = CatalogIndex.idList(fields["tracks"]).count
+        let rawCover = (fields["coverUri"] as? String) ?? (fields["cover"] as? [String: Any])?["uri"] as? String
+        let cover = (rawCover?.isEmpty ?? true) ? nil : rawCover
+        return Playlist(owner: TuneCatalogID.owner, kind: kind, title: title, count: count, cover: cover)
     }
 
     private static func albumCard(_ source: JSON) -> Card? {
@@ -248,8 +259,8 @@ final class API {
     private static func artistCard(_ source: JSON) -> Card? {
         let value = Uncensor.shared.patch(artist: source)
         guard let id = value["id"].idText, let name = value["name"].string else { return nil }
-        let cover = value["cover"]["uri"].string ?? value["ogImage"].string
-        return Card(id: id, title: name, subtitle: "Исполнитель", cover: cover)
+        let cover = value["coverUri"].string ?? value["cover"]["uri"].string ?? value["ogImage"].string
+        return Card(id: id, title: name, subtitle: "Исполнитель", cover: (cover?.isEmpty ?? true) ? nil : cover)
     }
 
     private static func parseSequence(_ value: JSON) -> [Track] {
@@ -279,16 +290,22 @@ final class API {
 
     func likedEntries(uid: String) async throws -> [(id: String, addedAt: Date?)] {
         if Demo.on { return Demo.data.tracks.enumerated().map { ($0.element.id, Date(timeIntervalSince1970: Double($0.offset))) } }
+        let localEntries: [(id: String, addedAt: Date?)] = CatalogLibraryStore.shared.likedTracks.map { ($0, nil) }
+        func merging(_ remote: [(id: String, addedAt: Date?)]) -> [(id: String, addedAt: Date?)] {
+            var seen = Set<String>()
+            return (localEntries + remote).filter { seen.insert($0.id).inserted }
+        }
         do {
-            return try await fullLikedEntries()
+            return merging(try await fullLikedEntries())
         } catch {
             try Task.checkCancellation()
         }
         let value = result(try await get("users/\(uid)/likes/tracks"))
         let parseDate = Self.listDateParser()
-        return value["library"]["tracks"].array.compactMap { item in
+        let remote = value["library"]["tracks"].array.compactMap { item in
             item["id"].idText.map { ($0, parseDate(item["timestamp"])) }
         }
+        return merging(remote)
     }
 
     func fullLikedEntries() async throws -> [(id: String, addedAt: Date?)] {
@@ -314,6 +331,10 @@ final class API {
 
     func setLiked(uid: String, track: String, liked: Bool) async throws {
         if Demo.on { return }
+        if TuneCatalogID.isSyntheticTrack(track) {
+            CatalogLibraryStore.shared.setTrackLiked(track, liked)
+            return
+        }
         let encoded = Self.encode(track)
         let path = liked ? "users/\(uid)/likes/tracks/add?track-id=\(encoded)" : "users/\(uid)/likes/tracks/\(encoded)/remove"
         let value = result(try await post(path))
@@ -327,9 +348,13 @@ final class API {
     func tracks(ids: [String]) async throws -> [Track] {
         guard !ids.isEmpty else { return [] }
         if Demo.on { return Demo.data.tracks.filter { ids.contains($0.id) } }
+        let yandexIDs = ids.filter { !TuneCatalogID.isSyntheticTrack($0) }
+        if yandexIDs.isEmpty {
+            return ids.compactMap(Uncensor.shared.catalogTrack).compactMap(Self.parseTrack)
+        }
         let value: JSON
         do {
-            value = try await post("tracks", form: "track-ids=" + ids.map(Self.encode).joined(separator: "%2C"))
+            value = try await post("tracks", form: "track-ids=" + yandexIDs.map(Self.encode).joined(separator: "%2C"))
         } catch {
             try Task.checkCancellation()
             let local = ids.compactMap(Uncensor.shared.catalogTrack).compactMap(Self.parseTrack)
@@ -348,7 +373,11 @@ final class API {
     func playlists(uid: String) async throws -> [Playlist] {
         if Demo.on { return Demo.data.playlists }
         let value = try await get("users/\(uid)/playlists/list")
-        return value["result"].array.compactMap { Self.parsePlaylist($0, owner: uid) }
+        return value["result"].array.compactMap { Self.parsePlaylist($0, owner: uid) }.map { playlist in
+            var copy = playlist
+            copy.count += CatalogLibraryStore.shared.playlistTracks(owner: playlist.owner, kind: playlist.kind).count
+            return copy
+        }
     }
 
     func playlistTracks(_ playlist: Playlist) async throws -> [Track] {
@@ -364,14 +393,39 @@ final class API {
             }
             return PlaylistPage(tracks: tracks, author: "Демо", about: "Музыка в дорогу: от спокойного к бодрому, чтобы не уснуть за рулём.")
         }
+        if playlist.owner == TuneCatalogID.owner {
+            guard let (fields, trackIDs) = Uncensor.shared.catalogPlaylist(playlist.kind) else {
+                throw APIError.server("Плейлист не найден в каталоге Tune")
+            }
+            let tracks = try await self.tracks(ids: trackIDs)
+            let rawCover = (fields["coverUri"] as? String) ?? (fields["cover"] as? [String: Any])?["uri"] as? String
+            let cover = (rawCover?.isEmpty ?? true) ? playlist.cover : rawCover
+            return PlaylistPage(
+                tracks: tracks,
+                author: fields["author"] as? String ?? "Каталог Tune",
+                about: fields["description"] as? String ?? "",
+                title: fields["title"] as? String ?? playlist.title,
+                cover: cover,
+                open: true)
+        }
         let value = result(try await get("users/\(playlist.owner)/playlists/\(playlist.kind)", [("rich-tracks", "true")]))
         let parseDate = Self.listDateParser()
+        let remoteTracks: [Track] = value["tracks"].array.compactMap { entry in
+            guard var track = Self.parseTrack(entry["track"]) else { return nil }
+            track.addedAt = parseDate(entry["timestamp"])
+            return track
+        }
+        let localIDs = CatalogLibraryStore.shared.playlistTracks(owner: playlist.owner, kind: playlist.kind)
+        let mergedTracks: [Track]
+        if localIDs.isEmpty {
+            mergedTracks = remoteTracks
+        } else {
+            let localTracks = (try? await self.tracks(ids: localIDs)) ?? localIDs.compactMap(Uncensor.shared.catalogTrack).compactMap(Self.parseTrack)
+            var seen = Set<String>()
+            mergedTracks = (localTracks + remoteTracks).filter { seen.insert($0.id).inserted }
+        }
         return PlaylistPage(
-            tracks: value["tracks"].array.compactMap { entry in
-                guard var track = Self.parseTrack(entry["track"]) else { return nil }
-                track.addedAt = parseDate(entry["timestamp"])
-                return track
-            },
+            tracks: mergedTracks,
             author: value["owner"]["name"].string ?? "",
             about: value["description"].string ?? "",
             title: value["title"].string ?? "",
@@ -394,18 +448,23 @@ final class API {
             return page
         }
         var value: JSON
-        do {
-            let remote = result(try await get("albums/\(id)/with-tracks"))
-            if remote["error"].exists || remote["id"].idText == nil {
-                guard let local = Uncensor.shared.catalogAlbum(id) else { throw APIError.server("Альбом не найден") }
-                value = local
-            } else {
-                value = remote
-            }
-        } catch {
-            try Task.checkCancellation()
-            guard let local = Uncensor.shared.catalogAlbum(id) else { throw error }
+        if TuneCatalogID.isSyntheticAlbum(id) {
+            guard let local = Uncensor.shared.catalogAlbum(id) else { throw APIError.server("Альбом не найден") }
             value = local
+        } else {
+            do {
+                let remote = result(try await get("albums/\(id)/with-tracks"))
+                if remote["error"].exists || remote["id"].idText == nil {
+                    guard let local = Uncensor.shared.catalogAlbum(id) else { throw APIError.server("Альбом не найден") }
+                    value = local
+                } else {
+                    value = remote
+                }
+            } catch {
+                try Task.checkCancellation()
+                guard let local = Uncensor.shared.catalogAlbum(id) else { throw error }
+                value = local
+            }
         }
         var disks: [[Track]] = value["volumes"].array.map { $0.array.compactMap(Self.parseTrack) }
         // Без цензуры: треки по дискам, как в списке FckCensor, с удалёнными Яндексом.
@@ -448,8 +507,12 @@ final class API {
 
     func albums(ids: [String]) async throws -> [Card] {
         guard !ids.isEmpty else { return [] }
+        let yandexIDs = ids.filter { !TuneCatalogID.isSyntheticAlbum($0) }
+        if yandexIDs.isEmpty {
+            return ids.compactMap(Uncensor.shared.catalogAlbum).compactMap(Self.albumCard)
+        }
         do {
-            let value = try await post("albums", form: "album-ids=" + ids.map(Self.encode).joined(separator: "%2C"))
+            let value = try await post("albums", form: "album-ids=" + yandexIDs.map(Self.encode).joined(separator: "%2C"))
             let cards = value["result"].array.compactMap(Self.albumCard)
             let byID = Dictionary(cards.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             return ids.compactMap { byID[$0] ?? Uncensor.shared.catalogAlbum($0).flatMap(Self.albumCard) }
@@ -459,6 +522,26 @@ final class API {
             if restored.isEmpty { throw error }
             return restored
         }
+    }
+
+    private func catalogArtistPage(id: String) async -> ArtistPage? {
+        guard let (raw, trackIDs, albumIDs) = Uncensor.shared.catalogArtist(id) else { return nil }
+        let popular = (try? await tracks(ids: trackIDs)) ?? trackIDs.compactMap(Uncensor.shared.catalogTrack).compactMap(Self.parseTrack)
+        let cards = (try? await albums(ids: albumIDs)) ?? albumIDs.compactMap(Uncensor.shared.catalogAlbum).compactMap(Self.albumCard)
+        let albums = cards.filter { $0.kind != "single" }
+        let singles = cards.filter { $0.kind == "single" }
+        let name = raw["name"].string ?? "Без имени"
+        let cover = raw["coverUri"].string ?? raw["cover"]["uri"].string ?? raw["ogImage"].string
+        let about = raw["description"].string ?? raw["description"]["text"].string ?? ""
+        var page = ArtistPage(
+            id: id, name: name, cover: (cover?.isEmpty ?? true) ? nil : cover,
+            popular: popular, albums: albums, also: [], similar: [])
+        page.singles = singles
+        page.about = about
+        page.latestRelease = cards.first
+        page.clips = []
+        page.concerts = []
+        return page
     }
 
     func artist(id: String, includeExtras: Bool = false) async throws -> ArtistPage {
@@ -472,9 +555,23 @@ final class API {
             page.about = "Британская рок-группа, добившаяся широчайшей известности в середине 1970-х годов, и одна из наиболее успешных групп в истории рок-музыки."
             return page
         }
-        let value = result(try await get("artists/\(id)/brief-info"))
+        if TuneCatalogID.isSyntheticArtist(id) {
+            guard let page = await catalogArtistPage(id: id) else { throw APIError.server("Исполнитель не найден") }
+            return page
+        }
+        let value: JSON
+        do {
+            value = result(try await get("artists/\(id)/brief-info"))
+        } catch {
+            try Task.checkCancellation()
+            if let page = await catalogArtistPage(id: id) { return page }
+            throw error
+        }
         let artist = Uncensor.shared.patch(artist: value["artist"])
-        guard let name = artist["name"].string, artist["error"].string != "not-found" else { throw APIError.server("Исполнитель не найден") }
+        guard let name = artist["name"].string, artist["error"].string != "not-found" else {
+            if let page = await catalogArtistPage(id: id) { return page }
+            throw APIError.server("Исполнитель не найден")
+        }
         async let clips = includeExtras ? artistClips(id, legacy: value["videos"]) : []
         async let concerts = includeExtras ? artistConcerts(id) : []
         var popular = value["popularTracks"].array.compactMap(Self.parseTrack)
@@ -495,7 +592,7 @@ final class API {
             singles.insert(contentsOf: added.filter { $0.kind == "single" }, at: 0)
         }
         var page = ArtistPage(
-            id: id, name: name, cover: artist["cover"]["uri"].string ?? artist["ogImage"].string, popular: popular, albums: albums,
+            id: id, name: name, cover: artist["coverUri"].string ?? artist["cover"]["uri"].string ?? artist["ogImage"].string, popular: popular, albums: albums,
             also: value["alsoAlbums"].array.compactMap(Self.albumCard), similar: value["similarArtists"].array.compactMap(Self.artistCard))
         page.singles = singles
         page.playlists = playlists
@@ -515,6 +612,9 @@ final class API {
 
     func artistCover(id: String) async throws -> String? {
         if Demo.on { return Demo.data.artists.first { $0.id == id }?.cover }
+        if TuneCatalogID.isSyntheticArtist(id) {
+            return Uncensor.shared.catalogArtist(id).flatMap { Self.artistCard($0.json)?.cover }
+        }
         let value = result(try await get("artists/\(id)/brief-info"))
         return Self.artistCard(value["artist"])?.cover
     }
@@ -621,6 +721,12 @@ final class API {
 
     func artistTracks(id: String) async throws -> [Track] {
         if Demo.on { return Demo.data.tracks }
+        if TuneCatalogID.isSyntheticArtist(id) {
+            guard let (_, trackIDs, _) = Uncensor.shared.catalogArtist(id) else {
+                throw APIError.server("Исполнитель не найден")
+            }
+            return (try? await tracks(ids: trackIDs)) ?? trackIDs.compactMap(Uncensor.shared.catalogTrack).compactMap(Self.parseTrack)
+        }
         let restoredIDs = Uncensor.shared.inserts(artist: id).tracks
         do {
             let value = result(try await get("artists/\(id)/tracks", [("page-size", "200")]))
@@ -636,7 +742,9 @@ final class API {
     func trackFilters(ids: [String]) async throws -> [TrackFilter] {
         if Demo.on { return [] }
         var seen = Set<String>()
-        let catalogIds = ids.filter { !$0.isEmpty && $0.allSatisfy(\.isNumber) && seen.insert($0).inserted }
+        let catalogIds = ids.filter {
+            !$0.isEmpty && $0.allSatisfy(\.isNumber) && !TuneCatalogID.isSyntheticTrack($0) && seen.insert($0).inserted
+        }
         guard catalogIds.count >= 4 else { return [] }
         let value = result(try await post("filters/tracks", json: ["trackIds": catalogIds]))
         let parsed: [TrackFilter] = value["filters"].array.compactMap { item in
@@ -659,6 +767,9 @@ final class API {
 
     func familiarTracks(artist id: String, wave: Bool) async throws -> [Track] {
         if Demo.on { return Array(Demo.data.tracks.prefix(wave ? 4 : 6)) }
+        if TuneCatalogID.isSyntheticArtist(id) {
+            return await Self.familiarOnDevice(artist: id, wave: wave)
+        }
         let kind = wave ? "wave" : "collection"
         let query = [("waveTracksLimit", wave ? "50" : "0"),
                      ("collectionTracksLimit", wave ? "0" : "50"), ("collectionAlbumsLimit", "0")]
@@ -719,10 +830,21 @@ final class API {
         let types = Set(types.split(separator: ","))
         var local = SearchResult()
         if page == 0, filter == nil {
-            let matches = Uncensor.shared.search(text, tracks: types.contains("track"), albums: types.contains("album"))
-            local.tracks = matches.tracks.compactMap(Self.parseTrack).filter(\.uncensored)
+            let matches = Uncensor.shared.search(
+                text,
+                tracks: types.contains("track"),
+                albums: types.contains("album"),
+                artists: types.contains("artist"),
+                playlists: types.contains("playlist")
+            )
+            local.tracks = matches.tracks.compactMap(Self.parseTrack).filter { $0.uncensored || $0.isCatalog }
             local.albums = matches.albums.compactMap(Self.albumCard)
-            local.best = local.tracks.first.map { .track($0) } ?? local.albums.first.map { .album($0) }
+            local.artists = matches.artists.compactMap(Self.artistCard)
+            local.playlists = matches.playlists.compactMap { Self.catalogPlaylistCard(kind: $0.kind, fields: $0.fields) }
+            local.best = local.tracks.first.map { .track($0) }
+                ?? local.albums.first.map { .album($0) }
+                ?? local.artists.first.map { .artist($0) }
+                ?? local.playlists.first.map { .playlist($0) }
         }
         let value: JSON
         do {
@@ -782,9 +904,16 @@ final class API {
         // Если Яндекс тоже нашёл запись, сохраняем её полные метаданные.
         let remoteTracks = Set(found.tracks.map(\.id))
         let remoteAlbums = Set(found.albums.map(\.id))
+        let remoteArtists = Set(found.artists.map(\.id))
+        let remotePlaylists = Set(found.playlists.map(\.id))
         local.tracks.removeAll { remoteTracks.contains($0.id) }
         local.albums.removeAll { remoteAlbums.contains($0.id) }
-        let localBest = local.tracks.first.map { SearchBest.track($0) } ?? local.albums.first.map { SearchBest.album($0) }
+        local.artists.removeAll { remoteArtists.contains($0.id) }
+        local.playlists.removeAll { remotePlaylists.contains($0.id) }
+        let localBest = local.tracks.first.map { SearchBest.track($0) }
+            ?? local.albums.first.map { SearchBest.album($0) }
+            ?? local.artists.first.map { SearchBest.artist($0) }
+            ?? local.playlists.first.map { SearchBest.playlist($0) }
         var unique = SearchResult(best: Self.preferredBest(query: text, remote: found.best, local: localBest))
         unique.append(local)
         unique.append(found)
@@ -916,15 +1045,21 @@ final class API {
             podcast.kind = "podcast"
             return podcast
         } }
+        let local = CatalogLibraryStore.shared.likedAlbums.compactMap(Uncensor.shared.catalogAlbum).compactMap(Self.albumCard)
         let value = result(try await get("users/\(uid)/likes/albums", [("rich", "true")]))
-        return value.array.compactMap { Self.albumCard($0["album"]) }
+        let remote = value.array.compactMap { Self.albumCard($0["album"]) }
+        var seen = Set<String>()
+        return (local + remote).filter { seen.insert($0.id).inserted }
     }
 
     func likedArtists(uid: String) async throws -> [Card] {
         if Demo.on { return Demo.data.artists }
+        let local = CatalogLibraryStore.shared.likedArtists.compactMap { Uncensor.shared.catalogArtist($0)?.json }.compactMap(Self.artistCard)
         let value = result(try await get("users/\(uid)/likes/artists", [("with-timestamps", "false")]))
         // Исполнитель приходит то сам по себе, то внутри artist.
-        return value.array.compactMap { Self.artistCard($0) ?? Self.artistCard($0["artist"]) }
+        let remote = value.array.compactMap { Self.artistCard($0) ?? Self.artistCard($0["artist"]) }
+        var seen = Set<String>()
+        return (local + remote).filter { seen.insert($0.id).inserted }
     }
 
     func topArtists() async throws -> [Card] {
@@ -952,50 +1087,84 @@ final class API {
 
     func dislikedArtists(uid: String) async throws -> [Card] {
         if Demo.on { return [] }
+        let local = CatalogLibraryStore.shared.dislikedArtists.compactMap { Uncensor.shared.catalogArtist($0)?.json }.compactMap(Self.artistCard)
         let value = result(try await get("users/\(uid)/dislikes/artists"))
-        return value.array.compactMap { Self.artistCard($0["artist"]) ?? Self.artistCard($0) }
+        let remote = value.array.compactMap { Self.artistCard($0["artist"]) ?? Self.artistCard($0) }
+        var seen = Set<String>()
+        return (local + remote).filter { seen.insert($0.id).inserted }
     }
 
     func likedPlaylists(uid: String) async throws -> [Playlist] {
         if Demo.on { return Demo.data.personal }
+        let local: [Playlist] = CatalogLibraryStore.shared.likedPlaylists.compactMap { kind in
+            guard let (fields, _) = Uncensor.shared.catalogPlaylist(kind) else { return nil }
+            return Self.catalogPlaylistCard(kind: kind, fields: fields)
+        }
         let value = result(try await get("users/\(uid)/likes/playlists"))
-        return value.array.compactMap { item -> Playlist? in
+        let remote = value.array.compactMap { item -> Playlist? in
             let playlist = item["playlist"].isObject ? item["playlist"] : item
             guard let owner = playlist["uid"].idText ?? playlist["owner"]["uid"].idText else { return nil }
             return Self.parsePlaylist(playlist, owner: owner)
         }
+        var seen = Set<String>()
+        return (local + remote).filter { seen.insert($0.id).inserted }
     }
 
     /// Номера альбомов и исполнителей из коллекции и треков с дизлайком: по ним рисуются сердечки.
     func likedAlbumIds(uid: String) async throws -> [String] {
         if Demo.on { return [] }
+        let local = CatalogLibraryStore.shared.likedAlbums
         let value = result(try await get("users/\(uid)/likes/albums"))
-        return value.array.compactMap { $0["id"].idText ?? $0["album"]["id"].idText }
+        let remote = value.array.compactMap { $0["id"].idText ?? $0["album"]["id"].idText }
+        var seen = Set<String>()
+        return (local + remote).filter { seen.insert($0).inserted }
     }
 
     func likedArtistIds(uid: String) async throws -> [String] {
         if Demo.on { return [] }
+        let local = CatalogLibraryStore.shared.likedArtists
         let value = result(try await get("users/\(uid)/likes/artists", [("with-timestamps", "false")]))
-        return value.array.compactMap { $0["id"].idText ?? $0["artist"]["id"].idText }
+        let remote = value.array.compactMap { $0["id"].idText ?? $0["artist"]["id"].idText }
+        var seen = Set<String>()
+        return (local + remote).filter { seen.insert($0).inserted }
     }
 
     func dislikedIds(uid: String) async throws -> [String] {
         if Demo.on { return [] }
+        let local = CatalogLibraryStore.shared.dislikedTracks
         let value = result(try await get("users/\(uid)/dislikes/tracks"))
-        return value["library"]["tracks"].array.compactMap { $0["id"].idText }
+        let remote = value["library"]["tracks"].array.compactMap { $0["id"].idText }
+        var seen = Set<String>()
+        return (local + remote).filter { seen.insert($0).inserted }
     }
 
     /// Дизлайк: Яндекс больше не предложит этот трек.
     func setDisliked(uid: String, track: String, disliked: Bool) async throws {
+        if TuneCatalogID.isSyntheticTrack(track) {
+            CatalogLibraryStore.shared.setTrackDisliked(track, disliked)
+            return
+        }
         _ = try await post(disliked ? "users/\(uid)/dislikes/tracks/add?track-id=\(track)" : "users/\(uid)/dislikes/tracks/\(track)/remove")
     }
 
     /// kind — albums или artists, param — album-id или artist-id.
     func setLiked(uid: String, kind: String, param: String, id: String, liked: Bool) async throws {
+        if kind == "albums", TuneCatalogID.isSyntheticAlbum(id) {
+            CatalogLibraryStore.shared.setAlbumLiked(id, liked)
+            return
+        }
+        if kind == "artists", TuneCatalogID.isSyntheticArtist(id) {
+            CatalogLibraryStore.shared.setArtistLiked(id, liked)
+            return
+        }
         _ = try await post(liked ? "users/\(uid)/likes/\(kind)/add?\(param)=\(id)" : "users/\(uid)/likes/\(kind)/\(id)/remove")
     }
 
     func setLiked(uid: String, playlist: Playlist, liked: Bool) async throws {
+        if playlist.owner == TuneCatalogID.owner {
+            CatalogLibraryStore.shared.setPlaylistLiked(playlist.kind, liked)
+            return
+        }
         _ = try await post(liked ? "users/\(uid)/likes/playlists/add?owner-uid=\(playlist.owner)&kind=\(playlist.kind)" : "users/\(uid)/likes/playlists/\(playlist.owner)-\(playlist.kind)/remove")
     }
 
@@ -1114,6 +1283,7 @@ final class API {
 
     func deletePlaylist(uid: String, kind: String) async throws {
         _ = try await post("users/\(uid)/playlists/\(kind)/delete")
+        CatalogLibraryStore.shared.clearPlaylist(owner: uid, kind: kind)
     }
 
     /// Плейлист меняют от его последней версии, поэтому она читается перед каждым изменением.
@@ -1138,12 +1308,23 @@ final class API {
     }
 
     func addToPlaylist(uid: String, kind: String, tracks: [Track], atEnd: Bool = false) async throws {
-        try await change(uid: uid, kind: kind) { state in
-            [["op": "insert", "at": atEnd ? state["tracks"].array.count : 0, "tracks": tracks.map(Self.reference)]]
+        let synthetic = tracks.filter { TuneCatalogID.isSyntheticTrack($0.id) }
+        let yandex = tracks.filter { !TuneCatalogID.isSyntheticTrack($0.id) }
+        if !yandex.isEmpty {
+            try await change(uid: uid, kind: kind) { state in
+                [["op": "insert", "at": atEnd ? state["tracks"].array.count : 0, "tracks": yandex.map(Self.reference)]]
+            }
+        }
+        if !synthetic.isEmpty {
+            CatalogLibraryStore.shared.addPlaylistTracks(synthetic.map(\.id), owner: uid, kind: kind, atEnd: atEnd)
         }
     }
 
     func removeFromPlaylist(uid: String, kind: String, track: Track) async throws {
+        if TuneCatalogID.isSyntheticTrack(track.id) {
+            CatalogLibraryStore.shared.removePlaylistTrack(track.id, owner: uid, kind: kind)
+            return
+        }
         try await change(uid: uid, kind: kind) { state in
             guard let position = Self.position(of: track.id, in: state) else {
                 throw APIError.server("Трека уже нет в плейлисте")
@@ -1154,14 +1335,22 @@ final class API {
 
     /// Переставляет трек: он встаёт перед треком `before`, а без него — в конец.
     func moveInPlaylist(uid: String, kind: String, track: Track, before: String?) async throws {
+        if TuneCatalogID.isSyntheticTrack(track.id) {
+            CatalogLibraryStore.shared.movePlaylistTrack(track.id, owner: uid, kind: kind, before: before)
+            return
+        }
         try await change(uid: uid, kind: kind) { state in
             guard let from = Self.position(of: track.id, in: state) else {
                 throw APIError.server("Трека уже нет в плейлисте")
             }
             var target = state["tracks"].array.count - 1
-            if let before, let next = Self.position(of: before, in: state) {
-                // После удаления трека всё, что стояло за ним, сдвигается на одну позицию.
-                target = next > from ? next - 1 : next
+            if let before {
+                if TuneCatalogID.isSyntheticTrack(before) {
+                    target = 0
+                } else if let next = Self.position(of: before, in: state) {
+                    // После удаления трека всё, что стояло за ним, сдвигается на одну позицию.
+                    target = next > from ? next - 1 : next
+                }
             }
             let reference = Self.reference(track)
             return [
@@ -1347,11 +1536,23 @@ final class API {
 
     /// «Не рекомендовать исполнителя»: его треки перестают попадаться в волнах.
     func setBlocked(uid: String, artist: String, blocked: Bool) async throws {
+        if TuneCatalogID.isSyntheticArtist(artist) {
+            CatalogLibraryStore.shared.setArtistDisliked(artist, blocked)
+            return
+        }
         let path = blocked ? "users/\(uid)/dislikes/artists/add?artist-id=\(artist)" : "users/\(uid)/dislikes/artists/\(artist)/remove"
         _ = try await post(path)
     }
 
     func waveNew(seeds: [String]) async throws -> Wave {
+        let isSyntheticSeed: (String) -> Bool = { seed in
+            if seed.hasPrefix("track:") { return TuneCatalogID.isSyntheticTrack(String(seed.dropFirst("track:".count))) }
+            if seed.hasPrefix("artist:") { return TuneCatalogID.isSyntheticArtist(String(seed.dropFirst("artist:".count))) }
+            return false
+        }
+        if !seeds.isEmpty && seeds.allSatisfy(isSyntheticSeed) {
+            throw APIError.server("Волна недоступна для треков каталога Tune")
+        }
         let value = result(try await post("rotor/session/new", json: ["seeds": seeds, "includeTracksInResponse": true, "allowExplicit": true]))
         guard let session = value["radioSessionId"].string else { throw APIError.server("Яндекс не запустил волну") }
         return Wave(session: session, tracks: Self.parseSequence(value))
@@ -1359,13 +1560,15 @@ final class API {
 
     /// Номера похожих исполнителей.
     func similarArtistIds(_ id: String) async throws -> [String] {
-        result(try await get("artists/\(id)/similar"))["similarArtists"].array.compactMap { $0["id"].idText }
+        if TuneCatalogID.isSyntheticArtist(id) { return [] }
+        return result(try await get("artists/\(id)/similar"))["similarArtists"].array.compactMap { $0["id"].idText }
     }
 
     /// Какие из треков Яндекс закрыл. Смотрим на ответ как есть, до подмены «Без цензуры».
     func unavailableIds(_ ids: [String]) async throws -> [String] {
-        guard !ids.isEmpty else { return [] }
-        let value = try await post("tracks", form: "track-ids=" + ids.joined(separator: "%2C"))
+        let yandexIDs = ids.filter { !TuneCatalogID.isSyntheticTrack($0) }
+        guard !yandexIDs.isEmpty else { return [] }
+        let value = try await post("tracks", form: "track-ids=" + yandexIDs.joined(separator: "%2C"))
         return value["result"].array.filter { $0["available"].bool == false }.compactMap { $0["id"].idText }
     }
 
@@ -1442,6 +1645,7 @@ final class API {
 
     /// Что волна узнаёт о вкусе: запуск, начало, конец, пропуск.
     func waveFeedback(session: String, kind: String, track: Track?, played: Double?) async throws {
+        if let track, TuneCatalogID.isSyntheticTrack(track.id) { return }
         var event: [String: Any] = ["type": kind, "timestamp": Self.now()]
         var body: [String: Any] = ["from": from]
         if let track {
@@ -1457,7 +1661,12 @@ final class API {
 
     /// Отчёты о прослушивании: по ним Яндекс ведёт историю и подбирает рекомендации.
     func plays(_ reports: [[String: Any]]) async throws {
-        _ = try await post("plays", json: ["plays": reports], query: [("clientNow", Self.now())])
+        let filtered = reports.filter { report in
+            guard let trackID = report["trackId"] as? String else { return true }
+            return !TuneCatalogID.isSyntheticTrack(trackID)
+        }
+        guard !filtered.isEmpty else { return }
+        _ = try await post("plays", json: ["plays": filtered], query: [("clientNow", Self.now())])
     }
 
     static func now() -> String {
@@ -1564,6 +1773,9 @@ final class API {
     }
 
     private func fetchLyrics(track id: String) async throws -> LyricsText {
+        if TuneCatalogID.isSyntheticTrack(id) {
+            return LyricsText(lines: [], authors: nil, source: nil)
+        }
         var downloadError: Error?
         for format in ["LRC", "TEXT"] {
             let stamp = String(Int(Date().timeIntervalSince1970))

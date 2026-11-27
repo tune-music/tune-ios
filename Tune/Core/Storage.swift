@@ -81,6 +81,12 @@ enum Settings {
         set { defaults.set(newValue, forKey: "uncensor") }
     }
 
+    /// Дополнительный каталог Tune: треки, альбомы, исполнители и плейлисты.
+    static var catalog: Bool {
+        get { defaults.object(forKey: "catalog") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "catalog") }
+    }
+
     /// Плавный переход между треками: −1 — «Авто» по точкам Яндекса, 0 — выключен,
     /// иначе ровный переход на столько секунд.
     static var crossfade: Int {

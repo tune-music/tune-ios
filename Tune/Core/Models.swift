@@ -29,6 +29,7 @@ struct JSON {
     var string: String? { raw as? String }
     var bool: Bool? { raw as? Bool }
     var int: Int? { (raw as? NSNumber)?.intValue }
+    var int64: Int64? { (raw as? NSNumber)?.int64Value }
     var double: Double? { (raw as? NSNumber)?.doubleValue }
 
     /// Номер трека, альбома или исполнителя: строкой или числом.
@@ -107,6 +108,10 @@ struct Track: Codable, Hashable, Identifiable {
     var addedAt: Date? = nil
     /// Доступность файла Яндекса до подмены из каталога «Без цензуры».
     var yandexAvailable: Bool? = nil
+    /// Аудиофайл берётся из дополнительного каталога Tune.
+    var catalog: Bool? = nil
+
+    var isCatalog: Bool { catalog == true }
 
     /// Свой загруженный трек. Яндекс отмечает его полем trackSource, а у треков, сохранённых
     /// прошлыми версиями, этого поля нет — тогда узнаём по номеру: он не из одних цифр.
@@ -131,7 +136,11 @@ struct Track: Codable, Hashable, Identifiable {
     }
 
     var shareURL: URL? {
-        URL(string: albumId.map { "https://music.yandex.ru/album/\($0)/track/\(id)" } ?? "https://music.yandex.ru/track/\(id)")
+        if TuneCatalogID.isSyntheticTrack(id) { return nil }
+        if let albumId, !TuneCatalogID.isSyntheticAlbum(albumId) {
+            return URL(string: "https://music.yandex.ru/album/\(albumId)/track/\(id)")
+        }
+        return URL(string: "https://music.yandex.ru/track/\(id)")
     }
 
     var fullTitle: String {
@@ -150,7 +159,40 @@ struct Playlist: Codable, Hashable, Identifiable {
     var id: String { "\(owner):\(kind)" }
 
     var shareURL: URL? {
-        URL(string: "https://music.yandex.ru/users/\(owner)/playlists/\(kind)")
+        if owner == TuneCatalogID.owner { return nil }
+        return URL(string: "https://music.yandex.ru/users/\(owner)/playlists/\(kind)")
+    }
+}
+
+enum TuneCatalogID {
+    static let owner = "tune-catalog"
+    static let syntheticTrackBase: Int64 = 9_000_000_000
+    static let syntheticAlbumBase: Int64 = 900_000_000
+    static let syntheticArtistBase: Int64 = 90_000_000
+    static let syntheticPlaylistBase: Int64 = 9_000_000
+
+    static func isNumeric(_ text: String) -> Bool {
+        !text.isEmpty && text.utf8.allSatisfy { (48...57).contains($0) }
+    }
+
+    static func isSyntheticTrack(_ id: String) -> Bool {
+        guard isNumeric(id), let value = Int64(id) else { return false }
+        return value > syntheticTrackBase
+    }
+
+    static func isSyntheticAlbum(_ id: String) -> Bool {
+        guard isNumeric(id), let value = Int64(id) else { return false }
+        return value > syntheticAlbumBase && value < syntheticTrackBase
+    }
+
+    static func isSyntheticArtist(_ id: String) -> Bool {
+        guard isNumeric(id), let value = Int64(id) else { return false }
+        return value > syntheticArtistBase && value < syntheticAlbumBase
+    }
+
+    static func isSyntheticPlaylist(_ id: String) -> Bool {
+        guard isNumeric(id), let value = Int64(id) else { return false }
+        return value > syntheticPlaylistBase && value < syntheticArtistBase
     }
 }
 
@@ -403,9 +445,17 @@ struct PlayContext {
 enum Cover {
     /// Адрес обложки нужного размера. У Яндекса в адресе стоит %% вместо размера.
     static func url(_ uri: String?, side: Int) -> URL? {
-        guard var text = uri, !text.isEmpty else { return nil }
+        guard var text = uri?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
+        if text.hasPrefix("http://") || text.hasPrefix("https://") {
+            if text.contains("%%") {
+                text = text.replacingOccurrences(of: "%%", with: "\(side)x\(side)")
+            }
+            return URL(string: text)
+        }
         text = text.replacingOccurrences(of: "%%", with: "\(side)x\(side)")
-        if !text.hasPrefix("http://") && !text.hasPrefix("https://") {
+        if text.hasPrefix("//") {
+            text = "https:" + text
+        } else {
             text = "https://" + text
         }
         return URL(string: text)

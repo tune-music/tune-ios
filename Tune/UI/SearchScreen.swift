@@ -145,6 +145,13 @@ struct SearchScreen: View {
             await loadCollections()
         }
         .onChange(of: request) { _ in requestedPage = 0 }
+        .onReceive(NotificationCenter.default.publisher(for: Uncensor.changed)) { _ in
+            guard !text.isEmpty else { return }
+            displayed = nil
+            completedPage = -1
+            requestedPage = 0
+            retryCount += 1
+        }
         .onReceive(NotificationCenter.default.publisher(for: Session.uploadedTrackEdited)) { note in
             guard let edited = note.object as? Track else { return }
             result.tracks = result.tracks.map {
@@ -560,7 +567,7 @@ struct SearchScreen: View {
         let cacheKey: SearchCache.Key?
         if !Demo.on, asked.tab != .lyrics, let account = session.profile?.uid {
             cacheKey = SearchCache.Key(account: account, query: asked.text.lowercased(), tab: asked.tab.rawValue,
-                                       uncensor: Settings.uncensor)
+                                       uncensor: Settings.uncensor, catalog: Settings.catalog)
         } else {
             cacheKey = nil
         }

@@ -91,7 +91,8 @@ final class TrackPage: UIView {
         }
         let mark = UIColor.systemGray
         if track.explicit { add("e.square.fill", mark) }
-        if track.uncensored { add("lock.open.fill", mark) }
+        if Uncensor.shared.displaysCatalogBadge(for: track) { add("t.square.fill", mark) }
+        if Uncensor.shared.displaysUncensoredBadge(for: track) { add("lock.open.fill", mark) }
         if track.isPrivate { add("eye.slash.fill", mark) }
         return text
     }

@@ -29,7 +29,7 @@ final class Loudness {
     func resolve(_ track: Track) async -> Level? {
         if let value = value(track) { return value }
         if Demo.on { return nil }
-        if !Connectivity.shared.offline, !Session.shared.offline,
+        if !Connectivity.shared.offline, !Session.shared.offline, !TuneCatalogID.isSyntheticTrack(track.id),
            let fresh = try? await API.shared.tracks(ids: [track.id]).first, let i = fresh.loudness {
             let level = Level(i: i, tp: fresh.peak)
             store(track.id, level)
