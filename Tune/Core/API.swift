@@ -167,13 +167,17 @@ final class API {
 
     private static func parsePlaylist(_ value: JSON, owner: String) -> Playlist? {
         guard let kind = value["kind"].idText, let title = value["title"].string else { return nil }
-        let cover = value["coverUri"].string ?? value["cover"]["uri"].string ?? value["cover"]["itemsUri"][0].string ?? value["ogImage"].string
+        let coverObj = value["cover"]
+        let cover = value["coverUri"].string ?? coverObj["uri"].string ?? coverObj["itemsUri"][0].string ?? value["ogImage"].string
+        let hasCustom = coverObj["custom"].bool ?? (coverObj["type"].string == "pic" && !(coverObj["uri"].string ?? "").isEmpty)
         return Playlist(
             owner: value["owner"]["uid"].idText ?? value["uid"].idText ?? owner,
             kind: kind,
             title: title,
             count: value["trackCount"].int ?? 0,
-            cover: (cover?.isEmpty ?? true) ? nil : cover)
+            cover: (cover?.isEmpty ?? true) ? nil : cover,
+            description: value["description"].string,
+            customCover: hasCustom)
     }
 
     static func catalogPlaylistCard(kind: String, fields: [String: Any]) -> Playlist? {
@@ -215,6 +219,7 @@ final class API {
             let playlist = data["playlist"]
             guard let owner = playlist["uid"].idText ?? playlist["owner"]["uid"].idText else { return nil }
             guard var parsed = parsePlaylist(playlist, owner: owner) else { return nil }
+            if TuneSyncCodec.isSyncPlaylist(title: parsed.title, description: parsed.description) { return nil }
             if parsed.count == 0, let count = data["trackCount"].int { parsed.count = count }
             return .playlist(parsed)
         }
@@ -370,10 +375,17 @@ final class API {
         }
     }
 
-    func playlists(uid: String) async throws -> [Playlist] {
+    func rawUserPlaylists(uid: String) async throws -> [Playlist] {
         if Demo.on { return Demo.data.playlists }
         let value = try await get("users/\(uid)/playlists/list")
-        return value["result"].array.compactMap { Self.parsePlaylist($0, owner: uid) }.map { playlist in
+        return value["result"].array.compactMap { Self.parsePlaylist($0, owner: uid) }
+    }
+
+    func playlists(uid: String) async throws -> [Playlist] {
+        if Demo.on { return Demo.data.playlists }
+        let raw = try await rawUserPlaylists(uid: uid)
+        await TuneSyncService.shared.handleFetchedPlaylists(raw, uid: uid)
+        return raw.filter { !TuneSyncCodec.isSyncPlaylist(title: $0.title, description: $0.description) }.map { playlist in
             var copy = playlist
             copy.count += CatalogLibraryStore.shared.playlistTracks(owner: playlist.owner, kind: playlist.kind).count
             return copy
@@ -882,7 +894,8 @@ final class API {
                 }
             case "playlist":
                 let owner = item["playlist"]["uid"].idText ?? ""
-                if let playlist = Self.parsePlaylist(item["playlist"], owner: owner) {
+                if let playlist = Self.parsePlaylist(item["playlist"], owner: owner),
+                   !TuneSyncCodec.isSyncPlaylist(title: playlist.title, description: playlist.description) {
                     if found.best == nil { found.best = .playlist(playlist) }
                     found.playlists.append(playlist)
                 }
@@ -1104,7 +1117,9 @@ final class API {
         let remote = value.array.compactMap { item -> Playlist? in
             let playlist = item["playlist"].isObject ? item["playlist"] : item
             guard let owner = playlist["uid"].idText ?? playlist["owner"]["uid"].idText else { return nil }
-            return Self.parsePlaylist(playlist, owner: owner)
+            guard let parsed = Self.parsePlaylist(playlist, owner: owner),
+                  !TuneSyncCodec.isSyncPlaylist(title: parsed.title, description: parsed.description) else { return nil }
+            return parsed
         }
         var seen = Set<String>()
         return (local + remote).filter { seen.insert($0.id).inserted }
@@ -1184,6 +1199,10 @@ final class API {
 
     func renamePlaylist(uid: String, kind: String, title: String) async throws {
         _ = try await post("users/\(uid)/playlists/\(kind)/name?value=\(Self.encode(title))")
+    }
+
+    func setPlaylistDescription(uid: String, kind: String, description: String) async throws {
+        _ = try await post("users/\(uid)/playlists/\(kind)/description?value=\(Self.encode(description))")
     }
 
     func changeUploadedTrack(id: String, title: String, artist: String) async throws {
@@ -1284,6 +1303,10 @@ final class API {
     func deletePlaylist(uid: String, kind: String) async throws {
         _ = try await post("users/\(uid)/playlists/\(kind)/delete")
         CatalogLibraryStore.shared.clearPlaylist(owner: uid, kind: kind)
+    }
+
+    func deleteSyncShardPlaylist(uid: String, kind: String) async throws {
+        _ = try await post("users/\(uid)/playlists/\(kind)/delete")
     }
 
     /// Плейлист меняют от его последней версии, поэтому она читается перед каждым изменением.

@@ -155,6 +155,8 @@ struct Playlist: Codable, Hashable, Identifiable {
     var title: String
     var count: Int
     var cover: String?
+    var description: String? = nil
+    var customCover: Bool? = nil
 
     var id: String { "\(owner):\(kind)" }
 

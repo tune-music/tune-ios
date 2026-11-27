@@ -474,6 +474,9 @@ struct DislikedArtistsScreen: View {
         .onReceive(NotificationCenter.default.publisher(for: Uncensor.changed)) { _ in
             Task { await load() }
         }
+        .onReceive(NotificationCenter.default.publisher(for: Session.catalogLibrarySynced)) { _ in
+            Task { await load() }
+        }
     }
 
     private func load() async {
@@ -728,6 +731,9 @@ struct CardGridScreen: View {
         .task { await load() }
         .screenRefresh { await load() }
         .onReceive(NotificationCenter.default.publisher(for: Uncensor.changed)) { _ in
+            Task { await load() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Session.catalogLibrarySynced)) { _ in
             Task { await load() }
         }
     }

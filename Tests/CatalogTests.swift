@@ -18,6 +18,9 @@ struct CatalogTests {
         testCatalogLibraryStoreVisibilityAndPreservation()
         try testTrackCodableBackwardCompatibility()
         await testExternalLyricsSkipsYandexForSyntheticTrack()
+        testSyncWireVectorAndGrammar()
+        testSyncShardsAndPartialSafety()
+        try testSyncLWWMergesAndLegacyMigration()
         print("Catalog unit checks passed")
     }
 
@@ -397,5 +400,133 @@ struct CatalogTests {
         )
         assertCheck(!yandexCalled, "Yandex lyrics API must not be called for synthetic catalog track")
         assertCheck(lrclibCalled && complete && result.source == "LRCLIB", "External LRCLIB must run for synthetic catalog track")
+    }
+
+    private static func testSyncWireVectorAndGrammar() {
+        let ts: Int64 = 1_795_795_000
+        var lib = CatalogLibrary()
+        lib.setTrackLiked("9000000046", true, now: ts)
+        lib.setAlbumLiked("900000001", true, now: ts)
+        lib.setArtistLiked("90000002", true, now: ts)
+        lib.addPlaylistTracks(["9000000046", "9000000004"], to: "1005", atEnd: true, now: ts)
+
+        let encoded = TuneSyncCodec.encode(lib, now: ts)
+        assertCheck(
+            encoded == "L:+1a@1l17w8;A:+1@1l17w8;R:+2@1l17w8;P:1005@1l17w8=1a.4",
+            "Shared tune-sync:v1 test vector mismatch: got \(encoded)"
+        )
+
+        let decoded = TuneSyncCodec.decode(encoded, uid: "555")
+        assertCheck(decoded != nil, "Encoded shared vector must decode cleanly")
+        assertCheck(decoded?.likedTracks == ["9000000046"], "Decoded likedTracks mismatch")
+        assertCheck(decoded?.likedAlbums == ["900000001"], "Decoded likedAlbums mismatch")
+        assertCheck(decoded?.likedArtists == ["90000002"], "Decoded likedArtists mismatch")
+        assertCheck(decoded?.playlistTracks["555:1005"] == ["9000000046", "9000000004"], "Decoded playlistTracks with uid prefix mismatch")
+
+        // Пин несинтетического плейлиста + 30-дневная очистка tombstones.
+        var full = CatalogLibrary()
+        full.setPin("album:900000001", pinned: true, now: ts)
+        full.setPin("playlist:555:1005", pinned: true, now: ts)
+        full.setTrackLiked("9000000001", true, now: ts)
+        full.setTrackLiked("9000000002", false, now: ts - 2_592_001)
+        full.setTrackLiked("9000000003", false, now: ts - 2_592_000)
+
+        let prunedPayload = TuneSyncCodec.encode(full, now: ts)
+        assertCheck(!prunedPayload.contains("-2@"), "Tombstone older than 30 days must be pruned")
+        assertCheck(prunedPayload.contains("-3@"), "Tombstone at exactly 30 days must be kept")
+        assertCheck(prunedPayload.contains("N:") && prunedPayload.contains("+album:1@") && prunedPayload.contains("+playlist:~555:1005@"), "Pins encoding mismatch: \(prunedPayload)")
+
+        let decodedPins = TuneSyncCodec.decode(prunedPayload)
+        assertCheck(Set(decodedPins?.pins ?? []) == Set(["album:900000001", "playlist:555:1005"]), "Pins roundtrip failed")
+    }
+
+    private static func testSyncShardsAndPartialSafety() {
+        let baseTs: Int64 = 1_795_795_000
+        var big = CatalogLibrary()
+        for i in 1...60 {
+            big.setTrackLiked("\(9_000_000_000 + i)", true, now: baseTs + Int64(i))
+            big.setAlbumLiked("\(900_000_000 + i)", true, now: baseTs + Int64(i))
+        }
+        let payload = TuneSyncCodec.encode(big, uid: "1", now: baseTs + 100)
+        assertCheck(payload.utf16.count > 900, "Payload must be large enough to require multi-shard split")
+
+        let specs = TuneSyncCodec.buildShards(payload: payload)
+        assertCheck(specs.count >= 3, "Expected >= 3 shards, got \(specs.count)")
+        assertCheck(specs[0].title == "Tune Sync", "Shard 0 title must be Tune Sync")
+        assertCheck(specs[1].title == "Tune Sync 2", "Shard 1 title must be Tune Sync 2")
+        for spec in specs {
+            assertCheck(spec.description.utf16.count <= 490, "Shard \(spec.index) exceeded 490 UTF-16 chars: \(spec.description.utf16.count)")
+            assertCheck(spec.description.unicodeScalars.count <= 490, "Shard \(spec.index) exceeded 490 Unicode scalars")
+        }
+
+        let playlists = specs.map {
+            Playlist(owner: "1", kind: "\(2000 + $0.index)", title: $0.title, count: 0, cover: nil, description: $0.description, customCover: true)
+        }
+        let parsed = TuneSyncCodec.parseRemoteShards(playlists, uid: "1")
+        if case .ready(let libs, let dup, _) = parsed {
+            assertCheck(!dup && libs.count == 1, "Shards must reassemble cleanly without false duplicate flag")
+            assertCheck(libs[0].likedTracks.count == 60 && libs[0].likedAlbums.count == 60, "Reassembled library counts mismatch")
+        } else {
+            assertCheck(false, "Expected .ready from valid shards")
+        }
+
+        let missingPart2 = playlists.filter { $0.title != "Tune Sync 2" }
+        if case .incomplete = TuneSyncCodec.parseRemoteShards(missingPart2, uid: "1") {
+            // Expected
+        } else {
+            assertCheck(false, "Missing shard must return .incomplete")
+        }
+
+        // Дубликат 1/1 от гонки первого создания не должен терять данные второго устройства.
+        let pA = Playlist(owner: "1", kind: "1001", title: "Tune Sync", count: 0, cover: nil, description: "\(TuneSyncCodec.shardHeader(index: 0))\n\n[tune-sync:v1:1/1:L:+1@1l17w8]", customCover: true)
+        let pB = Playlist(owner: "1", kind: "1002", title: "Tune Sync", count: 0, cover: nil, description: "\(TuneSyncCodec.shardHeader(index: 0))\n\n[tune-sync:v1:1/1:L:+2@1l17w9]", customCover: true)
+        if case .ready(let dupLibs, let dupDetected, let cleanup) = TuneSyncCodec.parseRemoteShards([pB, pA], uid: "1") {
+            assertCheck(dupDetected && cleanup && dupLibs.count == 2, "Duplicate 1/1 shards must flag cleanup and return both payloads")
+        } else {
+            assertCheck(false, "Expected .ready for duplicate 1/1 shards")
+        }
+    }
+
+    private static func testSyncLWWMergesAndLegacyMigration() throws {
+        var devA = CatalogLibrary()
+        devA.setTrackLiked("9000000001", true, now: 1_795_795_010)
+        devA.setTrackLiked("9000000003", true, now: 1_795_795_011)
+        devA.addPlaylistTracks(["9000000001"], to: "1:1005", atEnd: true, now: 1_795_795_010)
+
+        var devB = CatalogLibrary()
+        devB.setTrackLiked("9000000002", true, now: 1_795_795_012)
+        devB.setTrackLiked("9000000003", false, now: 1_795_795_015)
+        devB.clearPlaylist("1:1005", now: 1_795_795_020)
+
+        let res = CatalogLibrary.merge(local: devA, remote: devB, now: 1_795_795_030)
+        assertCheck(res.changedLocal, "Merge must report changedLocal")
+        assertCheck(res.merged.likedTracks == ["9000000002", "9000000001"], "LWW merge result mismatch: \(res.merged.likedTracks)")
+        assertCheck(res.merged.playlistTracks["1:1005"] == nil, "Cleared remote playlist with newer ts must clear local")
+
+        assertCheck(TuneSyncCodec.isSyncPlaylist(title: "Tune Sync", description: nil), "Tune Sync title must be detected")
+        assertCheck(TuneSyncCodec.isSyncPlaylist(title: "Tune Sync 2", description: nil), "Tune Sync 2 must be detected")
+        assertCheck(TuneSyncCodec.isSyncPlaylist(title: "Tune Sync 12", description: nil) == false, "Regex allows [2-9]\\d*, Tune Sync 12 starts with 1 without envelope")
+        assertCheck(TuneSyncCodec.isSyncPlaylist(title: "Переименованный", description: "Текст\n\n[tune-sync:v1:1/1:]"), "Envelope marker must detect renamed sync playlist")
+        assertCheck(!TuneSyncCodec.isSyncPlaylist(title: "Tune Sync 1", description: nil), "Tune Sync 1 must not match")
+        assertCheck(!TuneSyncCodec.isSyncPlaylist(title: "Любимое", description: nil), "Normal playlist must not match")
+
+        // Наследуемый JSON без *Meta полей должен мигрировать с ts = now - index.
+        let legacyStoreJSON = """
+        {
+          "likedTracks": ["9000000009", "9000000005"],
+          "playlistTracks": {"1:50": ["9000000009"]}
+        }
+        """
+        var legacy = try JSONDecoder().decode(CatalogLibrary.self, from: Data(legacyStoreJSON.utf8))
+        let didMigrate = legacy.ensureMigrated(now: 1_795_795_100)
+        assertCheck(didMigrate, "Legacy CatalogLibrary must migrate untimestamped items")
+        assertCheck(legacy.likedTracksMeta["9000000009"]?.ts == 1_795_795_100 && legacy.likedTracksMeta["9000000005"]?.ts == 1_795_795_099, "Migrated order timestamps must preserve array order")
+        assertCheck(legacy.playlistMeta["1:50"] == 1_795_795_100, "Migrated playlist timestamp must be set")
+
+        // Обратная совместимость Playlist (старый JSON и 5-аргументный инициализатор).
+        let legacyPlaylist = Playlist(owner: "1", kind: "2", title: "Mix", count: 3, cover: nil)
+        assertCheck(legacyPlaylist.description == nil && legacyPlaylist.customCover == nil, "5-arg Playlist init must work cleanly")
+        let decodedPlaylist = try JSONDecoder().decode(Playlist.self, from: Data("{\"owner\":\"1\",\"kind\":\"2\",\"title\":\"Mix\",\"count\":3}".utf8))
+        assertCheck(decodedPlaylist == legacyPlaylist, "Legacy Playlist JSON decode must match")
     }
 }
