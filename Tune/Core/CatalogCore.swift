@@ -358,6 +358,13 @@ final class CatalogState {
         return CatalogIndex.catalogEntry(id, fields)
     }
 
+    func volumes(album id: String, uncensorEnabled: Bool, catalogEnabled: Bool) -> [[String]]? {
+        guard let list = current(uncensorEnabled: uncensorEnabled, catalogEnabled: catalogEnabled),
+              let volumes = list.albums[id]?["volumes"] as? [Any] else { return nil }
+        let disks = volumes.compactMap { disk in (disk as? [Any])?.compactMap { CatalogIndex.id(of: $0) } }
+        return disks.contains { !$0.isEmpty } ? disks : nil
+    }
+
     func catalogArtist(_ id: String, uncensorEnabled: Bool, catalogEnabled: Bool) -> (json: JSON, trackIDs: [String], albumIDs: [String])? {
         guard let list = current(uncensorEnabled: uncensorEnabled, catalogEnabled: catalogEnabled) ?? catalogOnly(catalogEnabled: catalogEnabled),
               let fields = list.artists[id] else { return nil }

@@ -232,7 +232,8 @@ struct CatalogTests {
         let suppState = CatalogState()
         suppState.setCatalog(supplementedRoot)
         let suppAlbum = suppState.catalogAlbum("777", uncensorEnabled: true, catalogEnabled: true)
-        let disk = suppAlbum?["volumes"][0].array.compactMap(\.idText) ?? []
+        assertCheck(suppAlbum?["title"].string == "Альбом Яндекса", "Supplemented album metadata must be returned")
+        let disk = suppState.volumes(album: "777", uncensorEnabled: true, catalogEnabled: true)?.first ?? []
         assertCheck(disk == ["555", "9000000002"], "Supplemented album volumes must preserve native + synthetic order")
         assertCheck(!suppState.isCatalogTrack("555", catalogEnabled: true), "Native track inside supplemented album must NOT have T badge")
         assertCheck(suppState.isCatalogTrack("9000000002", catalogEnabled: true), "Inserted catalog track with file must have T badge")

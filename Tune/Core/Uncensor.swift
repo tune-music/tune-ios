@@ -360,9 +360,7 @@ final class Uncensor {
     func volumes(album id: String) -> [[String]]? {
         if let disks = customDisks(album: id) { return disks }
         if MetadataOverrides.shared.value(.album, id)?.usePlugin == false { return nil }
-        guard let volumes = current?.albums[id]?["volumes"] as? [Any] else { return nil }
-        let disks = volumes.compactMap { disk in (disk as? [Any])?.compactMap { CatalogIndex.id(of: $0) } }
-        return disks.contains { !$0.isEmpty } ? disks : nil
+        return state.volumes(album: id, uncensorEnabled: Settings.uncensor, catalogEnabled: Settings.catalog)
     }
 
     /// Треки и альбомы, добавленные в профиль исполнителя.
