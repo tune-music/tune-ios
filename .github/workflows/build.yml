@@ -34,10 +34,16 @@ jobs:
           brew install xcodegen
           xcodegen generate
 
-      - name: Проверка протокола Ynison
+      - name: Проверка текстов, Ynison и каталога
         run: |
-          swiftc Tune/Core/Models.swift Tune/Core/YnisonProtocol.swift Tests/YnisonProtocolTests.swift -o ynison-tests
+          xcrun swiftc -target "$(uname -m)-apple-macosx15.0" -swift-version 5 -parse-as-library \
+            Tune/Core/Models.swift Tune/Core/Storage.swift Tune/Core/ExternalLyrics.swift Tests/LyricsTests.swift -o lyrics-tests
+          ./lyrics-tests
+          xcrun swiftc Tune/Core/Models.swift Tune/Core/YnisonProtocol.swift Tests/YnisonProtocolTests.swift -o ynison-tests
           ./ynison-tests
+          xcrun swiftc -target "$(uname -m)-apple-macosx15.0" -swift-version 5 -parse-as-library \
+            Tune/Core/Models.swift Tune/Core/Storage.swift Tune/Core/ExternalLyrics.swift Tune/Core/CatalogCore.swift Tests/CatalogTests.swift -o catalog-tests
+          ./catalog-tests
 
       - name: Сборка
         run: |
