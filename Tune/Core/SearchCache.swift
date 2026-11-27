@@ -8,6 +8,7 @@ actor SearchCache {
         let query: String
         let tab: String
         let uncensor: Bool
+        let catalog: Bool
     }
 
     private struct Entry: Codable {
@@ -36,6 +37,11 @@ actor SearchCache {
 
     func clear(account: String) {
         entries.removeAll { $0.key.account == account }
+        persist()
+    }
+
+    func clearAll() {
+        entries.removeAll()
         persist()
     }
 

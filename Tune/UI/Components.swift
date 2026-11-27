@@ -500,7 +500,8 @@ struct TrackMenu: View {
         } label: {
             Label(disliked ? "Снять дизлайк" : "Не нравится", systemImage: disliked ? "hand.thumbsup" : "hand.thumbsdown")
         }
-        if inPlayer, Uncensor.shared.has(track.id) || player.audibleVersion == .uncensored {
+        let isCatalog = Uncensor.shared.displaysCatalogBadge(for: track)
+        if inPlayer, !isCatalog, Uncensor.shared.has(track.id) || player.audibleVersion == .uncensored {
             let versions: [TrackFiles.Version] = track.yandexAvailable == false ? [.uncensored] : TrackFiles.Version.allCases
             ForEach(versions, id: \.rawValue) { version in
                 Button {
@@ -585,11 +586,13 @@ struct TrackMenu: View {
                 Label(blocked ? "Снова рекомендовать исполнителя" : "Не рекомендовать исполнителя", systemImage: blocked ? "person.crop.circle.badge.checkmark" : "person.crop.circle.badge.xmark")
             }
         }
-        Button {
-            player.playWave(seeds: ["track:\(track.id)"], name: "Волна по треку «\(track.title)»")
-            done()
-        } label: {
-            Label("Волна по треку", systemImage: "dot.radiowaves.left.and.right")
+        if !TuneCatalogID.isSyntheticTrack(track.id) {
+            Button {
+                player.playWave(seeds: ["track:\(track.id)"], name: "Волна по треку «\(track.title)»")
+                done()
+            } label: {
+                Label("Волна по треку", systemImage: "dot.radiowaves.left.and.right")
+            }
         }
         if let url = track.shareURL {
             ShareLink(item: url) {
@@ -713,7 +716,8 @@ struct TrackRow: View {
     }
 
     private var dimmed: Bool {
-        (track.unavailable && !track.uncensored && !downloaded) || (fadesDisliked && disliked)
+        (track.unavailable && !track.uncensored && !track.isCatalog && !Uncensor.shared.hasAudio(track.id) && !downloaded)
+            || (fadesDisliked && disliked)
     }
 
     var body: some View {
@@ -969,32 +973,45 @@ struct PlayingBadge: View {
     }
 }
 
-/// Значки у названия трека, как в Tune Native: «E» — ненормативная лексика, открытый замок —
-/// играет версия без цензуры, перечёркнутый глаз — свой загруженный трек, его слышите только вы.
+/// Значки у названия трека, как в Tune Native: «E» — ненормативная лексика, «T» — Каталог Tune,
+/// открытый замок — играет версия без цензуры, перечёркнутый глаз — свой загруженный трек.
 struct TrackMarks: View {
     let track: Track
     var size: CGFloat = 14
     /// Тёмный фон (полноэкранный плеер): значки светлые в любой теме.
     var onDark = false
+    @State private var markRevision = 0
 
     var body: some View {
-        if track.explicit || track.uncensored || track.isPrivate {
-            HStack(spacing: 4) {
-                if track.explicit {
-                    badge(Text("E").font(.system(size: size * 0.68, weight: .heavy)))
+        let _ = markRevision
+        let showCatalog = Uncensor.shared.displaysCatalogBadge(for: track)
+        let showUncensored = Uncensor.shared.displaysUncensoredBadge(for: track)
+        Group {
+            if track.explicit || showCatalog || showUncensored || track.isPrivate {
+                HStack(spacing: 4) {
+                    if track.explicit {
+                        badge(Text("E").font(.system(size: size * 0.68, weight: .heavy)))
+                    }
+                    if showCatalog {
+                        badge(Text("T").font(.system(size: size * 0.68, weight: .heavy)))
+                            .accessibilityLabel("Каталог Tune")
+                    }
+                    if showUncensored {
+                        badge(Image(systemName: "lock.open.fill").font(.system(size: size * 0.6, weight: .bold)))
+                            .accessibilityLabel("Без цензуры")
+                    }
+                    if track.isPrivate {
+                        Image(systemName: "eye.slash.fill")
+                            .font(.system(size: size * 0.8))
+                            .foregroundStyle(onDark ? Color.white.opacity(0.6) : Theme.dim)
+                            .accessibilityLabel("Этот трек можете слушать только вы")
+                    }
                 }
-                if track.uncensored {
-                    badge(Image(systemName: "lock.open.fill").font(.system(size: size * 0.6, weight: .bold)))
-                        .accessibilityLabel("Без цензуры")
-                }
-                if track.isPrivate {
-                    Image(systemName: "eye.slash.fill")
-                        .font(.system(size: size * 0.8))
-                        .foregroundStyle(onDark ? Color.white.opacity(0.6) : Theme.dim)
-                        .accessibilityLabel("Этот трек можете слушать только вы")
-                }
+                .fixedSize()
             }
-            .fixedSize()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Uncensor.changed)) { _ in
+            markRevision &+= 1
         }
     }
 
@@ -1075,7 +1092,7 @@ struct HomeCard: View {
             } label: {
                 Label(liked ? "Убрать из коллекции" : "В коллекцию", systemImage: liked ? "heart.slash" : "heart")
             }
-            if let url = URL(string: "https://music.yandex.ru/album/\(card.id)") {
+            if !TuneCatalogID.isSyntheticAlbum(card.id), let url = URL(string: "https://music.yandex.ru/album/\(card.id)") {
                 ShareLink(item: url) {
                     Label("Поделиться", systemImage: "square.and.arrow.up")
                 }
@@ -1087,10 +1104,12 @@ struct HomeCard: View {
             } label: {
                 Label(liked ? "Убрать из коллекции" : "В коллекцию", systemImage: liked ? "heart.slash" : "heart")
             }
-            Button {
-                Player.shared.playWave(seeds: ["artist:\(card.id)"], name: card.title)
-            } label: {
-                Label("Волна по исполнителю", systemImage: "dot.radiowaves.left.and.right")
+            if !TuneCatalogID.isSyntheticArtist(card.id) {
+                Button {
+                    Player.shared.playWave(seeds: ["artist:\(card.id)"], name: card.title)
+                } label: {
+                    Label("Волна по исполнителю", systemImage: "dot.radiowaves.left.and.right")
+                }
             }
         case .playlist(let playlist):
             if !session.playlists.contains(where: { $0.id == playlist.id }) {

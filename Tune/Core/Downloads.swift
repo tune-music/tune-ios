@@ -105,7 +105,7 @@ final class Downloads: ObservableObject {
 
     func version(for id: String) -> TrackFiles.Version? {
         guard let entry = entries.first(where: { $0.track.id == id }) else { return nil }
-        return entry.version ?? (entry.track.uncensored ? .uncensored : .yandex)
+        return entry.version ?? ((entry.track.uncensored || entry.track.isCatalog) ? .uncensored : .yandex)
     }
 
     func isBusy(_ id: String) -> Bool {
@@ -123,7 +123,8 @@ final class Downloads: ObservableObject {
 
     func download(_ list: [Track]) {
         var added = false
-        for track in list where !has(track.id) && active[track.id] == nil && !(track.unavailable && !track.uncensored) {
+        for track in list where !has(track.id) && active[track.id] == nil
+            && !(track.unavailable && !track.uncensored && !track.isCatalog && !Uncensor.shared.hasAudio(track.id)) {
             active[track.id] = 0
             failed.removeAll { $0.id == track.id }
             queue.append(track)

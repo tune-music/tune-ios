@@ -64,20 +64,24 @@ final class TuneCarPlayScene: UIResponder, CPTemplateApplicationSceneDelegate {
 
     private func likedTracks() async -> [Track] {
         let session = Session.shared
+        let catalog = session.catalogLikedTracksList()
         let local = session.localLikedTracks
-        let known = Set(local.map(\.id))
-        let cached: [Track] = await Task.detached(priority: .userInitiated) {
+        let prefix = catalog + local
+        let known = Set(prefix.map(\.id))
+        let cached: [Track] = (await Task.detached(priority: .userInitiated) {
             Storage.load("likes-tracks.json") ?? []
-        }.value
-        if !cached.isEmpty { return local + cached.filter { !known.contains($0.id) } }
+        }.value).filter { Settings.catalog || !TuneCatalogID.isSyntheticTrack($0.id) }
+        if !cached.isEmpty { return prefix + cached.filter { !known.contains($0.id) } }
         let ids = session.likedIds.filter { !known.contains($0) }
         let fetched = (try? await API.shared.tracks(ids: Array(ids.prefix(CPListTemplate.maximumItemCount)))) ?? []
-        return local + fetched
+        return prefix + fetched
     }
 
     private func showTracks(_ list: [Track], title: String, context: PlayContext? = nil) {
         let tracks = list.filter {
-            Connectivity.shared.offline ? Downloads.shared.has($0.id) : (!$0.unavailable || $0.uncensored || Downloads.shared.has($0.id))
+            Connectivity.shared.offline
+                ? Downloads.shared.has($0.id)
+                : (!$0.unavailable || $0.uncensored || $0.isCatalog || Uncensor.shared.hasAudio($0.id) || Downloads.shared.has($0.id))
         }
         guard !tracks.isEmpty else {
             showMessage(title, text: Session.shared.token == nil ? "Войдите в Tune на iPhone" : "Нет доступных треков")

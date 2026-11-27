@@ -358,7 +358,8 @@ struct LibraryScreen: View {
             }.value ?? []
             var seen = Set<String>()
             var tracks: [Track] = []
-            for track in session.localLikedTracks + cached {
+            let filteredCached = cached.filter { Settings.catalog || !TuneCatalogID.isSyntheticTrack($0.id) }
+            for track in session.catalogLikedTracksList() + session.localLikedTracks + filteredCached {
                 if seen.insert(track.id).inserted { tracks.append(track) }
             }
             if tracks.isEmpty && !Connectivity.shared.offline && !session.offline {
@@ -470,6 +471,9 @@ struct DislikedArtistsScreen: View {
         .navigationBarTitleDisplayMode(.inline)
         .task { await load() }
         .screenRefresh { await load() }
+        .onReceive(NotificationCenter.default.publisher(for: Uncensor.changed)) { _ in
+            Task { await load() }
+        }
     }
 
     private func load() async {
@@ -723,6 +727,9 @@ struct CardGridScreen: View {
         }
         .task { await load() }
         .screenRefresh { await load() }
+        .onReceive(NotificationCenter.default.publisher(for: Uncensor.changed)) { _ in
+            Task { await load() }
+        }
     }
 
     private func load() async {
@@ -734,7 +741,13 @@ struct CardGridScreen: View {
         }
         if cards == nil, !Demo.on {
             let saved = await Task.detached(priority: .userInitiated) { Storage.load(file, as: [Card].self) }.value
-            if cards == nil { cards = saved }
+            if cards == nil, let saved {
+                cards = saved.filter {
+                    Settings.catalog || !(kind == .artists ? TuneCatalogID.isSyntheticArtist($0.id) : TuneCatalogID.isSyntheticAlbum($0.id))
+                }
+            }
+        } else if !Settings.catalog, let current = cards {
+            cards = current.filter { !(kind == .artists ? TuneCatalogID.isSyntheticArtist($0.id) : TuneCatalogID.isSyntheticAlbum($0.id)) }
         }
         if session.profile == nil {
             await session.refresh()
@@ -794,6 +807,7 @@ struct SettingsScreen: View {
     @EnvironmentObject private var downloads: Downloads
     @Environment(\.navigate) private var navigate
     @State private var uncensor = Settings.uncensor
+    @State private var catalog = Settings.catalog
     @State private var appearance = Settings.appearance
     @AppStorage("minimizeMiniPlayer") private var minimizeMiniPlayer = true
     @State private var crossfade = Settings.crossfade
@@ -895,6 +909,12 @@ struct SettingsScreen: View {
                     .tint(Theme.accentText)
             } footer: {
                 Text("Вместо версий с вырезанными словами играют оригинальные — из открытого списка FckCensor. Треки, удалённые из Яндекса, но оставшиеся в списке, снова доступны.")
+            }
+            Section {
+                Toggle("Каталог Tune", isOn: $catalog)
+                    .tint(Theme.accentText)
+            } footer: {
+                Text("Дополнительные треки, альбомы, исполнители и плейлисты из каталога Tune. У таких треков значок T.")
             }
             Section("Оформление") {
                 Picker("Тема", selection: $appearance) {
@@ -1043,8 +1063,17 @@ struct SettingsScreen: View {
             Settings.uncensor = value
             // В кэше потока могли остаться файлы другой версии трека.
             Storage.clear(Storage.stream)
+            Uncensor.shared.notifyChanged()
             if value {
                 Task { await Uncensor.shared.refresh() }
+            }
+        }
+        .onChange(of: catalog) { value in
+            Settings.catalog = value
+            Storage.clear(Storage.stream)
+            Uncensor.shared.notifyChanged()
+            if value {
+                Task { await Uncensor.shared.refreshCatalog() }
             }
         }
         .onChange(of: appearance) { value in

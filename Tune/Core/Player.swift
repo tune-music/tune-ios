@@ -221,7 +221,7 @@ final class Player: NSObject, ObservableObject {
         let downloads = Downloads.shared
         func playable(_ track: Track) -> Bool {
             if Connectivity.shared.offline { return downloads.has(track.id) || Uncensor.shared.localAudio(track.id) != nil }
-            return !track.unavailable || track.uncensored || downloads.has(track.id) || Uncensor.shared.has(track.id)
+            return !track.unavailable || track.uncensored || track.isCatalog || downloads.has(track.id) || Uncensor.shared.hasAudio(track.id)
         }
         guard !tracks.isEmpty else { return }
         if !shuffled {
@@ -556,11 +556,11 @@ final class Player: NSObject, ObservableObject {
         if let file = Downloads.shared.fileURL(for: track.id) {
             return (await localAudioItem(file), Downloads.shared.version(for: track.id))
         }
-        if Uncensor.shared.has(track.id),
+        if Uncensor.shared.hasAudio(track.id),
            let file = TrackFiles.existing(id: TrackFiles.Version.uncensored.cacheID(track.id), in: Storage.stream) {
             return (await localAudioItem(file), .uncensored)
         }
-        if (!Uncensor.shared.has(track.id) || Connectivity.shared.offline),
+        if (!Uncensor.shared.hasAudio(track.id) || Connectivity.shared.offline),
            let file = TrackFiles.existing(id: track.id, in: Storage.stream) {
             return (await localAudioItem(file), nil)
         }
@@ -710,7 +710,7 @@ final class Player: NSObject, ObservableObject {
     /// приложение, и запрос в последний момент уже не уйдёт), а прошлые треки остаются в очереди.
     private func prepareContinuation() {
         guard !Connectivity.shared.offline, !isWave, continuation == nil, continueTask == nil, repeatMode != .all, !sleepAfterTrack,
-              let last = current, index == queue.count - 1 else { return }
+              let last = current, !TuneCatalogID.isSyntheticTrack(last.id), index == queue.count - 1 else { return }
         let seed = "track:\(last.id)"
         let name = "Волна по треку «\(last.title)»"
         let before = context
@@ -1416,7 +1416,7 @@ final class Player: NSObject, ObservableObject {
             return
         }
         guard !Connectivity.shared.offline, let session = wave else { return }
-        let shown = queue.map(\.fullId)
+        let shown = queue.filter { !TuneCatalogID.isSyntheticTrack($0.id) }.map(\.fullId)
         WaveMix.shared.refill(queue: queue)
         let task = Task { [weak self] in
             let more = try? await API.shared.waveMore(session: session, queue: shown)

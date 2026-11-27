@@ -69,7 +69,7 @@ final class WaveTaste {
     /// Реакция в волне: оценки исполнителей трека меняются и сохраняются.
     func react(_ kind: String, track: Track, played: Double?) {
         let change = Self.delta(kind, played: played, length: track.duration)
-        let artists = track.artistList.map(\.id).filter { !$0.isEmpty }
+        let artists = track.artistList.map(\.id).filter { !$0.isEmpty && !TuneCatalogID.isSyntheticArtist($0) }
         guard change != 0, !artists.isEmpty else { return }
         lock.lock()
         defer { lock.unlock() }
@@ -99,6 +99,7 @@ final class WaveTaste {
         lock.lock()
         let at = Self.now
         let need = Array(seeds.filter { id in
+            guard !TuneCatalogID.isSyntheticArtist(id) else { return false }
             guard let entry = store.similar[id] else { return true }
             return at - entry.at > Self.similarDays * Self.day
         }.prefix(Self.similarBatch))

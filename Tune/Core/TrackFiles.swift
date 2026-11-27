@@ -47,6 +47,9 @@ enum TrackFiles {
             }
             if version == .uncensored { throw TuneError("Версия без цензуры недоступна") }
         }
+        if TuneCatalogID.isSyntheticTrack(track.id) {
+            throw TuneError("Аудиофайл трека недоступен")
+        }
         do {
             let info = try await API.shared.fileInfo(track: track.id, quality: quality, transport: "raw")
             if let url = URL(string: info.url) {
