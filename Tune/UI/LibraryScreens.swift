@@ -357,7 +357,7 @@ struct LibraryScreen: View {
                 Storage.load("likes-tracks.json", as: [Track].self)
             }.value ?? []
             let filteredCached = cached.filter { Settings.catalog || !TuneCatalogID.isSyntheticTrack($0.id) }
-            let tracks = CatalogMerge.mergeTimedDesc(
+            var tracks = CatalogMerge.mergeTimedDesc(
                 local: (session.catalogLikedTracksList() + session.localLikedTracks).map { (item: $0, date: $0.addedAt) },
                 remote: filteredCached.map { (item: $0, date: $0.addedAt) },
                 id: { $0.id }
