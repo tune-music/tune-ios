@@ -138,6 +138,29 @@ final class AudioEffects {
     private var meterLevel: Float = 0
     private var meterBass: Float = 0
     private var meterUpdated: CFAbsoluteTime = 0
+    private let profileLock = NSLock()
+    private var profileTrackId: String?
+    private var profileNeedsCapture = false
+
+    func setCurrentTrack(_ id: String?, needsProfile: Bool) {
+        profileLock.lock()
+        profileTrackId = id
+        profileNeedsCapture = needsProfile
+        profileLock.unlock()
+    }
+
+    fileprivate func currentProfileTarget() -> (id: String?, active: Bool)? {
+        guard profileLock.try() else { return nil }
+        let target = (profileTrackId, profileNeedsCapture)
+        profileLock.unlock()
+        return target
+    }
+
+    fileprivate func finishProfileCapture(trackId: String, profile: AudioProfile) {
+        Task.detached(priority: .utility) {
+            AudioProfileStore.shared.put(trackId, profile)
+        }
+    }
 
     func update(_ settings: SoundSettings) {
         lock.lock()
@@ -414,6 +437,9 @@ final class AudioEffects {
         private var activeBands: UInt16 = 0
         private var meterBassLP: Float = 0
         private var meterBassAlpha: Float = 0.08
+        private var activeProfileId: String?
+        private var profileAnalyzer: StreamingAudioAnalyzer?
+        private var profileSaved = false
         private var b0 = SIMD16<Float>(repeating: 1)
         private var b1 = SIMD16<Float>.zero
         private var b2 = SIMD16<Float>.zero
@@ -499,6 +525,7 @@ final class AudioEffects {
                 configure(settings)
             }
             analyzeMeter(list, frames: frames)
+            analyzeProfile(list, frames: frames)
             guard current.needsAudioMix else { return }
             let buffers = UnsafeMutableAudioBufferListPointer(list)
             let eightD = current.eightDEnabled && channels.count >= 2
@@ -617,6 +644,49 @@ final class AudioEffects {
             let level = min(1, powf(min(1, rms * 3.4), 0.78))
             let bass = min(1, powf(min(1, bassRms * 4.2), 0.85))
             effects.publishMeter(level: level, bass: bass)
+        }
+
+        private func analyzeProfile(_ list: UnsafeMutablePointer<AudioBufferList>, frames: Int) {
+            if let target = effects.currentProfileTarget(), target.id != activeProfileId {
+                if !profileSaved, let oldId = activeProfileId, let analyzer = profileAnalyzer,
+                   analyzer.hasMinimum, let profile = analyzer.finalizeProfile() {
+                    effects.finishProfileCapture(trackId: oldId, profile: profile)
+                }
+                activeProfileId = target.id
+                profileSaved = !target.active
+                profileAnalyzer = (target.id != nil && target.active && rate > 0)
+                    ? StreamingAudioAnalyzer(channels: 1, sampleRate: Int(rate))
+                    : nil
+            }
+            guard !profileSaved, let trackId = activeProfileId, let analyzer = profileAnalyzer else { return }
+            let buffers = UnsafeMutableAudioBufferListPointer(list)
+            guard let first = buffers.first, first.mNumberChannels > 0, let raw = first.mData else { return }
+            let count = Int(first.mNumberChannels)
+            let samples = raw.assumingMemoryBound(to: Float.self)
+            let available = min(frames, Int(first.mDataByteSize) / (count * MemoryLayout<Float>.stride))
+            guard available > 0 else { return }
+            let secondRaw: UnsafeMutablePointer<Float>? = (count == 1 && buffers.count >= 2 && buffers[1].mNumberChannels >= 1)
+                ? buffers[1].mData?.assumingMemoryBound(to: Float.self)
+                : nil
+            for frame in 0..<available {
+                let sample: Float
+                if count >= 2 {
+                    let base = frame * count
+                    sample = (samples[base] + samples[base + 1]) * 0.5
+                } else if let second = secondRaw {
+                    sample = (samples[frame] + second[frame]) * 0.5
+                } else {
+                    sample = samples[frame]
+                }
+                analyzer.pushMono(sample)
+                if analyzer.isReady {
+                    profileSaved = true
+                    if let profile = analyzer.finalizeProfile() {
+                        effects.finishProfileCapture(trackId: trackId, profile: profile)
+                    }
+                    break
+                }
+            }
         }
 
         private func mixHall(_ buffers: UnsafeMutableAudioBufferListPointer, frames: Int, echo: Float) {

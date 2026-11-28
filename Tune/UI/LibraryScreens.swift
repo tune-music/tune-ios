@@ -356,12 +356,12 @@ struct LibraryScreen: View {
             let cached = await Task.detached(priority: .userInitiated) {
                 Storage.load("likes-tracks.json", as: [Track].self)
             }.value ?? []
-            var seen = Set<String>()
-            var tracks: [Track] = []
             let filteredCached = cached.filter { Settings.catalog || !TuneCatalogID.isSyntheticTrack($0.id) }
-            for track in session.catalogLikedTracksList() + session.localLikedTracks + filteredCached {
-                if seen.insert(track.id).inserted { tracks.append(track) }
-            }
+            let tracks = CatalogMerge.mergeTimedDesc(
+                local: (session.catalogLikedTracksList() + session.localLikedTracks).map { (item: $0, date: $0.addedAt) },
+                remote: filteredCached.map { (item: $0, date: $0.addedAt) },
+                id: { $0.id }
+            )
             if tracks.isEmpty && !Connectivity.shared.offline && !session.offline {
                 let ids = Array(session.likedIds.prefix(60))
                 if !ids.isEmpty {

@@ -1,19 +1,15 @@
 import Foundation
 
-/// Что Tune сам подмешивает в «Мою волну», как в Tune Native: свои загруженные треки из
-/// «Мне нравится» и удалённые Яндексом треки, которые вернул «Без цензуры», — по вкусу.
+/// Что Tune сам подмешивает в волну, как в Tune Native: свои загруженные треки (с учётом
+/// настроения, звука и вкуса), удалённые Яндексом треки («Без цензуры») и треки из «Каталога Tune».
 @MainActor
 final class WaveMix {
     static let shared = WaveMix()
 
-    /// Свой трек попадает в новую пачку с такой вероятностью, %.
     private static let ownChance = 25
-    /// Свои треки перечитываются раз в полчаса.
     private static let ownTTL: TimeInterval = 30 * 60
-    /// Какие треки списка удалены — раз в сутки.
     private static let restoredTTL: TimeInterval = 24 * 3600
     private static let chunk = 200
-    /// Исполнители скольких последних треков волны считаются «звучавшими».
     private static let recentCount = 30
 
     private var own: [Track] = []
@@ -24,53 +20,96 @@ final class WaveMix {
     private var restored: [Track] = []
     private var restoredAt: Date?
     private var restoredGap = WaveMix.gap()
+    private var catalogPool: [Track] = []
 
-    /// Через сколько треков волны может встать следующий удалённый: от 10 до 15.
     private static func gap() -> Int { Int.random(in: 10...15) }
 
-    /// Новая волна: повторы и промежутки считаются заново.
     func started() {
         ownUsed = []
         ownLast = false
         restoredGap = Self.gap()
     }
 
-    /// Перед новой пачкой: свои и удалённые треки подгружаются в фоне, если пора.
-    func refill(queue: [Track]) {
+    func refill(queue: [Track], seeds: [String] = []) {
         loadOwn()
-        loadRestored(queue: queue)
+        loadRestored(queue: queue, seeds: seeds)
     }
 
-    /// Трек, который встанет в начало новой пачки: удалённый по вкусу, иначе иногда — свой.
-    func pick(known: Set<String>, count: Int, queue: [Track]) -> Track? {
-        if let track = pickRestored(known: known, count: count, queue: queue) { return track }
-        return pickOwn(known: known)
+    func pick(known: Set<String>, count: Int, queue: [Track], seeds: [String] = []) -> Track? {
+        let context = makeContext(queue: queue, seeds: seeds)
+        if context.blockedWave { return nil }
+        if let track = pickRestored(known: known, count: count, queue: queue, context: context) { return track }
+        return pickOwn(known: known, queue: queue, context: context)
+    }
+
+    private func makeContext(queue: [Track], seeds: [String]) -> WaveContext {
+        let activeSeeds = seeds.isEmpty ? ["user:onyourwave"] : seeds
+        let recentProfiles = queue.suffix(12).compactMap { AudioProfileStore.shared.get($0.id) }
+        return WaveContext.fromSeeds(activeSeeds, recentProfiles: recentProfiles)
+    }
+
+    private func recentHistoryIDs() -> Set<String> {
+        var ids = Set(Stats.shared.plays.suffix(500).map(\.id))
+        for entry in CatalogLibraryStore.shared.historyEntries {
+            ids.insert(entry.id)
+        }
+        return ids
+    }
+
+    private func recentArtistInfo(_ queue: [Track]) -> (ids: Set<String>, names: Set<String>) {
+        let tail = queue.suffix(Self.recentCount)
+        let ids = Set(tail.flatMap { $0.artistList.map(\.id) }.filter { !$0.isEmpty })
+        let names = Set(tail.flatMap { $0.artistList.map { WaveTaste.normName($0.name) } }.filter { !$0.isEmpty })
+        return (ids, names)
     }
 
     // MARK: - Свои треки
 
-    private func pickOwn(known: Set<String>) -> Track? {
+    private func pickOwn(known: Set<String>, queue: [Track], context: WaveContext) -> Track? {
         guard Settings.ownInWave else { return nil }
         if ownLast {
-            // Не две пачки подряд.
             ownLast = false
             return nil
         }
         guard Int.random(in: 0..<100) < Self.ownChance else { return nil }
-        let pool = own.filter { !ownUsed.contains($0.id) && !known.contains($0.id) }
-        guard var track = pool.randomElement() else { return nil }
+        let session = Session.shared
+        let historyIDs = recentHistoryIDs()
+        let recent = recentArtistInfo(queue)
+        let likedArtists = WaveTaste.shared.likedArtists()
+        let candidates: [(Track, Double)] = own.compactMap { track in
+            guard !ownUsed.contains(track.id), !known.contains(track.id), !session.disliked.contains(track.id) else {
+                return nil
+            }
+            guard let score = WaveTaste.shared.scoreWaveCandidate(
+                track: track,
+                likedTrack: session.isLiked(track.id),
+                inHistory: historyIDs.contains(track.id),
+                isUGC: true,
+                profile: AudioProfileStore.shared.get(track.id),
+                context: context,
+                recentArtists: recent.ids,
+                recentArtistNames: recent.names,
+                liked: likedArtists
+            ), score >= 1.0 else { return nil }
+            return (track, score)
+        }
+        guard let at = WaveTaste.pickWeighted(candidates.map(\.1), random: Double.random(in: 0..<1)) else { return nil }
+        var track = candidates[at].0
         ownUsed.insert(track.id)
         ownLast = true
         track.batch = nil
         return track
     }
 
-    /// Свои загруженные треки из «Мне нравится»: у них номер не из одних цифр.
     private func loadOwn() {
         guard Settings.ownInWave else { return }
         if let ownAt, Date().timeIntervalSince(ownAt) < Self.ownTTL { return }
         ownAt = Date()
-        let ids = Session.shared.likedIds.filter { !$0.allSatisfy(\.isNumber) }
+        let historyIDs = recentHistoryIDs()
+        var seen = Set<String>()
+        let ids = (Session.shared.likedIds + Array(historyIDs)).filter {
+            !$0.isEmpty && !$0.allSatisfy(\.isNumber) && !TuneCatalogID.isSyntheticTrack($0) && seen.insert($0).inserted
+        }
         guard !ids.isEmpty else {
             own = []
             return
@@ -85,29 +124,40 @@ final class WaveMix {
                 }
                 found += part
             }
-            self.own = found.filter { !$0.unavailable }
+            let valid = found.filter { !$0.unavailable }
+            self.own = valid
+            AudioProfileStore.shared.ensureAnalyzed(valid)
         }
     }
 
-    // MARK: - Удалённые треки
+    // MARK: - Удалённые и каталожные треки
 
-    private func recentArtists(_ queue: [Track]) -> Set<String> {
-        Set(queue.suffix(Self.recentCount).flatMap { $0.artistList.map(\.id) }.filter { !$0.isEmpty })
-    }
-
-    private func pickRestored(known: Set<String>, count: Int, queue: [Track]) -> Track? {
-        guard Settings.restoredInWave, Settings.uncensor, !restored.isEmpty else { return nil }
+    private func pickRestored(known: Set<String>, count: Int, queue: [Track], context: WaveContext) -> Track? {
+        guard Settings.restoredInWave, Settings.uncensor || Settings.catalog else { return nil }
+        let pool = restored + (Settings.catalog ? catalogPool : [])
+        guard !pool.isEmpty else { return nil }
         restoredGap = max(restoredGap - count, 0)
         guard restoredGap == 0 else { return nil }
-        let recent = recentArtists(queue)
-        let liked = WaveTaste.shared.likedArtists()
+        let recent = recentArtistInfo(queue)
+        let likedArtists = WaveTaste.shared.likedArtists()
+        let historyIDs = recentHistoryIDs()
         let session = Session.shared
-        let candidates: [(Track, Double)] = restored.compactMap { track in
-            guard !known.contains(track.id), !session.disliked.contains(track.id), Uncensor.shared.has(track.id),
+        let candidates: [(Track, Double)] = pool.compactMap { track in
+            let isSynthetic = TuneCatalogID.isSyntheticTrack(track.id)
+            if isSynthetic && !Settings.catalog { return nil }
+            guard !known.contains(track.id), !session.disliked.contains(track.id), Uncensor.shared.hasAudio(track.id),
                   !WaveTaste.shared.played(track.id) else { return nil }
-            let artists = track.artistList.map(\.id).filter { !$0.isEmpty }
-            guard let score = WaveTaste.shared.score(artists: artists, likedTrack: session.isLiked(track.id), recent: recent, liked: liked),
-                  score >= WaveTaste.pass else { return nil }
+            guard let score = WaveTaste.shared.scoreWaveCandidate(
+                track: track,
+                likedTrack: session.isLiked(track.id),
+                inHistory: historyIDs.contains(track.id),
+                isUGC: false,
+                profile: AudioProfileStore.shared.get(track.id),
+                context: context,
+                recentArtists: recent.ids,
+                recentArtistNames: recent.names,
+                liked: likedArtists
+            ), score >= WaveTaste.pass else { return nil }
             return (track, score)
         }
         guard let at = WaveTaste.pickWeighted(candidates.map(\.1), random: Double.random(in: 0..<1)) else { return nil }
@@ -124,18 +174,25 @@ final class WaveMix {
         var ids: [String]
     }
 
-    /// Удалённые треки с версией без цензуры: какие из треков списка FckCensor Яндекс закрыл.
-    /// Раз в сутки, в фоне; похожие исполнители для оценки подгружаются заодно.
-    private func loadRestored(queue: [Track]) {
-        guard Settings.restoredInWave, Settings.uncensor else { return }
-        WaveTaste.shared.loadSimilar(WaveTaste.shared.likedArtists() + Array(recentArtists(queue)))
+    private func loadRestored(queue: [Track], seeds: [String]) {
+        guard Settings.restoredInWave, Settings.uncensor || Settings.catalog else { return }
+        if Settings.catalog {
+            catalogPool = Uncensor.shared.catalogWaveTrackIds().compactMap { id in
+                Uncensor.shared.catalogTrack(id).flatMap(API.parseTrack)
+            }
+        } else {
+            catalogPool = []
+        }
+        let recent = recentArtistInfo(queue)
+        let focusSeeds = seeds.compactMap { $0.hasPrefix("artist:") ? String($0.dropFirst("artist:".count)) : nil }
+        WaveTaste.shared.loadSimilar(focusSeeds + WaveTaste.shared.likedArtists() + Array(recent.ids))
+        guard Settings.uncensor else { return }
         if let restoredAt, Date().timeIntervalSince(restoredAt) < Self.restoredTTL { return }
         let listed = Uncensor.shared.fileIds()
         guard !listed.isEmpty else { return }
         restoredAt = Date()
         Task {
             do {
-                // Какие из треков списка удалены, помнится на диске сутки.
                 var gone: [String]
                 if let cache = Storage.load("restored.json", as: RestoredCache.self),
                    Date().timeIntervalSince(cache.at) < Self.restoredTTL, cache.listed == listed.count {
@@ -153,11 +210,12 @@ final class WaveMix {
                     tracks += try await API.shared.tracks(ids: Array(gone[start..<min(start + Self.chunk, gone.count)]))
                 }
                 self.restored = tracks
+                AudioProfileStore.shared.ensureAnalyzed(tracks)
             } catch {
                 Log.shared.add("удалённые треки для волны: \(error.localizedDescription)")
-                // Повтор через час, а не через сутки.
                 self.restoredAt = Date().addingTimeInterval(-Self.restoredTTL + 3600)
             }
         }
     }
 }
+

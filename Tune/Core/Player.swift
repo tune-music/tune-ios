@@ -681,7 +681,9 @@ final class Player: NSObject, ObservableObject {
         if isPlaying {
             activate()
             av.play()
+            recordCatalogHistory(track)
         }
+        audioEffects.setCurrentTrack(track.id, needsProfile: AudioProfileStore.shared.get(track.id) == nil)
         if sound.needsAudioMix { prepareEffectsForStream() }
         let started = Listen(track: track, context: context, session: wave)
         listen = started
@@ -1291,9 +1293,20 @@ final class Player: NSObject, ObservableObject {
 
     // MARK: - Конец трека и волна
 
+    private func recordCatalogHistory(_ track: Track) {
+        guard !Demo.on, Settings.catalog,
+              TuneCatalogID.isSyntheticTrack(track.id) || Uncensor.shared.isCatalogTrack(track.id) || track.isCatalog else {
+            return
+        }
+        CatalogLibraryStore.shared.recordHistory(track.id)
+    }
+
     private func endCurrent(_ reason: EndReason) {
         guard let finished = listen else { return }
         listen = nil
+        if finished.played >= 3 {
+            recordCatalogHistory(finished.track)
+        }
         let restoredInWave = finished.context.kind == "radio" && finished.track.uncensored
             && finished.track.yandexAvailable == false
         Stats.shared.add(finished.track, seconds: finished.played,
@@ -1301,8 +1314,8 @@ final class Player: NSObject, ObservableObject {
         let position = reason == .finished ? finished.track.duration : progress.position
         let report = finished.report(position: position, first: false)
         let kind = reason == .finished ? "trackFinished" : "skip"
-        // Реакции в волне — вкус по исполнителям для удалённых треков.
-        if finished.session != nil {
+        // Реакции в волне и дослушивания обучают умную волну.
+        if finished.session != nil || reason == .finished {
             WaveTaste.shared.react(kind, track: finished.track, played: finished.played)
         }
         Task.detached(priority: .utility) {
@@ -1417,14 +1430,15 @@ final class Player: NSObject, ObservableObject {
         }
         guard !Connectivity.shared.offline, let session = wave else { return }
         let shown = queue.filter { !TuneCatalogID.isSyntheticTrack($0.id) }.map(\.fullId)
-        WaveMix.shared.refill(queue: queue)
+        let activeSeeds = waveSeeds
+        WaveMix.shared.refill(queue: queue, seeds: activeSeeds)
         let task = Task { [weak self] in
             let more = try? await API.shared.waveMore(session: session, queue: shown)
             guard let self, !Task.isCancelled, let more, self.wave == session else { return }
             let known = Set(self.queue.map(\.id))
             var fresh = more.filter { !known.contains($0.id) }
-            // Удалённый трек по вкусу, иначе иногда — свой.
-            if let extra = WaveMix.shared.pick(known: known, count: fresh.count, queue: self.queue) {
+            // Удалённый, каталожный или загруженный трек — с учётом вкуса и настроения волны.
+            if let extra = WaveMix.shared.pick(known: known, count: fresh.count, queue: self.queue, seeds: activeSeeds) {
                 fresh.insert(extra, at: 0)
             }
             self.queue.append(contentsOf: fresh)

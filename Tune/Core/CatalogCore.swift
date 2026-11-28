@@ -405,6 +405,17 @@ final class CatalogState {
         return (fields, CatalogIndex.idList(fields["tracks"]))
     }
 
+    func catalogWaveTrackIDs(catalogEnabled: Bool) -> [String] {
+        guard let list = catalogOnly(catalogEnabled: catalogEnabled) else { return [] }
+        return list.tracks.keys.filter { list.files[$0] != nil }.sorted()
+    }
+
+    func catalogAudioProfile(_ id: String, catalogEnabled: Bool) -> AudioProfile? {
+        guard let list = catalogOnly(catalogEnabled: catalogEnabled),
+              let raw = list.tracks[id]?["audioProfile"] as? [String: Any] else { return nil }
+        return AudioProfile(json: raw)
+    }
+
     func search(
         _ query: String,
         tracks wantTracks: Bool,
@@ -477,7 +488,9 @@ struct CatalogLibrary: Codable, Equatable {
     var dislikedArtists: [String] = []
     var likedPlaylists: [String] = []
     var playlistTracks: [String: [String]] = [:]
+    var playlistTrackAdded: [String: [String: Int64]] = [:]
     var pins: [String] = []
+    var history: [String: Int64] = [:]
 
     var likedTracksMeta: [String: SyncItemState] = [:]
     var dislikedTracksMeta: [String: SyncItemState] = [:]
@@ -490,7 +503,7 @@ struct CatalogLibrary: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case likedTracks, dislikedTracks, likedAlbums, likedArtists, dislikedArtists, likedPlaylists
-        case playlistTracks, pins
+        case playlistTracks, playlistTrackAdded, pins, history
         case likedTracksMeta, dislikedTracksMeta, likedAlbumsMeta, likedArtistsMeta, dislikedArtistsMeta, likedPlaylistsMeta
         case playlistMeta, pinsMeta
     }
@@ -506,7 +519,10 @@ struct CatalogLibrary: Codable, Equatable {
         dislikedArtists = try c.decodeIfPresent([String].self, forKey: .dislikedArtists) ?? []
         likedPlaylists = try c.decodeIfPresent([String].self, forKey: .likedPlaylists) ?? []
         playlistTracks = try c.decodeIfPresent([String: [String]].self, forKey: .playlistTracks) ?? [:]
+        playlistTrackAdded = try c.decodeIfPresent([String: [String: Int64]].self, forKey: .playlistTrackAdded) ?? [:]
         pins = try c.decodeIfPresent([String].self, forKey: .pins) ?? []
+        history = try c.decodeIfPresent([String: Int64].self, forKey: .history) ?? [:]
+        Self.trimHistory(&history)
         likedTracksMeta = try c.decodeIfPresent([String: SyncItemState].self, forKey: .likedTracksMeta) ?? [:]
         dislikedTracksMeta = try c.decodeIfPresent([String: SyncItemState].self, forKey: .dislikedTracksMeta) ?? [:]
         likedAlbumsMeta = try c.decodeIfPresent([String: SyncItemState].self, forKey: .likedAlbumsMeta) ?? [:]
@@ -520,7 +536,7 @@ struct CatalogLibrary: Codable, Equatable {
     var hasActiveData: Bool {
         !likedTracks.isEmpty || !dislikedTracks.isEmpty || !likedAlbums.isEmpty
             || !likedArtists.isEmpty || !dislikedArtists.isEmpty || !likedPlaylists.isEmpty
-            || playlistTracks.values.contains { !$0.isEmpty } || !pins.isEmpty
+            || playlistTracks.values.contains { !$0.isEmpty } || !pins.isEmpty || !history.isEmpty
     }
 
     private static func pushFront(_ list: inout [String], _ id: String) {
@@ -610,6 +626,8 @@ struct CatalogLibrary: Codable, Equatable {
         var list = playlistTracks[key] ?? []
         let oldList = list
         let before = Set(list)
+        let ts = now ?? TuneSyncCodec.nowSeconds()
+        var dates = playlistTrackAdded[key] ?? [:]
         if atEnd {
             for id in ids where !list.contains(id) {
                 list.append(id)
@@ -619,9 +637,15 @@ struct CatalogLibrary: Codable, Equatable {
                 Self.pushFront(&list, id)
             }
         }
+        for id in ids {
+            if dates[id] == nil || !before.contains(id) {
+                dates[id] = ts
+            }
+        }
         playlistTracks[key] = list
+        if !dates.isEmpty { playlistTrackAdded[key] = dates }
         if list != oldList || playlistMeta[key] == nil {
-            playlistMeta[key] = now ?? TuneSyncCodec.nowSeconds()
+            playlistMeta[key] = ts
         }
         return Set(list).subtracting(before).count
     }
@@ -632,8 +656,10 @@ struct CatalogLibrary: Codable, Equatable {
         list.removeAll { $0 == trackID }
         if list.isEmpty {
             playlistTracks.removeValue(forKey: key)
+            playlistTrackAdded.removeValue(forKey: key)
         } else {
             playlistTracks[key] = list
+            playlistTrackAdded[key]?[trackID] = nil
         }
         if list.count != before {
             playlistMeta[key] = now ?? TuneSyncCodec.nowSeconds()
@@ -658,7 +684,22 @@ struct CatalogLibrary: Codable, Equatable {
 
     mutating func clearPlaylist(_ key: String, now: Int64? = nil) {
         playlistTracks.removeValue(forKey: key)
+        playlistTrackAdded.removeValue(forKey: key)
         playlistMeta[key] = now ?? TuneSyncCodec.nowSeconds()
+    }
+
+    var likedTrackEntries: [(id: String, ts: Int64?)] {
+        likedTracks.map { id in
+            let meta = likedTracksMeta[id]
+            return (id, meta?.active == true ? meta?.ts : nil)
+        }
+    }
+
+    func playlistTrackEntries(key: String) -> [(id: String, ts: Int64?)] {
+        let list = playlistTracks[key] ?? []
+        let dates = playlistTrackAdded[key] ?? [:]
+        let fallback = playlistMeta[key]
+        return list.map { ($0, dates[$0] ?? fallback) }
     }
 
     mutating func setPin(_ key: String, pinned: Bool, now: Int64? = nil) {
@@ -669,6 +710,29 @@ struct CatalogLibrary: Codable, Equatable {
             pins.removeAll { $0 == key }
         }
         pinsMeta[key] = SyncItemState(active: pinned, ts: ts)
+    }
+
+    var historyEntries: [(id: String, ts: Int64)] {
+        history.sorted { lhs, rhs in
+            if lhs.value != rhs.value { return lhs.value > rhs.value }
+            return lhs.key < rhs.key
+        }.prefix(TuneSyncCodec.maxHistoryEntries).map { (id: $0.key, ts: $0.value) }
+    }
+
+    mutating func recordHistory(_ id: String, now: Int64? = nil) {
+        let ts = now ?? TuneSyncCodec.nowSeconds()
+        if let prev = history[id], prev >= ts { return }
+        history[id] = ts
+        Self.trimHistory(&history)
+    }
+
+    static func trimHistory(_ map: inout [String: Int64]) {
+        guard map.count > TuneSyncCodec.maxHistoryEntries else { return }
+        let kept = map.sorted { lhs, rhs in
+            if lhs.value != rhs.value { return lhs.value > rhs.value }
+            return lhs.key < rhs.key
+        }.prefix(TuneSyncCodec.maxHistoryEntries)
+        map = Dictionary(uniqueKeysWithValues: kept.map { ($0.key, $0.value) })
     }
 
     /// Заполняет недостающие LWW-метки для устаревших записей без меток времени.
@@ -802,7 +866,28 @@ struct CatalogLibrary: Codable, Equatable {
                 if !lTracks.isEmpty { merged.playlistTracks[key] = lTracks }
                 if let lts { merged.playlistMeta[key] = lts }
             }
+            if let finalList = merged.playlistTracks[key], !finalList.isEmpty {
+                var dates: [String: Int64] = [:]
+                let lDates = lhs.playlistTrackAdded[key] ?? [:]
+                let rDates = rhs.playlistTrackAdded[key] ?? [:]
+                for id in finalList {
+                    if let d = [lDates[id], rDates[id]].compactMap({ $0 }).max() {
+                        dates[id] = d
+                    }
+                }
+                if !dates.isEmpty { merged.playlistTrackAdded[key] = dates }
+            }
         }
+
+        merged.history = lhs.history
+        for (id, rts) in rhs.history {
+            if let lts = merged.history[id] {
+                if rts > lts { merged.history[id] = rts }
+            } else {
+                merged.history[id] = rts
+            }
+        }
+        Self.trimHistory(&merged.history)
 
         merged.rebuildActiveArrays()
         let changedLocal = merged != local
@@ -814,6 +899,7 @@ struct CatalogLibrary: Codable, Equatable {
 /// Протокол синхронизации медиатеки Каталога Tune (`tune-sync:v1`).
 enum TuneSyncCodec {
     static let maxDescriptionLength = 490
+    static let maxHistoryEntries = 100
     static let tsEpoch: Int64 = 1_700_000_000
     static let tombstoneTTL: Int64 = 2_592_000
     static let shardZeroHeader = "Служебный плейлист Tune — синхронизация лайков и медиатеки Каталога Tune между устройствами. Не удаляйте его (в Tune он скрыт)."
@@ -975,6 +1061,15 @@ enum TuneSyncCodec {
             sections.append("N:\(pinEntries.joined(separator: ","))")
         }
 
+        let historyItems = lib.historyEntries.compactMap { entry -> String? in
+            let encId = encodeId(entry.id, base: TuneCatalogID.syntheticTrackBase)
+            guard !encId.isEmpty else { return nil }
+            return "\(encId)@\(encodeTs(entry.ts))"
+        }
+        if !historyItems.isEmpty {
+            sections.append("H:\(historyItems.joined(separator: ","))")
+        }
+
         return sections.joined(separator: ";")
     }
 
@@ -1049,8 +1144,20 @@ enum TuneSyncCodec {
                           let rawId = decodeId(encId, base: base) else { continue }
                     lib.pinsMeta["\(pinKind):\(rawId)"] = SyncItemState(active: sign == "+", ts: ts)
                 }
+            case "H":
+                for entry in body.split(separator: ",", omittingEmptySubsequences: false) where !entry.isEmpty {
+                    guard let at = entry.lastIndex(of: "@") else { continue }
+                    let encId = String(entry[..<at])
+                    let tsTok = String(entry[entry.index(after: at)...])
+                    guard !encId.isEmpty,
+                          let rawId = decodeId(encId, base: TuneCatalogID.syntheticTrackBase),
+                          let ts = decodeTs(tsTok) else { continue }
+                    if let prev = lib.history[rawId], prev >= ts { continue }
+                    lib.history[rawId] = ts
+                }
+                CatalogLibrary.trimHistory(&lib.history)
             default:
-                return nil
+                continue
             }
         }
 
@@ -1328,10 +1435,30 @@ final class CatalogLibraryStore {
         return read(\.pins)
     }
 
+    var historyEntries: [(id: String, ts: Int64)] {
+        guard Settings.catalog else { return [] }
+        return read(\.historyEntries)
+    }
+
+    func recordHistory(_ id: String) {
+        mutate { $0.recordHistory(id) }
+    }
+
     func playlistTracks(owner: String, kind: String) -> [String] {
         guard Settings.catalog else { return [] }
         let key = "\(owner):\(kind)"
         return read { $0.playlistTracks[key] ?? [] }
+    }
+
+    var likedTrackEntries: [(id: String, ts: Int64?)] {
+        guard Settings.catalog else { return [] }
+        return read(\.likedTrackEntries)
+    }
+
+    func playlistTrackEntries(owner: String, kind: String) -> [(id: String, ts: Int64?)] {
+        guard Settings.catalog else { return [] }
+        let key = "\(owner):\(kind)"
+        return read { $0.playlistTrackEntries(key: key) }
     }
 
     func setTrackLiked(_ id: String, _ liked: Bool) {
@@ -1380,3 +1507,341 @@ final class CatalogLibraryStore {
         mutate { $0.clearPlaylist("\(owner):\(kind)") }
     }
 }
+
+// MARK: - Хронологическое слияние и DSP-профиль треков
+
+enum CatalogMerge {
+    static func mergeTimedOrdered<T>(
+        local: [(item: T, date: Date?)],
+        remote: [(item: T, date: Date?)],
+        ascending: Bool,
+        id: (T) -> String
+    ) -> [T] {
+        var seen = Set<String>()
+        var out: [T] = []
+        out.reserveCapacity(local.count + remote.count)
+        var li = 0
+        var ri = 0
+        var lastRemoteDate: Date?
+        func push(_ item: T) {
+            if seen.insert(id(item)).inserted { out.append(item) }
+        }
+        while li < local.count && ri < remote.count {
+            let localDate = local[li].date
+            let remoteDate = remote[ri].date ?? lastRemoteDate
+            let takeRemote: Bool
+            if let ld = localDate, let rd = remoteDate {
+                takeRemote = ascending ? (rd < ld) : (rd > ld)
+            } else if localDate == nil, remoteDate != nil {
+                takeRemote = true
+            } else {
+                takeRemote = false
+            }
+            if takeRemote {
+                let entry = remote[ri]
+                ri += 1
+                if let d = entry.date { lastRemoteDate = d }
+                push(entry.item)
+            } else {
+                push(local[li].item)
+                li += 1
+            }
+        }
+        while li < local.count { push(local[li].item); li += 1 }
+        while ri < remote.count { push(remote[ri].item); ri += 1 }
+        return out
+    }
+
+    static func mergeTimedDesc<T>(
+        local: [(item: T, date: Date?)],
+        remote: [(item: T, date: Date?)],
+        id: (T) -> String
+    ) -> [T] {
+        let sortedLocal = local.sorted { lhs, rhs in
+            switch (lhs.date, rhs.date) {
+            case (let l?, let r?):
+                return l != r ? l > r : id(lhs.item) < id(rhs.item)
+            case (.some, nil): return true
+            case (nil, .some): return false
+            case (nil, nil): return id(lhs.item) < id(rhs.item)
+            }
+        }
+        return mergeTimedOrdered(local: sortedLocal, remote: remote, ascending: false, id: id)
+    }
+
+    static func mergeTimedPlaylist<T>(
+        local: [(item: T, date: Date?)],
+        remote: [(item: T, date: Date?)],
+        forceDesc: Bool,
+        id: (T) -> String
+    ) -> [T] {
+        let firstDate = remote.first(where: { $0.date != nil })?.date
+        let lastDate = remote.last(where: { $0.date != nil })?.date
+        let ascending = !forceDesc && firstDate != nil && lastDate != nil && firstDate! < lastDate!
+        let sortedLocal = local.sorted { lhs, rhs in
+            if ascending {
+                switch (lhs.date, rhs.date) {
+                case (let l?, let r?): return l != r ? l < r : id(lhs.item) < id(rhs.item)
+                case (.some, nil): return true
+                case (nil, .some): return false
+                case (nil, nil): return id(lhs.item) < id(rhs.item)
+                }
+            } else {
+                switch (lhs.date, rhs.date) {
+                case (let l?, let r?): return l != r ? l > r : id(lhs.item) < id(rhs.item)
+                case (.some, nil): return true
+                case (nil, .some): return false
+                case (nil, nil): return id(lhs.item) < id(rhs.item)
+                }
+            }
+        }
+        return mergeTimedOrdered(local: sortedLocal, remote: remote, ascending: ascending, id: id)
+    }
+}
+
+enum AudioMood: String, Codable, CaseIterable {
+    case calm, sad, fun, active
+}
+
+struct AudioProfile: Codable, Equatable {
+    var energy: Float
+    var bass: Float
+    var brightness: Float
+    var tempo: Float
+    var pulse: Float
+    var mood: AudioMood
+
+    init(energy: Float, bass: Float, brightness: Float, tempo: Float, pulse: Float, mood: AudioMood) {
+        self.energy = energy
+        self.bass = bass
+        self.brightness = brightness
+        self.tempo = tempo
+        self.pulse = pulse
+        self.mood = mood
+    }
+
+    init?(json dict: [String: Any]?) {
+        guard let dict, let e = (dict["energy"] as? NSNumber)?.floatValue, e.isFinite else { return nil }
+        let b = (dict["bass"] as? NSNumber)?.floatValue ?? 0.3
+        let br = (dict["brightness"] as? NSNumber)?.floatValue ?? 0.4
+        let t = (dict["tempo"] as? NSNumber)?.floatValue ?? 110
+        let p = (dict["pulse"] as? NSNumber)?.floatValue ?? 0.35
+        let base = AudioProfile(
+            energy: min(1, max(0, e)),
+            bass: min(1, max(0, b)),
+            brightness: min(1, max(0, br)),
+            tempo: min(220, max(50, t)),
+            pulse: min(1, max(0, p)),
+            mood: .calm
+        )
+        let parsedMood = (dict["mood"] as? String).flatMap(AudioMood.init(rawValue:)) ?? base.bestMood()
+        self = AudioProfile(energy: base.energy, bass: base.bass, brightness: base.brightness, tempo: base.tempo, pulse: base.pulse, mood: parsedMood)
+    }
+
+    func moodAffinity(_ target: AudioMood) -> Float {
+        switch target {
+        case .calm:
+            return min(1, max(0, 1 - 0.55 * energy - 0.35 * bass - 0.25 * pulse + (1 - brightness) * 0.15))
+        case .sad:
+            let slowTempo = min(1, max(0, 1 - max(0, tempo - 95) / 60))
+            return min(1, max(0, 1 - 0.50 * energy - 0.40 * bass - 0.25 * brightness + 0.20 * slowTempo))
+        case .fun:
+            let danceTempo = min(1, max(0, 1 - abs(tempo - 118) / 55))
+            return min(1, max(0, 0.35 * energy + 0.30 * brightness + 0.25 * pulse + 0.20 * danceTempo - 0.10 * max(0, bass - 0.7)))
+        case .active:
+            let fastTempo = min(1, max(0, (tempo - 90) / 70))
+            return min(1, max(0, 0.45 * energy + 0.25 * bass + 0.25 * pulse + 0.20 * fastTempo))
+        }
+    }
+
+    func bestMood() -> AudioMood {
+        AudioMood.allCases.max { moodAffinity($0) < moodAffinity($1) } ?? .calm
+    }
+
+    func distance(to other: AudioProfile) -> Float {
+        let de = energy - other.energy
+        let db = bass - other.bass
+        let dbr = (brightness - other.brightness) * 0.8
+        let dp = (pulse - other.pulse) * 0.7
+        let dt = ((tempo - other.tempo) / 80) * 0.6
+        return sqrtf(de * de + db * db + dbr * dbr + dp * dp + dt * dt)
+    }
+
+    static func average(_ list: [AudioProfile]) -> AudioProfile? {
+        guard !list.isEmpty else { return nil }
+        let n = Float(list.count)
+        let tmp = AudioProfile(
+            energy: list.reduce(0) { $0 + $1.energy } / n,
+            bass: list.reduce(0) { $0 + $1.bass } / n,
+            brightness: list.reduce(0) { $0 + $1.brightness } / n,
+            tempo: list.reduce(0) { $0 + $1.tempo } / n,
+            pulse: list.reduce(0) { $0 + $1.pulse } / n,
+            mood: .calm
+        )
+        return AudioProfile(energy: tmp.energy, bass: tmp.bass, brightness: tmp.brightness, tempo: tmp.tempo, pulse: tmp.pulse, mood: tmp.bestMood())
+    }
+}
+
+final class StreamingAudioAnalyzer {
+    private static let framesPerSec = 40
+    private static let minFinalizeFrames = 10 * framesPerSec
+    private static let targetReadyFrames = 45 * framesPerSec
+    private static let maxFrames = 90 * framesPerSec
+
+    private struct FrameStat {
+        var rms: Float
+        var bassRms: Float
+        var highRms: Float
+        var zcrHz: Float
+    }
+
+    private let channels: Int
+    private let rate: Int
+    private let frameSamples: Int
+    private let lpAlpha: Float
+    private let hpAlpha: Float
+
+    private var lp: Float = 0
+    private var hp: Float = 0
+    private var prevIn: Float = 0
+    private var prevMono: Float = 0
+    private var chAcc: Float = 0
+    private var chPos = 0
+    private var curCount = 0
+    private var sumSq: Float = 0
+    private var bassSq: Float = 0
+    private var highSq: Float = 0
+    private var zcrCount = 0
+    private var frames: [FrameStat] = []
+
+    init(channels: Int, sampleRate: Int) {
+        self.channels = max(1, channels)
+        self.rate = max(8_000, sampleRate)
+        self.frameSamples = max(1, self.rate / Self.framesPerSec)
+        let dt = 1.0 / Float(self.rate)
+        let rcLow = 1.0 / (2.0 * Float.pi * 160.0)
+        self.lpAlpha = dt / (rcLow + dt)
+        let rcHigh = 1.0 / (2.0 * Float.pi * 2200.0)
+        self.hpAlpha = rcHigh / (rcHigh + dt)
+        self.frames.reserveCapacity(Self.targetReadyFrames)
+    }
+
+    func pushSample(_ s: Float) {
+        guard frames.count < Self.maxFrames else { return }
+        chAcc += s
+        chPos += 1
+        if chPos < channels { return }
+        let mono = chAcc / Float(channels)
+        chAcc = 0
+        chPos = 0
+        pushMono(mono)
+    }
+
+    func pushMono(_ mono: Float) {
+        guard frames.count < Self.maxFrames else { return }
+        lp += lpAlpha * (mono - lp)
+        let bass = lp
+        hp = hpAlpha * (hp + mono - prevIn)
+        prevIn = mono
+        let high = hp
+        if (mono >= 0 && prevMono < 0) || (mono < 0 && prevMono >= 0) {
+            zcrCount += 1
+        }
+        prevMono = mono
+        sumSq += mono * mono
+        bassSq += bass * bass
+        highSq += high * high
+        curCount += 1
+        if curCount >= frameSamples {
+            let n = Float(curCount)
+            let secs = n / Float(rate)
+            frames.append(FrameStat(
+                rms: sqrtf(sumSq / n),
+                bassRms: sqrtf(bassSq / n),
+                highRms: sqrtf(highSq / n),
+                zcrHz: (Float(zcrCount) / secs) * 0.5
+            ))
+            curCount = 0
+            sumSq = 0
+            bassSq = 0
+            highSq = 0
+            zcrCount = 0
+        }
+    }
+
+    var isReady: Bool { frames.count >= Self.targetReadyFrames }
+    var hasMinimum: Bool { frames.count >= Self.minFinalizeFrames }
+
+    func finalizeProfile() -> AudioProfile? {
+        let active = frames.filter { $0.rms > 0.003 }
+        guard active.count >= 8 * Self.framesPerSec else { return nil }
+
+        func percentile(_ vals: [Float], _ q: Float) -> Float {
+            guard !vals.isEmpty else { return 0 }
+            let sorted = vals.sorted()
+            let idx = min(sorted.count - 1, max(0, Int((Float(sorted.count - 1) * min(1, max(0, q))).rounded())))
+            return sorted[idx]
+        }
+
+        let rmsP75 = percentile(active.map(\.rms), 0.75)
+        let bassP85 = percentile(active.map(\.bassRms), 0.85)
+        let bassRatioP75 = percentile(active.map { $0.bassRms / max(1e-6, $0.rms) }, 0.75)
+        let highRatioP50 = percentile(active.map { $0.highRms / max(1e-6, $0.rms) }, 0.50)
+        let zcrP50 = percentile(active.map(\.zcrHz), 0.50)
+
+        let rmsDb = 20 * log10f(max(1e-6, rmsP75))
+        let rmsScore = min(1, max(0, (rmsDb + 26) / 19))
+
+        let bassDb = 20 * log10f(max(1e-6, bassP85))
+        let bassLevel = min(1, max(0, (bassDb + 26) / 18))
+        let bassRatio = min(1, max(0, (bassRatioP75 - 0.16) / 0.54))
+        let bass = min(1, max(0, 0.55 * bassRatio + 0.45 * bassLevel))
+
+        let highScore = min(1, max(0, (highRatioP50 - 0.08) / 0.42))
+        let zcrScore = min(1, max(0, (zcrP50 - 180) / 1800))
+        let brightness = min(1, max(0, 0.65 * highScore + 0.35 * zcrScore))
+
+        let (tempo, pulse) = Self.estimateTempo(frames)
+        let energy = min(1, max(0, 0.60 * rmsScore + 0.25 * pulse + 0.15 * bass))
+
+        let base = AudioProfile(energy: energy, bass: bass, brightness: brightness, tempo: tempo, pulse: pulse, mood: .calm)
+        return AudioProfile(energy: energy, bass: bass, brightness: brightness, tempo: tempo, pulse: pulse, mood: base.bestMood())
+    }
+
+    private static func estimateTempo(_ all: [FrameStat]) -> (Float, Float) {
+        guard all.count >= 4 * framesPerSec else { return (100, 0) }
+        var onsets = [Float](repeating: 0, count: all.count - 1)
+        var sum: Float = 0
+        for i in 0..<onsets.count {
+            let d = max(0, all[i + 1].rms - all[i].rms) + 0.8 * max(0, all[i + 1].bassRms - all[i].bassRms)
+            onsets[i] = d
+            sum += d
+        }
+        let mean = sum / Float(onsets.count)
+        var denom: Float = 0
+        for i in 0..<onsets.count {
+            let centered = max(0, onsets[i] - mean)
+            onsets[i] = centered
+            denom += centered * centered
+        }
+        guard denom >= 1e-6 else { return (90, 0) }
+        var bestLag = 20
+        var bestCorr: Float = 0
+        let maxLag = min(40, onsets.count / 2)
+        if 12 <= maxLag {
+            for lag in 12...maxLag {
+                var num: Float = 0
+                for i in 0..<(onsets.count - lag) { num += onsets[i] * onsets[i + lag] }
+                let corr = num / denom
+                if corr > bestCorr {
+                    bestCorr = corr
+                    bestLag = lag
+                }
+            }
+        }
+        let tempo = min(200, max(60, Float(framesPerSec * 60) / Float(bestLag)))
+        let pulse = min(1, max(0, bestCorr * 1.45))
+        return (tempo, pulse)
+    }
+}
+

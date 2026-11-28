@@ -105,7 +105,11 @@ final class Session: ObservableObject {
     }
 
     func catalogLikedTracksList() -> [Track] {
-        CatalogLibraryStore.shared.likedTracks.compactMap(Uncensor.shared.catalogTrack).compactMap(API.parseTrack)
+        CatalogLibraryStore.shared.likedTrackEntries.compactMap { entry in
+            guard let json = Uncensor.shared.catalogTrack(entry.id), var track = API.parseTrack(json) else { return nil }
+            if let ts = entry.ts { track.addedAt = Date(timeIntervalSince1970: Double(ts)) }
+            return track
+        }
     }
 
     private func catalogChanged() {
@@ -387,9 +391,10 @@ final class Session: ObservableObject {
 
     func setLiked(_ ids: [String]) {
         let local = Self.uniqueIDs(CatalogLibraryStore.shared.likedTracks + localLikedTracks.map(\.id))
-        let localIDs = Set(local)
-        let ids = local + ids.filter {
-            !localIDs.contains($0) && restoredChanges[$0] != false && (Settings.catalog || !TuneCatalogID.isSyntheticTrack($0))
+        let incomingSet = Set(ids)
+        let missingLocal = local.filter { !incomingSet.contains($0) }
+        let ids = missingLocal + ids.filter {
+            restoredChanges[$0] != false && (Settings.catalog || !TuneCatalogID.isSyntheticTrack($0))
         }
         guard pendingLikes.isEmpty, ids != likedIds else { return }
         likedSet = Set(ids)
@@ -409,9 +414,7 @@ final class Session: ObservableObject {
         likesRevision += 1
         let liked = !isLiked(track.id)
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        if Player.shared.isWave, Player.shared.current?.id == track.id {
-            WaveTaste.shared.react(liked ? "like" : "unlike", track: track, played: nil)
-        }
+        WaveTaste.shared.react(liked ? "like" : "unlike", track: track, played: nil)
         apply(track.id, liked)
         if liked {
             disliked.remove(track.id)
@@ -527,9 +530,7 @@ final class Session: ObservableObject {
         guard let uid = profile?.uid else { return false }
         let now = !disliked.contains(track.id)
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        if Player.shared.isWave, Player.shared.current?.id == track.id {
-            WaveTaste.shared.react(now ? "dislike" : "undislike", track: track, played: nil)
-        }
+        WaveTaste.shared.react(now ? "dislike" : "undislike", track: track, played: nil)
         if now {
             disliked.insert(track.id)
             apply(track.id, false)

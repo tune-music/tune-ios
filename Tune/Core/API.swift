@@ -295,13 +295,41 @@ final class API {
 
     func likedEntries(uid: String) async throws -> [(id: String, addedAt: Date?)] {
         if Demo.on { return Demo.data.tracks.enumerated().map { ($0.element.id, Date(timeIntervalSince1970: Double($0.offset))) } }
-        let localEntries: [(id: String, addedAt: Date?)] = CatalogLibraryStore.shared.likedTracks.map { ($0, nil) }
+        let localEntries: [(item: (id: String, addedAt: Date?), date: Date?)] = CatalogLibraryStore.shared.likedTrackEntries.map { entry in
+            let date = entry.ts.map { Date(timeIntervalSince1970: Double($0)) }
+            return ((entry.id, date), date)
+        }
         func merging(_ remote: [(id: String, addedAt: Date?)]) -> [(id: String, addedAt: Date?)] {
-            var seen = Set<String>()
-            return (localEntries + remote).filter { seen.insert($0.id).inserted }
+            var dates: [String: Date] = [:]
+            for entry in remote where entry.addedAt != nil {
+                if dates[entry.id] == nil { dates[entry.id] = entry.addedAt }
+            }
+            for entry in localEntries where entry.date != nil {
+                if dates[entry.item.id] == nil { dates[entry.item.id] = entry.date }
+            }
+            return CatalogMerge.mergeTimedDesc(
+                local: localEntries,
+                remote: remote.map { (item: $0, date: $0.addedAt) },
+                id: { $0.id }
+            ).map { ($0.id, dates[$0.id] ?? $0.addedAt) }
         }
         do {
-            return merging(try await fullLikedEntries())
+            var enriched = try await fullLikedEntries()
+            if !enriched.isEmpty && enriched.allSatisfy({ $0.addedAt == nil }) {
+                if let value = try? result(await get("users/\(uid)/likes/tracks")) {
+                    let parseDate = Self.listDateParser()
+                    var fallback: [String: Date] = [:]
+                    for item in value["library"]["tracks"].array {
+                        if let id = item["id"].idText, let d = parseDate(item["timestamp"]) {
+                            fallback[id] = d
+                        }
+                    }
+                    if !fallback.isEmpty {
+                        enriched = enriched.map { ($0.id, fallback[$0.id]) }
+                    }
+                }
+            }
+            return merging(enriched)
         } catch {
             try Task.checkCancellation()
         }
@@ -427,14 +455,37 @@ final class API {
             track.addedAt = parseDate(entry["timestamp"])
             return track
         }
-        let localIDs = CatalogLibraryStore.shared.playlistTracks(owner: playlist.owner, kind: playlist.kind)
+        var localTimed = CatalogLibraryStore.shared.playlistTrackEntries(owner: playlist.owner, kind: playlist.kind)
+        var isOwnLikes = false
+        if playlist.kind == "3" {
+            let activeUID = await MainActor.run { Session.shared.profile?.uid }
+            if activeUID == nil || activeUID == playlist.owner {
+                isOwnLikes = true
+                var seenLocal = Set<String>()
+                localTimed = (CatalogLibraryStore.shared.likedTrackEntries + localTimed).filter { seenLocal.insert($0.id).inserted }
+            }
+        }
         let mergedTracks: [Track]
-        if localIDs.isEmpty {
+        if localTimed.isEmpty {
             mergedTracks = remoteTracks
         } else {
-            let localTracks = (try? await self.tracks(ids: localIDs)) ?? localIDs.compactMap(Uncensor.shared.catalogTrack).compactMap(Self.parseTrack)
-            var seen = Set<String>()
-            mergedTracks = (localTracks + remoteTracks).filter { seen.insert($0.id).inserted }
+            let localDates: [String: Date] = Dictionary(
+                localTimed.compactMap { e in e.ts.map { (e.id, Date(timeIntervalSince1970: Double($0))) } },
+                uniquingKeysWith: { a, _ in a }
+            )
+            let localTracks = (try? await self.tracks(ids: localTimed.map(\.id)))
+                ?? localTimed.map(\.id).compactMap(Uncensor.shared.catalogTrack).compactMap(Self.parseTrack)
+            let stampedLocal = localTracks.map { t -> (item: Track, date: Date?) in
+                var copy = t
+                if let d = localDates[t.id] { copy.addedAt = d }
+                return (copy, copy.addedAt)
+            }
+            mergedTracks = CatalogMerge.mergeTimedPlaylist(
+                local: stampedLocal,
+                remote: remoteTracks.map { (item: $0, date: $0.addedAt) },
+                forceDesc: isOwnLikes,
+                id: { $0.id }
+            )
         }
         return PlaylistPage(
             tracks: mergedTracks,
@@ -586,7 +637,7 @@ final class API {
         }
         async let clips = includeExtras ? artistClips(id, legacy: value["videos"]) : []
         async let concerts = includeExtras ? artistConcerts(id) : []
-        var popular = value["popularTracks"].array.compactMap(Self.parseTrack)
+        let popular = value["popularTracks"].array.compactMap(Self.parseTrack)
         let releases = value["albums"].array
         var albums = releases.filter { $0["type"].string != "single" }.compactMap(Self.albumCard)
         var singles = releases.filter { $0["type"].string == "single" }.compactMap(Self.albumCard)
@@ -594,9 +645,10 @@ final class API {
             guard let owner = item["uid"].idText ?? item["owner"]["uid"].idText else { return nil }
             return Self.parsePlaylist(item, owner: owner)
         }
-        // Добавленные в профиль треки — в начало популярных, альбомы — в начало альбомов.
+        // Неродные треки держим в отдельном разделе «Добавленные треки», чтобы популярные Яндекса оставались чистыми.
         let inserts = Uncensor.shared.inserts(artist: id)
-        popular = await mergeArtistTracks(popular, restoredIDs: inserts.tracks)
+        let popularIDs = Set(popular.map(\.id))
+        let addedTracks = await resolveExtraArtistTracks(inserts.tracks).filter { !popularIDs.contains($0.id) }
         if let extra = try? await self.albums(ids: inserts.albums) {
             let known = Set((albums + singles).map(\.id))
             let added = extra.filter { !known.contains($0.id) }
@@ -604,7 +656,8 @@ final class API {
             singles.insert(contentsOf: added.filter { $0.kind == "single" }, at: 0)
         }
         var page = ArtistPage(
-            id: id, name: name, cover: artist["coverUri"].string ?? artist["cover"]["uri"].string ?? artist["ogImage"].string, popular: popular, albums: albums,
+            id: id, name: name, cover: artist["coverUri"].string ?? artist["cover"]["uri"].string ?? artist["ogImage"].string, popular: popular,
+            extraTracks: addedTracks.isEmpty ? nil : addedTracks, albums: albums,
             also: value["alsoAlbums"].array.compactMap(Self.albumCard), similar: value["similarArtists"].array.compactMap(Self.artistCard))
         page.singles = singles
         page.playlists = playlists
@@ -767,14 +820,23 @@ final class API {
         return TrackFilter.select(parsed, catalogIds: Set(catalogIds))
     }
 
+    private func resolveExtraArtistTracks(_ ids: [String]) async -> [Track] {
+        guard !ids.isEmpty else { return [] }
+        let local = ids.compactMap(Uncensor.shared.catalogTrack).compactMap(Self.parseTrack)
+        let localIDs = Set(local.map(\.id))
+        let unresolved = ids.filter { !localIDs.contains($0) }
+        let extra = unresolved.isEmpty ? [] : ((try? await tracks(ids: unresolved)) ?? [])
+        var byID = Dictionary(local.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        for t in extra where byID[t.id] == nil { byID[t.id] = t }
+        var seen = Set<String>()
+        return ids.compactMap { id in seen.insert(id).inserted ? byID[id] : nil }
+    }
+
     private func mergeArtistTracks(_ remote: [Track], restoredIDs: [String]) async -> [Track] {
         let known = Set(remote.map(\.id))
         let missing = restoredIDs.filter { !known.contains($0) }
-        let local = missing.compactMap(Uncensor.shared.catalogTrack).compactMap(Self.parseTrack)
-        let localIDs = Set(local.map(\.id))
-        let unresolved = missing.filter { !localIDs.contains($0) }
-        let extra = (try? await tracks(ids: unresolved)) ?? []
-        return local + extra + remote
+        let extra = await resolveExtraArtistTracks(missing)
+        return remote + extra
     }
 
     func familiarTracks(artist id: String, wave: Bool) async throws -> [Track] {
@@ -1393,36 +1455,106 @@ final class API {
             if list.count > 4 { days[list[4].id] = "Вчера" }
             return (list, days, list.first.map { [$0.id: "Моя волна"] } ?? [:])
         }
-        let value = result(try await get("music-history", [("fullModelsCount", includeSources ? "\(limit)" : "0")]))
-        var ids: [String] = []
-        var dayOf: [String: String] = [:]
-        var sources: [String: String] = [:]
-        var seen = Set<String>()
-        for tab in value["historyTabs"].array {
-            let day = Self.dayName(tab["date"].string ?? "")
-            for item in tab["items"].array {
-                let source = Self.historySource(item["context"])
-                for track in item["tracks"].array {
-                    if let id = track["data"]["itemId"]["trackId"].idText, seen.insert(id).inserted {
-                        ids.append(id)
-                        dayOf[id] = day
-                        sources[id] = source
+        let catalogEntries = CatalogLibraryStore.shared.historyEntries
+        var remoteRows: [(id: String, date: String, source: String?)] = []
+        do {
+            let value = result(try await get("music-history", [("fullModelsCount", includeSources ? "\(limit)" : "0")]))
+            for tab in value["historyTabs"].array {
+                let date = String((tab["date"].string ?? "").prefix(10))
+                for item in tab["items"].array {
+                    let source = Self.historySource(item["context"])
+                    for track in item["tracks"].array {
+                        if let id = track["data"]["itemId"]["trackId"].idText {
+                            remoteRows.append((id: id, date: date, source: source))
+                        }
                     }
                 }
             }
+        } catch {
+            try Task.checkCancellation()
+            if case APIError.needLogin = error { throw error }
+            if catalogEntries.isEmpty { throw error }
         }
+        let merged = Self.mergeCatalogHistory(
+            remote: remoteRows,
+            catalog: catalogEntries,
+            limit: limit,
+            catalogSource: includeSources ? "Каталог Tune" : nil)
         var out: [Track] = []
-        for chunk in Array(ids.prefix(limit)).chunked(150) {
+        for chunk in merged.ids.chunked(150) {
             out += try await tracks(ids: chunk)
         }
         var days: [String: String] = [:]
         var last = ""
         for track in out {
-            let day = dayOf[track.id] ?? ""
+            let day = merged.days[track.id] ?? ""
             if !day.isEmpty, day != last { days[track.id] = day }
             if !day.isEmpty { last = day }
         }
-        return (out, days, sources)
+        return (out, days, merged.sources)
+    }
+
+    static func mergeCatalogHistory(
+        remote: [(id: String, date: String, source: String?)],
+        catalog: [(id: String, ts: Int64)],
+        limit: Int,
+        catalogSource: String?,
+        timeZone: TimeZone = .current
+    ) -> (ids: [String], days: [String: String], sources: [String: String]) {
+        guard limit > 0 else { return ([], [:], [:]) }
+        let dateFormatter = DateFormatter()
+        dateFormatter.locale = Locale(identifier: "en_US_POSIX")
+        dateFormatter.timeZone = timeZone
+        dateFormatter.dateFormat = "yyyy-MM-dd"
+
+        var ids: [String] = []
+        var days: [String: String] = [:]
+        var sources: [String: String] = [:]
+        var seen = Set<String>()
+
+        func appendEntry(id: String, date: String, source: String?) -> Bool {
+            guard ids.count < limit else { return false }
+            guard seen.insert(id).inserted else { return true }
+            ids.append(id)
+            if !date.isEmpty { days[id] = dayName(date) }
+            if let source { sources[id] = source }
+            return true
+        }
+
+        if catalog.isEmpty {
+            for row in remote {
+                if !appendEntry(id: row.id, date: row.date, source: row.source) { break }
+            }
+            return (ids, days, sources)
+        }
+
+        var catalogByDate: [String: [String]] = [:]
+        for entry in catalog {
+            let date = dateFormatter.string(from: Date(timeIntervalSince1970: TimeInterval(entry.ts)))
+            catalogByDate[date, default: []].append(entry.id)
+        }
+        var remoteByDate: [String: [(id: String, source: String?)]] = [:]
+        var undated: [(id: String, source: String?)] = []
+        for row in remote {
+            if row.date.isEmpty {
+                undated.append((row.id, row.source))
+            } else {
+                remoteByDate[row.date, default: []].append((row.id, row.source))
+            }
+        }
+        let sortedDates = Set(catalogByDate.keys).union(remoteByDate.keys).sorted(by: >)
+        for date in sortedDates {
+            for id in catalogByDate[date] ?? [] {
+                if !appendEntry(id: id, date: date, source: catalogSource) { return (ids, days, sources) }
+            }
+            for row in remoteByDate[date] ?? [] {
+                if !appendEntry(id: row.id, date: date, source: row.source) { return (ids, days, sources) }
+            }
+        }
+        for row in undated {
+            if !appendEntry(id: row.id, date: "", source: row.source) { break }
+        }
+        return (ids, days, sources)
     }
 
     private static func historySource(_ context: JSON) -> String? {

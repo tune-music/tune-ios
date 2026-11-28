@@ -305,6 +305,7 @@ struct ArtistPage: Codable {
     var name: String
     var cover: String?
     var popular: [Track]
+    var extraTracks: [Track]? = nil
     var albums: [Card]
     /// Сборники и альбомы с участием исполнителя.
     var also: [Card] = []

@@ -404,6 +404,14 @@ final class Uncensor {
         state.catalogAlbum(id, uncensorEnabled: Settings.uncensor, catalogEnabled: Settings.catalog)
     }
 
+    func catalogWaveTrackIds() -> [String] {
+        state.catalogWaveTrackIDs(catalogEnabled: Settings.catalog)
+    }
+
+    func catalogAudioProfile(_ id: String) -> AudioProfile? {
+        state.catalogAudioProfile(id, catalogEnabled: Settings.catalog)
+    }
+
     func catalogArtist(_ id: String) -> (json: JSON, trackIDs: [String], albumIDs: [String])? {
         state.catalogArtist(id, uncensorEnabled: Settings.uncensor, catalogEnabled: Settings.catalog)
     }

@@ -92,8 +92,11 @@ final class TrackListModel: ObservableObject {
         let rest = tracks.filter {
             !excluded.contains($0.id) && (Settings.catalog || !TuneCatalogID.isSyntheticTrack($0.id))
         }
-        var seen = Set<String>()
-        let updated = (combined + rest).filter { seen.insert($0.id).inserted }
+        let updated = CatalogMerge.mergeTimedDesc(
+            local: combined.map { (item: $0, date: $0.addedAt) },
+            remote: rest.map { (item: $0, date: $0.addedAt) },
+            id: { $0.id }
+        )
         applyLikes(updated)
     }
 
@@ -288,7 +291,12 @@ final class TrackListModel: ObservableObject {
         let uniqueLocal = local.filter { seenLocal.insert($0.id).inserted }
         localLikeIDs = Set(uniqueLocal.map(\.id))
         Session.shared.setLiked(ids)
-        applyLikes(uniqueLocal + ordered.filter { !localLikeIDs.contains($0.id) })
+        let mergedAll = CatalogMerge.mergeTimedDesc(
+            local: uniqueLocal.map { (item: $0, date: $0.addedAt) },
+            remote: ordered.filter { !localLikeIDs.contains($0.id) }.map { (item: $0, date: $0.addedAt) },
+            id: { $0.id }
+        )
+        applyLikes(mergedAll)
         staleLikedTracks.removeAll()
         Downloads.shared.auto(ordered)
         if !Demo.on {
@@ -1863,6 +1871,15 @@ struct ArtistScreen: View {
                     ForEach(Array(filteredPopular.enumerated()), id: \.offset) { index, track in
                         TrackRow(track: track) {
                             player.play(playSource, at: index, context: PlayContext(kind: "artist", item: id, name: page.name))
+                        }
+                    }
+                }
+                if let extraTracks = page.extraTracks, !extraTracks.isEmpty {
+                    heading("Добавленные треки", more: .artistTracks(id, page.name))
+                    let shown = Array(extraTracks.prefix(5))
+                    ForEach(Array(shown.enumerated()), id: \.offset) { index, track in
+                        TrackRow(track: track) {
+                            player.play(extraTracks, at: index, context: PlayContext(kind: "artist", item: id, name: page.name))
                         }
                     }
                 }

@@ -21,6 +21,9 @@ struct CatalogTests {
         testSyncWireVectorAndGrammar()
         testSyncShardsAndPartialSafety()
         try testSyncLWWMergesAndLegacyMigration()
+        try testSyncHistorySectionAndMerge()
+        testTimedMergeChronologicalOrder()
+        testAudioAnalyzerAndProfileMoods()
         print("Catalog unit checks passed")
     }
 
@@ -528,5 +531,110 @@ struct CatalogTests {
         assertCheck(legacyPlaylist.description == nil && legacyPlaylist.customCover == nil, "5-arg Playlist init must work cleanly")
         let decodedPlaylist = try JSONDecoder().decode(Playlist.self, from: Data("{\"owner\":\"1\",\"kind\":\"2\",\"title\":\"Mix\",\"count\":3}".utf8))
         assertCheck(decodedPlaylist == legacyPlaylist, "Legacy Playlist JSON decode must match")
+    }
+
+    private static func testSyncHistorySectionAndMerge() throws {
+        let ts: Int64 = 1_795_795_000
+        var lib = CatalogLibrary()
+        assertCheck(!lib.hasActiveData, "Empty CatalogLibrary must not have active data")
+        lib.recordHistory("9000000046", now: ts - 10)
+        lib.recordHistory("555", now: ts)
+        assertCheck(lib.hasActiveData, "History-only CatalogLibrary must report hasActiveData")
+
+        let wire = TuneSyncCodec.encode(lib, uid: "42", now: ts)
+        assertCheck(wire == "H:~555@1l17w8,1a@1l17vy", "History wire vector mismatch: \(wire)")
+
+        let decoded = TuneSyncCodec.decode(wire, uid: "42")
+        assertCheck(decoded?.historyEntries.map(\.id) == ["555", "9000000046"], "Decoded history IDs mismatch")
+        assertCheck(decoded?.history["555"] == ts && decoded?.history["9000000046"] == ts - 10, "Decoded history timestamps mismatch")
+
+        // Forward-compatible unknown section must not fail decoding.
+        let withUnknown = TuneSyncCodec.decode("\(wire);Z:future123", uid: "42")
+        assertCheck(withUnknown?.history["555"] == ts, "Unknown future section must be ignored safely")
+
+        var older = CatalogLibrary()
+        older.recordHistory("9000000046", now: ts - 5)
+        older.recordHistory("555", now: ts - 100)
+        let merged = CatalogLibrary.merge(local: older, remote: lib, now: ts)
+        assertCheck(merged.changedLocal, "History merge with newer remote timestamp must report changedLocal")
+        assertCheck(merged.merged.history["555"] == ts && merged.merged.history["9000000046"] == ts - 5, "History merge must keep max timestamp per track")
+
+        var capped = CatalogLibrary()
+        for i in 1...120 {
+            capped.recordHistory("\(9_000_000_000 + i)", now: ts + Int64(i))
+        }
+        assertCheck(capped.historyEntries.count == TuneSyncCodec.maxHistoryEntries, "History must cap at 100 entries")
+        assertCheck(capped.historyEntries.first?.id == "9000000120" && capped.historyEntries.last?.id == "9000000021", "History cap must keep newest 100 entries")
+
+        let codableRoundtrip = try JSONDecoder().decode(CatalogLibrary.self, from: JSONEncoder().encode(capped))
+        assertCheck(codableRoundtrip == capped, "CatalogLibrary Codable roundtrip must preserve history")
+    }
+
+    private static func testTimedMergeChronologicalOrder() {
+        let localLikes = [("9001", Date(timeIntervalSince1970: 2000)), ("9002", Date(timeIntervalSince1970: 1000))]
+        let remoteLikes: [(item: String, date: Date?)] = [
+            ("1", Date(timeIntervalSince1970: 3000)),
+            ("2", Date(timeIntervalSince1970: 1500)),
+            ("3", Date(timeIntervalSince1970: 500)),
+        ]
+        let merged = CatalogMerge.mergeTimedDesc(
+            local: localLikes.map { (item: $0.0, date: Optional($0.1)) },
+            remote: remoteLikes.map { (item: $0.item, date: $0.date) },
+            id: { $0 }
+        )
+        assertCheck(merged == ["1", "9001", "2", "9002", "3"], "Timed likes merge order mismatch: \(merged)")
+
+        let ascPlaylist = CatalogMerge.mergeTimedPlaylist(
+            local: [(item: "9001", date: Date(timeIntervalSince1970: 2500))],
+            remote: [
+                (item: "10", date: Date(timeIntervalSince1970: 1000)),
+                (item: "20", date: Date(timeIntervalSince1970: 2000)),
+                (item: "30", date: Date(timeIntervalSince1970: 3000)),
+            ],
+            forceDesc: false,
+            id: { $0 }
+        )
+        assertCheck(ascPlaylist == ["10", "20", "9001", "30"], "Ascending playlist merge mismatch: \(ascPlaylist)")
+
+        let likesPlaylist = CatalogMerge.mergeTimedPlaylist(
+            local: [(item: "9001", date: Date(timeIntervalSince1970: 2500))],
+            remote: [
+                (item: "30", date: Date(timeIntervalSince1970: 3000)),
+                (item: "20", date: Date(timeIntervalSince1970: 2000)),
+                (item: "10", date: Date(timeIntervalSince1970: 1000)),
+            ],
+            forceDesc: true,
+            id: { $0 }
+        )
+        assertCheck(likesPlaylist == ["30", "9001", "20", "10"], "Likes playlist merge mismatch: \(likesPlaylist)")
+    }
+
+    private static func testAudioAnalyzerAndProfileMoods() {
+        let sr = 16_000
+        let calm = StreamingAudioAnalyzer(channels: 1, sampleRate: sr)
+        for i in 0..<(12 * sr) {
+            calm.pushSample(0.05 * sinf(2.0 * Float.pi * 330.0 * Float(i) / Float(sr)))
+        }
+        guard let calmProf = calm.finalizeProfile() else {
+            assertCheck(false, "Expected valid calm AudioProfile")
+            return
+        }
+        assertCheck(calmProf.bass < 0.40, "Expected low bass for calm tone, got \(calmProf.bass)")
+        assertCheck(calmProf.mood == .calm || calmProf.mood == .sad, "Expected calm/sad mood, got \(calmProf.mood)")
+
+        let heavy = StreamingAudioAnalyzer(channels: 1, sampleRate: sr)
+        for i in 0..<(12 * sr) {
+            let s = 0.65 * sinf(2.0 * Float.pi * 65.0 * Float(i) / Float(sr))
+                + 0.15 * sinf(2.0 * Float.pi * 3200.0 * Float(i) / Float(sr))
+            heavy.pushSample(min(1, max(-1, s)))
+        }
+        guard let heavyProf = heavy.finalizeProfile() else {
+            assertCheck(false, "Expected valid heavy AudioProfile")
+            return
+        }
+        assertCheck(heavyProf.bass > 0.50, "Expected heavy bass, got \(heavyProf.bass)")
+
+        let parsed = AudioProfile(json: ["energy": 0.25, "bass": 0.20, "brightness": 0.30, "tempo": 84, "pulse": 0.25, "mood": "sad"])
+        assertCheck(parsed?.mood == .sad && parsed?.bass == 0.20, "AudioProfile JSON parse mismatch")
     }
 }
